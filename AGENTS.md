@@ -1,0 +1,157 @@
+# AGENTS.md
+
+This repository is the **implementation repo** for Broad Listener's open-source local CLI and report pipeline.
+
+It is intentionally separate from the sibling wiki at `/Users/lukec/src/broadly`, which remains the canonical product and strategy knowledge base.
+
+If you are an agent working here, optimize for:
+
+- clean package boundaries
+- inspectable local artifacts
+- reproducible project setup
+- long-term portability from local runs to on-demand AWS execution
+
+## First Orientation
+
+Start with:
+
+1. [README.md](./README.md)
+2. this file
+3. the most relevant package README or source files
+4. the sibling wiki when product context matters:
+   - `/Users/lukec/src/broadly/index.md`
+   - `/Users/lukec/src/broadly/strategy/18-local-first-implementation-plan.md`
+   - `/Users/lukec/src/broadly/product/09-roadmap.md`
+
+Do not treat this repo as the place to rediscover product strategy from scratch. The wiki exists for that.
+
+## Broader Context
+
+When implementation work needs broader context about the problem domain, product thesis, municipal use case, or prior strategy decisions, read from the sibling wiki at:
+
+- `/Users/lukec/src/broadly`
+
+Especially useful pages include:
+
+- `/Users/lukec/src/broadly/index.md`
+- `/Users/lukec/src/broadly/product/01-product-overview.md`
+- `/Users/lukec/src/broadly/product/03-core-workflows.md`
+- `/Users/lukec/src/broadly/market/11-demo-datasets-and-public-corpora.md`
+- `/Users/lukec/src/broadly/strategy/15-explanation-search-and-perspectives.md`
+- `/Users/lukec/src/broadly/strategy/18-local-first-implementation-plan.md`
+
+Use that repo for broader domain understanding. Use this repo for implementation truth.
+
+## Repo Purpose
+
+This repo should initially cover the `v0` proving stage:
+
+- local-first CLI
+- project YAML setup
+- content-addressed local artifact model
+- tabular dataset ingest
+- preprocessing into extracted opinion units
+- map-oriented analysis pipeline
+- alternate-perspective generation
+- local static report site
+
+This repo is not yet the hosted SaaS product.
+
+## Repository Layout
+
+- `packages/core`
+  shared types, hashing, provenance, path helpers
+- `packages/config`
+  project config schema and YAML serialization
+- `packages/cli`
+  user-facing commands
+- `packages/ingest`
+  dataset import and normalization boundary
+- `packages/pipeline`
+  extraction, embeddings, clustering, summarization, perspective-search boundary
+- `packages/report-model`
+  report bundle and evidence object boundary
+- `packages/report-site`
+  static report rendering boundary
+- `infra/terraform`
+  future hosted infrastructure modules
+
+## Working Rules
+
+### 1. Keep The Wiki And Code Separate
+
+- implementation lives here
+- durable product reasoning lives in `/Users/lukec/src/broadly`
+
+If code changes product assumptions, update the wiki in a separate pass rather than stuffing strategy prose into source comments.
+
+### 2. Favor Reusable Package Boundaries
+
+The same core pipeline should later be runnable:
+
+- locally from the CLI
+- remotely in hosted workers
+
+So avoid baking local shell assumptions directly into core packages.
+
+### 3. Preserve Provenance Early
+
+Prefer designs that keep:
+
+- raw source content immutable
+- extracted opinion units tied back to source records
+- prompt/model/version metadata explicit
+- run timing explicit
+
+### 4. Default To Narrow, Real Implementations
+
+Do not add large placeholder frameworks just to look complete.
+
+Good:
+
+- a real `init` command
+- a real config schema
+- a real artifact layout
+
+Bad:
+
+- large abstract systems with no working path through them
+
+### 5. Keep Phase 0 Scope Tight
+
+Avoid pulling in:
+
+- multi-tenant SaaS concerns
+- PDF ingestion
+- participant CRM
+- live-room workflow
+- multilingual surfaces
+
+unless explicitly requested.
+
+## Editing Guidance
+
+- Prefer ASCII unless the file already uses Unicode.
+- Keep comments sparse and useful.
+- Preserve a clean workspace layout.
+- Do not commit generated project artifacts, datasets, or `node_modules`.
+- Prefer small, composable files over giant utility dumps.
+
+## Verification
+
+When you add or change code, verify at the repo level when practical:
+
+- `npm run build`
+
+Add narrower package-level checks later as the codebase grows.
+
+## Default Principle
+
+This repo should grow like a serious open-source implementation project, not like a scratchpad.
+
+When in doubt:
+
+- keep source records immutable
+- keep derived records explicit
+- keep package boundaries clean
+- keep product reasoning in the wiki

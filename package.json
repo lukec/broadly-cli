@@ -1,0 +1,22 @@
+{
+  "name": "broadly-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source local-first CLI and analysis harness for Broad Listener.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "ci": "npm run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,35 @@
+# Broadly project configuration
+# Fill in dataset mappings, guiding questions, and model IDs before running analysis.
+
+schemaVersion: 1
+project:
+  name: Sample Project 2
+  slug: sample-project-2
+  description: Local-first Broadly analysis project.
+dataset:
+  path: ./data/source.csv
+  format: auto
+  textColumns:
+    - comment
+guidingQuestions:
+  - What are the dominant themes in this corpus?
+  - Where do the strongest points of agreement and disagreement appear?
+  - What concerns would matter most to a municipal engagement lead?
+analysis:
+  extractionModel: bedrock-text-model-id
+  embeddingModel: bedrock-embedding-model-id
+  synthesisModes:
+    - balanced
+    - consensus
+    - dissent
+  clusterCounts:
+    - 12
+    - 20
+    - 32
+  reduction:
+    method: umap
+    dimensions: 2
+  maxPerspectives: 3
+output:
+  reportDir: reports
+  primaryPerspective: balanced

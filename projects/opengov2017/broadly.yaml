@@ -1,0 +1,39 @@
+# Broadly project configuration
+# Fill in dataset mappings, guiding questions, and model IDs before running analysis.
+
+schemaVersion: 1
+project:
+  name: opengov2017
+  slug: opengov2017
+  description: Government of Canada Treasury Board feedback on Open Government
+  goals:
+    - Identify areas of broad consensus
+    - Identify areas of contention
+    - Surface easy wins
+dataset:
+  path: ./data/source.csv
+  format: auto
+  textColumns:
+    - comment
+guidingQuestions:
+  - What are the dominant themes in this corpus?
+  - Where do the strongest points of agreement and disagreement appear?
+  - What concerns would matter most to a municipal engagement lead?
+analysis:
+  extractionModel: bedrock-text-model-id
+  embeddingModel: bedrock-embedding-model-id
+  synthesisModes:
+    - balanced
+    - consensus
+    - dissent
+  clusterCounts:
+    - 12
+    - 20
+    - 32
+  reduction:
+    method: umap
+    dimensions: 2
+  maxPerspectives: 3
+output:
+  reportDir: reports
+  primaryPerspective: balanced

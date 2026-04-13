@@ -1,0 +1,29 @@
+{
+  "name": "@broadly/cli",
+  "version": "0.1.0",
+  "description": "CLI entrypoint for Broadly.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "broadly": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@broadly/config": "0.1.0",
+    "@broadly/core": "0.1.0",
+    "commander": "^13.1.0"
+  }
+}

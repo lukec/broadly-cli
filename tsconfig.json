@@ -1,0 +1,26 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/config"
+    },
+    {
+      "path": "./packages/ingest"
+    },
+    {
+      "path": "./packages/pipeline"
+    },
+    {
+      "path": "./packages/report-model"
+    },
+    {
+      "path": "./packages/report-site"
+    },
+    {
+      "path": "./packages/cli"
+    }
+  ]
+}
