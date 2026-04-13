@@ -25,6 +25,7 @@
     "@broadly/config": "0.1.0",
     "@broadly/core": "0.1.0",
     "@broadly/ingest": "0.1.0",
+    "@broadly/pipeline": "0.1.0",
     "commander": "^13.1.0"
   }
 }

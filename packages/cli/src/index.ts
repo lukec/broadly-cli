@@ -3,6 +3,7 @@
 import { Command } from "commander";
 
 import { addDataSource } from "./commands/addDataSource.js";
+import { extractOpinions } from "./commands/extractOpinions.js";
 import { initProject } from "./commands/init.js";
 
 const program = new Command();
@@ -56,6 +57,18 @@ program
         datasetPath: file,
         ...(options.project === undefined ? {} : { project: options.project })
       });
+    }
+  );
+
+program
+  .command("extract-opinions")
+  .description("Create opinion-unit artifacts from normalized records.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .action(
+    async (options: { project?: string }) => {
+      await extractOpinions(
+        options.project === undefined ? {} : { project: options.project }
+      );
     }
   );
 

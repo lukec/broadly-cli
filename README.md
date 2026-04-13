@@ -114,6 +114,18 @@ That command:
 - writes `data/normalized/ingest-manifest.json` with source provenance and ingest metadata
 - names each JSON file with the SHA-256 hash of the row's flattened `contentText`
 
+Extract opinion artifacts from the normalized records:
+
+```bash
+node ../../packages/cli/dist/index.js extract-opinions
+```
+
+The first extraction stage currently uses a deterministic `whole-record-pass-through` method:
+
+- reads each normalized JSON record from `data/normalized`
+- writes one opinion JSON file per normalized record under `data/opinions`
+- writes `data/opinions/extraction-manifest.json` describing the extraction method and counts
+
 ## Open Source Intent
 
 This repo is intended to become the open implementation surface for Broad Listener's local CLI, evidence pipeline, report model, and report viewer.
