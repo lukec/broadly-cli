@@ -5,6 +5,7 @@ import { Command } from "commander";
 import { addDataSource } from "./commands/addDataSource.js";
 import { extractOpinions } from "./commands/extractOpinions.js";
 import { initProject } from "./commands/init.js";
+import { addModel, checkModels, removeModel } from "./commands/models.js";
 
 const program = new Command();
 
@@ -69,6 +70,70 @@ program
       await extractOpinions(
         options.project === undefined ? {} : { project: options.project }
       );
+    }
+  );
+
+const modelsCommand = program
+  .command("models")
+  .description("Manage model aliases available to this project.");
+
+modelsCommand
+  .command("add")
+  .description("Add a model alias to this project and check local credentials.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--provider <provider>", "Model provider: bedrock or google-cloud")
+  .option("--model-id <modelId>", "Provider model identifier")
+  .option("--region <region>", "Provider region for this model")
+  .option("--name <name>", "Project alias for this model")
+  .action(
+    async (
+      options: {
+        project?: string;
+        provider?: "bedrock" | "google-cloud";
+        modelId?: string;
+        region?: string;
+        name?: string;
+      }
+    ) => {
+      await addModel(options);
+    }
+  );
+
+modelsCommand
+  .command("remove")
+  .description("Remove a model alias from this project.")
+  .argument("[name]", "Project alias to remove; prompts when omitted")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .action(
+    async (
+      name: string | undefined,
+      options: {
+        project?: string;
+      }
+    ) => {
+      await removeModel({
+        ...(name === undefined ? {} : { name }),
+        ...(options.project === undefined ? {} : { project: options.project })
+      });
+    }
+  );
+
+modelsCommand
+  .command("check")
+  .description("Check whether local credentials are available for registered models.")
+  .argument("[name]", "Optional project alias to check")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .action(
+    async (
+      name: string | undefined,
+      options: {
+        project?: string;
+      }
+    ) => {
+      await checkModels({
+        ...(name === undefined ? {} : { name }),
+        ...(options.project === undefined ? {} : { project: options.project })
+      });
     }
   );
 

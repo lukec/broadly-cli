@@ -115,6 +115,24 @@ That command:
 - writes `data/normalized/ingest-manifest.json` with source provenance and ingest metadata
 - names each JSON file with the SHA-256 hash of the row's flattened `contentText`
 
+Register model aliases for the project:
+
+```bash
+node ../../packages/cli/dist/index.js models add
+```
+
+The `models` command currently supports:
+
+- Bedrock
+- Google Cloud
+
+During `models add`, Broadly prompts for the provider, the provider model name, and your project alias for that model. It then checks whether local credentials are available. If credentials are missing, it tells you what to fix and asks you to rerun:
+It also prompts for the model region, which is stored in the project config and used later at execution time.
+
+```bash
+node ../../packages/cli/dist/index.js models check
+```
+
 Extract opinion artifacts from the normalized records:
 
 ```bash

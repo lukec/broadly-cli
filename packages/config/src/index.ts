@@ -4,6 +4,7 @@ import { z } from "zod";
 const datasetFormatValues = ["auto", "csv", "tsv", "xlsx", "json", "jsonl"] as const;
 const reductionMethodValues = ["umap", "pca", "tsne"] as const;
 const synthesisModeValues = ["balanced", "consensus", "dissent"] as const;
+const modelProviderValues = ["bedrock", "google-cloud"] as const;
 
 export const projectConfigSchema = z.object({
   schemaVersion: z.literal(1),
@@ -13,6 +14,14 @@ export const projectConfigSchema = z.object({
     description: z.string().default(""),
     goals: z.array(z.string().min(1)).default([])
   }),
+  models: z.array(
+    z.object({
+      name: z.string().min(1),
+      provider: z.enum(modelProviderValues),
+      modelId: z.string().min(1),
+      region: z.string().min(1)
+    })
+  ).default([]),
   dataset: z.object({
     path: z.string().min(1),
     format: z.enum(datasetFormatValues).default("auto"),
@@ -49,7 +58,8 @@ export function serializeProjectConfig(config: BroadlyProjectConfig): string {
   return [
     "# Broadly project configuration",
     "# Use `broadly ingest <file>` to register a dataset and write normalized row artifacts.",
-    "# Then fill in guiding questions and model IDs before running analysis.",
+    "# Use `broadly models add` to register model aliases available to this project.",
+    "# Then fill in guiding questions and model aliases before running analysis.",
     "",
     YAML.stringify(config)
   ].join("\n");
@@ -74,6 +84,7 @@ export function createStarterProjectConfig(
       description: options.description ?? "Local-first Broadly analysis project.",
       goals: options.goals ?? []
     },
+    models: [],
     dataset: {
       path: "./data/source.csv",
       format: "auto"
@@ -84,8 +95,8 @@ export function createStarterProjectConfig(
       "What concerns would matter most to a municipal engagement lead?"
     ],
     analysis: {
-      extractionModel: "bedrock-text-model-id",
-      embeddingModel: "bedrock-embedding-model-id",
+      extractionModel: "my-text-model",
+      embeddingModel: "my-embedding-model",
       synthesisModes: ["balanced", "consensus", "dissent"],
       clusterCounts: [12, 20, 32],
       reduction: {

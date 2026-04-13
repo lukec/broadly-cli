@@ -81,8 +81,9 @@ function printNextSteps(rootDir: string, configPath: string): void {
     "Next steps:",
     `1. cd ${rootDir}`,
     "2. broadly ingest ./path/to/source.csv",
-    "3. Review and edit prompts/opinion-extraction.md for your domain and dataset.",
-    "4. Edit broadly.yaml with guiding questions and Bedrock model IDs."
+    "3. broadly models add",
+    "4. Review and edit prompts/opinion-extraction.md for your domain and dataset.",
+    "5. Edit broadly.yaml with guiding questions and model aliases."
   ];
 
   process.stdout.write(`${lines.join("\n")}\n`);
