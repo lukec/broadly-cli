@@ -1,5 +1,5 @@
 # Broadly project configuration
-# Use `broadly add-data-source <file>` to register a dataset and write normalized row artifacts.
+# Use `broadly ingest <file>` to register a dataset and write normalized row artifacts.
 # Then fill in guiding questions and model IDs before running analysis.
 
 schemaVersion: 1
@@ -12,7 +12,7 @@ project:
     - Identify areas of contention
     - Surface easy wins
 dataset:
-  path: ../../data/opengov-2017/engagement-compilation.csv
+  path: ./data/raw/3067c1ee5500a899ab7c3727e55af89a23e782375b81a4abbc54e5537333e4bc.csv
   format: csv
   encoding: latin1
   delimiter: ","

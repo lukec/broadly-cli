@@ -21,10 +21,36 @@ export interface NormalizedCommentRecord {
   rawRow: Record<string, string>;
   provenance: {
     importPath: string;
+    originalPath: string;
+    sourceFileSha256: string;
     importEncoding: string;
     delimiter: string;
     sourceRowNumber: number;
     externalId?: string;
+  };
+}
+
+export interface IngestManifest {
+  createdAt: string;
+  source: {
+    originalPath: string;
+    storedPath: string;
+    sha256: string;
+    byteSize: number;
+    format: "csv" | "tsv";
+    encoding: string;
+    delimiter: string;
+    idColumn?: string;
+  };
+  dataset: {
+    headerCount: number;
+    rowCount: number;
+    filesWritten: number;
+    headers: string[];
+  };
+  outputs: {
+    normalizedDir: string;
+    manifestPath: string;
   };
 }
 
@@ -34,7 +60,9 @@ export interface AddTabularDataSourceOptions {
 }
 
 export interface AddTabularDataSourceResult {
-  datasetPath: string;
+  originalDatasetPath: string;
+  storedDatasetPath: string;
+  storedDatasetSha256: string;
   datasetFormat: "csv" | "tsv";
   encoding: string;
   delimiter: string;
@@ -42,6 +70,7 @@ export interface AddTabularDataSourceResult {
   rowCount: number;
   filesWritten: number;
   normalizedDir: string;
+  manifestPath: string;
   headers: string[];
 }
 
@@ -49,8 +78,10 @@ export async function addTabularDataSource(
   options: AddTabularDataSourceOptions
 ): Promise<AddTabularDataSourceResult> {
   const absoluteDatasetPath = path.resolve(options.datasetPath);
+  const rawDir = path.join(path.resolve(options.projectRoot), "data", "raw");
   const normalizedDir = path.join(path.resolve(options.projectRoot), "data", "normalized");
   const sourceBuffer = await readFile(absoluteDatasetPath);
+  const sourceFileSha256 = sha256Hex(sourceBuffer);
   const decodedSource = decodeSourceText(sourceBuffer);
   const parsedDataset = parseTabularText(decodedSource.text);
 
@@ -67,8 +98,16 @@ export async function addTabularDataSource(
   const headers = dedupeHeaders(headerRow);
   const idColumn = detectIdColumn(headers);
   const createdAt = new Date().toISOString();
+  const datasetFormat = parsedDataset.delimiter === "\t" ? "tsv" : "csv";
+  const storedDatasetPath = path.join(
+    rawDir,
+    `${sourceFileSha256}${resolveStoredExtension(absoluteDatasetPath, datasetFormat)}`
+  );
+  const manifestPath = path.join(normalizedDir, "ingest-manifest.json");
 
+  await mkdir(rawDir, { recursive: true });
   await mkdir(normalizedDir, { recursive: true });
+  await writeFile(storedDatasetPath, sourceBuffer);
 
   let filesWritten = 0;
   let rowCount = 0;
@@ -88,7 +127,9 @@ export async function addTabularDataSource(
       contentText,
       rawRow,
       provenance: {
-        importPath: absoluteDatasetPath,
+        importPath: storedDatasetPath,
+        originalPath: absoluteDatasetPath,
+        sourceFileSha256,
         importEncoding: decodedSource.encoding,
         delimiter: parsedDataset.delimiter,
         sourceRowNumber: index + 2,
@@ -117,15 +158,44 @@ export async function addTabularDataSource(
     rowCount += 1;
   }
 
+  const manifest: IngestManifest = {
+    createdAt,
+    source: {
+      originalPath: absoluteDatasetPath,
+      storedPath: storedDatasetPath,
+      sha256: sourceFileSha256,
+      byteSize: sourceBuffer.byteLength,
+      format: datasetFormat,
+      encoding: decodedSource.encoding,
+      delimiter: parsedDataset.delimiter,
+      ...(idColumn === undefined ? {} : { idColumn })
+    },
+    dataset: {
+      headerCount: headers.length,
+      rowCount,
+      filesWritten,
+      headers
+    },
+    outputs: {
+      normalizedDir,
+      manifestPath
+    }
+  };
+
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
   return {
-    datasetPath: absoluteDatasetPath,
-    datasetFormat: parsedDataset.delimiter === "\t" ? "tsv" : "csv",
+    originalDatasetPath: absoluteDatasetPath,
+    storedDatasetPath,
+    storedDatasetSha256: sourceFileSha256,
+    datasetFormat,
     encoding: decodedSource.encoding,
     delimiter: parsedDataset.delimiter,
     ...(idColumn === undefined ? {} : { idColumn }),
     rowCount,
     filesWritten,
     normalizedDir,
+    manifestPath,
     headers
   };
 }
@@ -325,4 +395,17 @@ function isEmptyRow(rawRow: Record<string, string>): boolean {
 
 function detectIdColumn(headers: string[]): string | undefined {
   return headers.find((header) => likelyIdColumnNames.has(header.toLowerCase()));
+}
+
+function resolveStoredExtension(
+  datasetPath: string,
+  datasetFormat: "csv" | "tsv"
+): string {
+  const extname = path.extname(datasetPath).toLowerCase();
+
+  if (extname.length > 0) {
+    return extname;
+  }
+
+  return datasetFormat === "tsv" ? ".tsv" : ".csv";
 }

@@ -29,7 +29,8 @@ export async function addDataSource(options: AddDataSourceOptions): Promise<void
     projectRoot,
     datasetPath: absoluteDatasetPath
   });
-  const relativeDatasetPath = toPortableRelativePath(projectRoot, absoluteDatasetPath);
+  const relativeDatasetPath = toPortableRelativePath(projectRoot, ingestResult.storedDatasetPath);
+  const relativeManifestPath = toPortableRelativePath(projectRoot, ingestResult.manifestPath);
 
   config.dataset = {
     path: relativeDatasetPath,
@@ -44,14 +45,16 @@ export async function addDataSource(options: AddDataSourceOptions): Promise<void
   const lines = [
     `Ingested data source into ${projectPaths.configPath}`,
     "",
-    `Source file: ${absoluteDatasetPath}`,
-    `Stored as: ${relativeDatasetPath}`,
+    `Source file: ${ingestResult.originalDatasetPath}`,
+    `Copied to: ${relativeDatasetPath}`,
+    `Source SHA-256: ${ingestResult.storedDatasetSha256}`,
     `Detected format: ${ingestResult.datasetFormat}`,
     `Detected encoding: ${ingestResult.encoding}`,
     `Detected delimiter: ${renderDelimiterLabel(ingestResult.delimiter)}`,
     `Rows normalized: ${ingestResult.rowCount}`,
     `JSON files written: ${ingestResult.filesWritten}`,
-    `Normalized output: ${ingestResult.normalizedDir}`
+    `Normalized output: ${ingestResult.normalizedDir}`,
+    `Manifest: ${relativeManifestPath}`
   ];
 
   process.stdout.write(`${lines.join("\n")}\n`);

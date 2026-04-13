@@ -108,8 +108,10 @@ node ../../packages/cli/dist/index.js ingest ../../data/opengov-2017/engagement-
 
 That command:
 
-- updates `broadly.yaml` with the source file path and low-level file settings
+- copies the source file into the project's `data/raw`
+- updates `broadly.yaml` to point at the copied raw file plus detected low-level file settings
 - writes one normalized JSON artifact per non-empty row under `data/normalized`
+- writes `data/normalized/ingest-manifest.json` with source provenance and ingest metadata
 - names each JSON file with the SHA-256 hash of the row's flattened `contentText`
 
 ## Open Source Intent
