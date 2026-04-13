@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 
+import { addDataSource } from "./commands/addDataSource.js";
 import { initProject } from "./commands/init.js";
 
 const program = new Command();
@@ -35,6 +36,25 @@ program
         ...(options.description === undefined ? {} : { description: options.description }),
         ...(options.name === undefined ? {} : { name: options.name }),
         ...(options.goal.length === 0 ? {} : { goals: options.goal })
+      });
+    }
+  );
+
+program
+  .command("ingest")
+  .description("Ingest a tabular source file and write normalized row artifacts.")
+  .argument("<file>", "Path to a CSV or TSV file")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .action(
+    async (
+      file: string,
+      options: {
+        project?: string;
+      }
+    ) => {
+      await addDataSource({
+        datasetPath: file,
+        ...(options.project === undefined ? {} : { project: options.project })
       });
     }
   );

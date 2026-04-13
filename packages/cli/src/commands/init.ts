@@ -72,9 +72,9 @@ function printNextSteps(rootDir: string, configPath: string): void {
     "- reports",
     "",
     "Next steps:",
-    "1. Edit broadly.yaml with dataset mappings and Bedrock model IDs.",
-    "2. Place your source dataset where the config expects it.",
-    "3. Add ingest and run commands in the next implementation step."
+    `1. cd ${rootDir}`,
+    "2. broadly ingest ./path/to/source.csv",
+    "3. Edit broadly.yaml with guiding questions and Bedrock model IDs."
   ];
 
   process.stdout.write(`${lines.join("\n")}\n`);

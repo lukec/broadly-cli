@@ -16,8 +16,9 @@ export const projectConfigSchema = z.object({
   dataset: z.object({
     path: z.string().min(1),
     format: z.enum(datasetFormatValues).default("auto"),
-    idColumn: z.string().min(1).optional(),
-    textColumns: z.array(z.string().min(1)).min(1)
+    encoding: z.string().min(1).optional(),
+    delimiter: z.string().min(1).optional(),
+    idColumn: z.string().min(1).optional()
   }),
   guidingQuestions: z.array(z.string().min(1)).min(1),
   analysis: z.object({
@@ -47,7 +48,8 @@ export function parseProjectConfig(source: string): BroadlyProjectConfig {
 export function serializeProjectConfig(config: BroadlyProjectConfig): string {
   return [
     "# Broadly project configuration",
-    "# Fill in dataset mappings, guiding questions, and model IDs before running analysis.",
+    "# Use `broadly ingest <file>` to register a dataset and write normalized row artifacts.",
+    "# Then fill in guiding questions and model IDs before running analysis.",
     "",
     YAML.stringify(config)
   ].join("\n");
@@ -74,8 +76,7 @@ export function createStarterProjectConfig(
     },
     dataset: {
       path: "./data/source.csv",
-      format: "auto",
-      textColumns: ["comment"]
+      format: "auto"
     },
     guidingQuestions: [
       "What are the dominant themes in this corpus?",

@@ -99,6 +99,19 @@ That creates:
 - `runs`
 - `reports`
 
+Register a tabular data source from inside the project directory:
+
+```bash
+cd projects/my-first-project
+node ../../packages/cli/dist/index.js ingest ../../data/opengov-2017/engagement-compilation.csv
+```
+
+That command:
+
+- updates `broadly.yaml` with the source file path and low-level file settings
+- writes one normalized JSON artifact per non-empty row under `data/normalized`
+- names each JSON file with the SHA-256 hash of the row's flattened `contentText`
+
 ## Open Source Intent
 
 This repo is intended to become the open implementation surface for Broad Listener's local CLI, evidence pipeline, report model, and report viewer.

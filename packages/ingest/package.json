@@ -17,5 +17,8 @@
   ],
   "scripts": {
     "build": "tsc -b"
+  },
+  "dependencies": {
+    "@broadly/core": "0.1.0"
   }
 }

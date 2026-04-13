@@ -9,8 +9,6 @@ project:
 dataset:
   path: ./data/source.csv
   format: auto
-  textColumns:
-    - comment
 guidingQuestions:
   - What are the dominant themes in this corpus?
   - Where do the strongest points of agreement and disagreement appear?

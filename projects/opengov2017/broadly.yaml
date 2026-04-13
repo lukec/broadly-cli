@@ -1,5 +1,6 @@
 # Broadly project configuration
-# Fill in dataset mappings, guiding questions, and model IDs before running analysis.
+# Use `broadly add-data-source <file>` to register a dataset and write normalized row artifacts.
+# Then fill in guiding questions and model IDs before running analysis.
 
 schemaVersion: 1
 project:
@@ -11,10 +12,11 @@ project:
     - Identify areas of contention
     - Surface easy wins
 dataset:
-  path: ./data/source.csv
-  format: auto
-  textColumns:
-    - comment
+  path: ../../data/opengov-2017/engagement-compilation.csv
+  format: csv
+  encoding: latin1
+  delimiter: ","
+  idColumn: ID
 guidingQuestions:
   - What are the dominant themes in this corpus?
   - Where do the strongest points of agreement and disagreement appear?
