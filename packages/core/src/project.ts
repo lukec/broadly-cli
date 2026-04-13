@@ -5,6 +5,7 @@ export const DEFAULT_PROJECT_DIRECTORIES = [
   "data/raw",
   "data/normalized",
   "data/opinions",
+  "prompts",
   "runs",
   "reports"
 ] as const;
@@ -13,6 +14,7 @@ export interface ProjectPaths {
   rootDir: string;
   configPath: string;
   dataDir: string;
+  promptsDir: string;
   runsDir: string;
   reportsDir: string;
 }
@@ -24,6 +26,7 @@ export function resolveProjectPaths(rootDir: string): ProjectPaths {
     rootDir: absoluteRootDir,
     configPath: path.join(absoluteRootDir, "broadly.yaml"),
     dataDir: path.join(absoluteRootDir, "data"),
+    promptsDir: path.join(absoluteRootDir, "prompts"),
     runsDir: path.join(absoluteRootDir, "runs"),
     reportsDir: path.join(absoluteRootDir, "reports")
   };

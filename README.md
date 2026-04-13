@@ -96,6 +96,7 @@ That creates:
 - `data/raw`
 - `data/normalized`
 - `data/opinions`
+- `prompts`
 - `runs`
 - `reports`
 
@@ -125,6 +126,9 @@ The first extraction stage currently uses a deterministic `whole-record-pass-thr
 - reads each normalized JSON record from `data/normalized`
 - writes one opinion JSON file per normalized record under `data/opinions`
 - writes `data/opinions/extraction-manifest.json` describing the extraction method and counts
+
+Projects also include `prompts/`, which is intended to hold reusable prompt files for stages such as opinion extraction.
+New projects start with `prompts/opinion-extraction.md` as a prompt template you can adapt to your domain.
 
 ## Open Source Intent
 
