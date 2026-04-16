@@ -57,6 +57,14 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
     projectPaths.promptsDir,
     "qa-cluster-membership.md"
   );
+  const qaClusterThemeSupportPromptPath = path.join(
+    projectPaths.promptsDir,
+    "qa-cluster-theme-support.md"
+  );
+  const qaThemeMergeReviewPromptPath = path.join(
+    projectPaths.promptsDir,
+    "qa-theme-merge-review.md"
+  );
 
   if (options.force || !(await fileExists(starterPromptPath))) {
     await writeFile(starterPromptPath, createStarterOpinionExtractionPrompt(), "utf8");
@@ -90,6 +98,22 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
     await writeFile(
       qaClusterMembershipPromptPath,
       createStarterQaClusterMembershipPrompt(),
+      "utf8"
+    );
+  }
+
+  if (options.force || !(await fileExists(qaClusterThemeSupportPromptPath))) {
+    await writeFile(
+      qaClusterThemeSupportPromptPath,
+      createStarterQaClusterThemeSupportPrompt(),
+      "utf8"
+    );
+  }
+
+  if (options.force || !(await fileExists(qaThemeMergeReviewPromptPath))) {
+    await writeFile(
+      qaThemeMergeReviewPromptPath,
+      createStarterQaThemeMergeReviewPrompt(),
       "utf8"
     );
   }
@@ -145,7 +169,7 @@ function printNextSteps(rootDir: string, configPath: string): void {
     `1. cd ${rootDir}`,
     "2. broadly ingest ./path/to/source.csv",
     "3. broadly models add",
-    "4. Review and edit prompts/opinion-extraction.md, the analysis prompt files, and prompts/qa-cluster-membership.md for your domain.",
+    "4. Review and edit prompts/opinion-extraction.md, the analysis prompt files, and the QA prompt files for your domain.",
     "5. Edit broadly.yaml with questions, opinion extractions, analysis views, and qa_model."
   ];
 
@@ -398,6 +422,54 @@ You will receive:
 
 \`\`\`text
 Verdict: fit | borderline | outlier
+Confidence: high | medium | low
+Rationale: One or two sentences explaining the judgment
+\`\`\`
+`;
+}
+
+function createStarterQaClusterThemeSupportPrompt(): string {
+  return `# QA Cluster Theme Support Prompt
+
+You are evaluating whether a cluster's label and summary are supported by sampled source opinions from that cluster.
+
+## Rules
+
+- Return plain text only using the exact header format defined below.
+- Do not wrap the response in code fences.
+- Use \`supported\` when the sampled opinions clearly justify the label and summary.
+- Use \`mixed\` when the label or summary is only partly supported.
+- Use \`unsupported\` when the label and summary do not match the sampled opinions well.
+- Keep the rationale brief and concrete.
+
+## Output format
+
+\`\`\`text
+Verdict: supported | mixed | unsupported
+Confidence: high | medium | low
+Rationale: One or two sentences explaining the judgment
+\`\`\`
+`;
+}
+
+function createStarterQaThemeMergeReviewPrompt(): string {
+  return `# QA Theme Merge Review Prompt
+
+You are evaluating whether a higher-level theme groups lower-level clusters in a semantically coherent way.
+
+## Rules
+
+- Return plain text only using the exact header format defined below.
+- Do not wrap the response in code fences.
+- Use \`coherent\` when the grouped clusters clearly belong together.
+- Use \`borderline\` when the grouping is plausible but somewhat over-broad.
+- Use \`overmerged\` when materially distinct clusters were grouped together.
+- Keep the rationale brief and concrete.
+
+## Output format
+
+\`\`\`text
+Verdict: coherent | borderline | overmerged
 Confidence: high | medium | low
 Rationale: One or two sentences explaining the judgment
 \`\`\`

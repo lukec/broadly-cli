@@ -9,7 +9,10 @@ import { readCurrentRunId, writeCurrentRunId } from "../projectArtifacts.js";
 import { withProjectActionLog } from "../projectLog.js";
 import { resolveCommandProjectRoot } from "./projectDashboard.js";
 
-type QaPhase = "phase1-structural" | "phase2-cluster-membership";
+type QaPhase =
+  | "phase1-structural"
+  | "phase2-cluster-membership"
+  | "phase3-theme-support";
 
 type IssueCategory =
   | "run-integrity"
@@ -17,10 +20,14 @@ type IssueCategory =
   | "view-integrity"
   | "evidence-integrity"
   | "soft-consistency"
-  | "cluster-membership-quality";
+  | "cluster-membership-quality"
+  | "cluster-theme-support"
+  | "theme-merge-quality";
 
 type ClusterMembershipVerdict = "fit" | "borderline" | "outlier";
 type ClusterMembershipConfidence = "high" | "medium" | "low";
+type ClusterThemeSupportVerdict = "supported" | "mixed" | "unsupported";
+type ThemeMergeVerdict = "coherent" | "borderline" | "overmerged";
 
 export interface QaCommandOptions {
   project?: string;
@@ -32,6 +39,7 @@ export interface QaCommandOptions {
   qaAll?: boolean;
   view?: string[];
   clusterLimit?: number;
+  themeLimit?: number;
 }
 
 interface IssueRecord {
@@ -50,6 +58,7 @@ interface QaSamplingConfig {
   samplePercent: number | null;
   viewFilter: string[];
   clusterLimit: number | null;
+  themeLimit: number | null;
 }
 
 interface QaRunManifest {
@@ -66,6 +75,8 @@ interface QaRunManifest {
     qaModelAlias: string | null;
     qaModelFingerprint: string | null;
     clusterMembershipPromptSha256: string | null;
+    clusterThemeSupportPromptSha256: string | null;
+    themeMergeReviewPromptSha256: string | null;
     sampling: QaSamplingConfig;
   };
   input: {
@@ -79,6 +90,14 @@ interface QaRunManifest {
         path: string | null;
         sha256: string | null;
       };
+      clusterThemeSupport: {
+        path: string | null;
+        sha256: string | null;
+      };
+      themeMergeReview: {
+        path: string | null;
+        sha256: string | null;
+      };
     };
   };
   output: {
@@ -88,11 +107,14 @@ interface QaRunManifest {
     provenanceCheckPath: string;
     provenanceFailuresPath: string;
     clusterMembershipDir: string;
+    themeReviewDir: string;
     issueCount: number;
     errorCount: number;
     warningCount: number;
     clusterMembershipArtifacts: number;
     clusterOutlierArtifacts: number;
+    clusterThemeSupportArtifacts: number;
+    themeMergeReviewArtifacts: number;
   };
 }
 
@@ -115,7 +137,9 @@ interface Scorecard {
     | "viewIntegrity"
     | "evidenceIntegrity"
     | "softConsistency"
-    | "clusterMembershipQuality",
+    | "clusterMembershipQuality"
+    | "clusterThemeSupport"
+    | "themeMergeQuality",
     ScorecardCategory
   >;
   totals: {
@@ -207,6 +231,72 @@ interface ClusterMembershipSummary {
   outlier: number;
 }
 
+interface ClusterThemeSupportReviewArtifact {
+  viewName: string;
+  clusterId: number;
+  clusterLabel: string;
+  clusterSummary: string;
+  clusterArtifactPath: string;
+  qaModel: {
+    name: string;
+    provider: string;
+    modelId: string;
+    region: string;
+  };
+  prompt: {
+    path: string | null;
+    sha256: string;
+  };
+  sampling: {
+    clusterSize: number;
+    qaAll: boolean;
+    sampleSize: number | null;
+    samplePercent: number | null;
+    sampledOpinionCount: number;
+  };
+  verdict: ClusterThemeSupportVerdict;
+  confidence: ClusterMembershipConfidence;
+  rationale: string;
+  rawText: string;
+  stopReason: string | null;
+  sampledOpinions: Array<{ opinionId: string; opinionText: string; excerpt: string | null }>;
+}
+
+interface ThemeMergeReviewArtifact {
+  viewName: string;
+  themeId: number | string;
+  themeLabel: string;
+  themeSummary: string;
+  hierarchyArtifactPath: string;
+  qaModel: {
+    name: string;
+    provider: string;
+    modelId: string;
+    region: string;
+  };
+  prompt: {
+    path: string | null;
+    sha256: string;
+  };
+  verdict: ThemeMergeVerdict;
+  confidence: ClusterMembershipConfidence;
+  rationale: string;
+  rawText: string;
+  stopReason: string | null;
+  clusterIds: Array<number | string>;
+}
+
+interface ThemeSupportSummary {
+  clusterThemeSupportArtifacts: number;
+  themeMergeReviewArtifacts: number;
+  supported: number;
+  mixed: number;
+  unsupported: number;
+  coherent: number;
+  borderline: number;
+  overmerged: number;
+}
+
 interface LoadedAnalysisManifest {
   runId?: string;
   analysisRunId?: string;
@@ -233,7 +323,13 @@ interface LoadedClusterArtifact {
 interface LoadedHierarchyArtifact {
   status?: string;
   sourceClusterArtifactPath?: string;
-  themes?: Array<{ clusterIds?: Array<string | number> }>;
+  themes?: Array<{
+    themeId?: number | string;
+    themeLabel?: string;
+    themeSummary?: string;
+    clusterIds?: Array<string | number>;
+    mergeRationale?: string;
+  }>;
 }
 
 interface LoadedViewArtifact {
@@ -311,8 +407,11 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
         reportBundleSource === null ? null : (JSON.parse(reportBundleSource) as LoadedReportBundle);
 
       const clusterMembershipPrompt = await resolveClusterMembershipPrompt(projectPaths.promptsDir);
+      const clusterThemeSupportPrompt = await resolveClusterThemeSupportPrompt(projectPaths.promptsDir);
+      const themeMergeReviewPrompt = await resolveThemeMergeReviewPrompt(projectPaths.promptsDir);
       const qaModel =
-        phases.includes("phase2-cluster-membership") === false
+        phases.includes("phase2-cluster-membership") === false &&
+        phases.includes("phase3-theme-support") === false
           ? null
           : resolveQaModel(config, options.model);
 
@@ -325,9 +424,11 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
       const provenanceCheckPath = path.join(qaDir, "provenance-check.json");
       const provenanceFailuresPath = path.join(qaDir, "provenance-failures.jsonl");
       const clusterMembershipDir = path.join(qaDir, "clusters");
+      const themeReviewDir = path.join(qaDir, "themes");
 
       await mkdir(qaDir, { recursive: true });
       await mkdir(clusterMembershipDir, { recursive: true });
+      await mkdir(themeReviewDir, { recursive: true });
       await writeCurrentRunId(currentRunPointerPath, qaRunId);
 
       const issues: IssueRecord[] = [];
@@ -349,17 +450,22 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
           qaModel,
           sampling,
           clusterMembershipPrompt,
+          clusterThemeSupportPrompt,
+          themeMergeReviewPrompt,
           status: "running",
           qaDir,
           scorecardPath,
           provenanceCheckPath,
           provenanceFailuresPath,
           clusterMembershipDir,
+          themeReviewDir,
           issueCount: 0,
           errorCount: 0,
           warningCount: 0,
           clusterMembershipArtifacts: 0,
-          clusterOutlierArtifacts: 0
+          clusterOutlierArtifacts: 0,
+          clusterThemeSupportArtifacts: 0,
+          themeMergeReviewArtifacts: 0
         })
       );
 
@@ -431,8 +537,31 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
               sampling,
               addIssue
             });
+      const themeSupportSummary =
+        qaModel === null || phases.includes("phase3-theme-support") === false
+          ? null
+          : await runThemeSupportPhase({
+              projectRoot,
+              qaModel,
+              clusterThemeSupportPrompt,
+              themeMergeReviewPrompt,
+              viewArtifacts,
+              hierarchyArtifacts,
+              clusterArtifactByPath,
+              opinionArtifacts,
+              themeReviewDir,
+              sampling,
+              addIssue
+            });
 
-      const scorecard = buildScorecard(qaRunId, analysisRunId, phases, issues, clusterMembershipSummary);
+      const scorecard = buildScorecard(
+        qaRunId,
+        analysisRunId,
+        phases,
+        issues,
+        clusterMembershipSummary,
+        themeSupportSummary
+      );
       const provenanceCheck: ProvenanceCheckArtifact = {
         qaRunId,
         analysisRunId,
@@ -473,17 +602,22 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
           qaModel,
           sampling,
           clusterMembershipPrompt,
+          clusterThemeSupportPrompt,
+          themeMergeReviewPrompt,
           status: scorecard.status,
           qaDir,
           scorecardPath,
           provenanceCheckPath,
           provenanceFailuresPath,
           clusterMembershipDir,
+          themeReviewDir,
           issueCount: issues.length,
           errorCount: provenanceCheck.errorCount,
           warningCount: provenanceCheck.warningCount,
           clusterMembershipArtifacts: clusterMembershipSummary?.artifactsWritten ?? 0,
-          clusterOutlierArtifacts: clusterMembershipSummary?.outlierArtifactsWritten ?? 0
+          clusterOutlierArtifacts: clusterMembershipSummary?.outlierArtifactsWritten ?? 0,
+          clusterThemeSupportArtifacts: themeSupportSummary?.clusterThemeSupportArtifacts ?? 0,
+          themeMergeReviewArtifacts: themeSupportSummary?.themeMergeReviewArtifacts ?? 0
         })
       );
 
@@ -498,6 +632,11 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
           ? [
               `Sampling: ${formatSamplingLabel(sampling)}`,
               `Cluster membership reviews: ${clusterMembershipSummary?.reviewed ?? 0}`
+            ]
+          : []),
+        ...(phases.includes("phase3-theme-support")
+          ? [
+              `Theme support reviews: ${themeSupportSummary?.clusterThemeSupportArtifacts ?? 0} clusters · ${themeSupportSummary?.themeMergeReviewArtifacts ?? 0} themes`
             ]
           : []),
         `Status: ${scorecard.status}`,
@@ -690,6 +829,235 @@ async function runClusterMembershipPhase(options: {
   return summary;
 }
 
+async function runThemeSupportPhase(options: {
+  projectRoot: string;
+  qaModel: RegisteredModel;
+  clusterThemeSupportPrompt: { path: string | null; source: string; sha256: string };
+  themeMergeReviewPrompt: { path: string | null; source: string; sha256: string };
+  viewArtifacts: Array<JsonArtifact<LoadedViewArtifact>>;
+  hierarchyArtifacts: Array<JsonArtifact<LoadedHierarchyArtifact>>;
+  clusterArtifactByPath: Map<string, LoadedClusterArtifact>;
+  opinionArtifacts: Map<string, LoadedOpinionArtifact>;
+  themeReviewDir: string;
+  sampling: QaSamplingConfig;
+  addIssue: (issue: IssueRecord) => void;
+}): Promise<ThemeSupportSummary> {
+  const summary: ThemeSupportSummary = {
+    clusterThemeSupportArtifacts: 0,
+    themeMergeReviewArtifacts: 0,
+    supported: 0,
+    mixed: 0,
+    unsupported: 0,
+    coherent: 0,
+    borderline: 0,
+    overmerged: 0
+  };
+  const viewArtifactByName = new Map(
+    options.viewArtifacts.map((item) => [item.artifact.viewName ?? item.artifact.mode ?? path.basename(item.path, ".json"), item] as const)
+  );
+  const selectedViewNames = [...viewArtifactByName.keys()]
+    .filter((viewName) =>
+      options.sampling.viewFilter.length === 0 || options.sampling.viewFilter.includes(viewName)
+    )
+    .sort((left, right) => left.localeCompare(right));
+
+  if (selectedViewNames.length === 0) {
+    options.addIssue({
+      phase: "phase3-theme-support",
+      severity: "warning",
+      category: "cluster-theme-support",
+      code: "no-views-selected",
+      message: "No views were eligible for theme-support QA."
+    });
+    return summary;
+  }
+
+  process.stdout.write(`\nTheme support QA\n`);
+
+  for (const viewName of selectedViewNames) {
+    const viewArtifact = viewArtifactByName.get(viewName);
+
+    if (viewArtifact === undefined || typeof viewArtifact.artifact.chosenClusterArtifactPath !== "string") {
+      continue;
+    }
+
+    const clusterArtifact = options.clusterArtifactByPath.get(viewArtifact.artifact.chosenClusterArtifactPath);
+
+    if (clusterArtifact === undefined) {
+      continue;
+    }
+
+    const clusterTargets = (clusterArtifact.clusters ?? [])
+      .filter((cluster): cluster is NonNullable<LoadedClusterArtifact["clusters"]>[number] & { clusterId: number } => typeof cluster.clusterId === "number")
+      .sort((left, right) => left.clusterId - right.clusterId)
+      .slice(0, options.sampling.clusterLimit ?? Number.MAX_SAFE_INTEGER);
+
+    for (const cluster of clusterTargets) {
+      const memberOpinions = (clusterArtifact.members ?? [])
+        .filter(
+          (member) =>
+            member.clusterId === cluster.clusterId &&
+            typeof member.opinionId === "string" &&
+            options.opinionArtifacts.has(member.opinionId)
+        )
+        .map((member) => options.opinionArtifacts.get(member.opinionId as string) as LoadedOpinionArtifact)
+        .filter((opinion): opinion is LoadedOpinionArtifact & { opinionId: string; opinionText: string } => {
+          return typeof opinion.opinionId === "string" && typeof opinion.opinionText === "string";
+        });
+      const sampledOpinions = sampleOpinionsForCluster(memberOpinions, options.sampling);
+      const prompt = buildClusterThemeSupportPrompt({
+        instructions: options.clusterThemeSupportPrompt.source,
+        viewName,
+        cluster,
+        sampledOpinions
+      });
+
+      try {
+        const review = await runStructuredQaReview({
+          model: options.qaModel,
+          prompt,
+          projectRoot: options.projectRoot,
+          allowedVerdicts: ["supported", "mixed", "unsupported"]
+        });
+        const artifactPath = path.join(
+          options.themeReviewDir,
+          `${viewName}--cluster-${cluster.clusterId}-theme-support.json`
+        );
+        const artifact: ClusterThemeSupportReviewArtifact = {
+          viewName,
+          clusterId: cluster.clusterId,
+          clusterLabel: cluster.label ?? `Cluster ${cluster.clusterId}`,
+          clusterSummary: cluster.summary ?? "",
+          clusterArtifactPath: viewArtifact.artifact.chosenClusterArtifactPath,
+          qaModel: {
+            name: options.qaModel.name,
+            provider: options.qaModel.provider,
+            modelId: options.qaModel.modelId,
+            region: options.qaModel.region
+          },
+          prompt: {
+            path: options.clusterThemeSupportPrompt.path,
+            sha256: options.clusterThemeSupportPrompt.sha256
+          },
+          sampling: {
+            clusterSize: memberOpinions.length,
+            qaAll: options.sampling.qaAll,
+            sampleSize: options.sampling.sampleSize,
+            samplePercent: options.sampling.samplePercent,
+            sampledOpinionCount: sampledOpinions.length
+          },
+          verdict: review.verdict as ClusterThemeSupportVerdict,
+          confidence: review.confidence,
+          rationale: review.rationale,
+          rawText: review.rawText,
+          stopReason: review.stopReason,
+          sampledOpinions: sampledOpinions.map((opinion) => ({
+            opinionId: opinion.opinionId,
+            opinionText: opinion.opinionText,
+            excerpt: opinion.excerpt ?? null
+          }))
+        };
+        await writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
+        summary.clusterThemeSupportArtifacts += 1;
+        summary[review.verdict as "supported" | "mixed" | "unsupported"] += 1;
+      } catch (error) {
+        options.addIssue({
+          phase: "phase3-theme-support",
+          severity: "warning",
+          category: "cluster-theme-support",
+          code: "cluster-theme-support-review-failed",
+          message: `Theme-support review failed for view '${viewName}' cluster '${cluster.clusterId}'.`,
+          artifactPath: viewArtifact.artifact.chosenClusterArtifactPath,
+          details: {
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+    }
+  }
+
+  const hierarchyItems = options.hierarchyArtifacts
+    .filter((item) => {
+      const viewName = path.basename(item.path, ".json");
+      return options.sampling.viewFilter.length === 0 || options.sampling.viewFilter.includes(viewName);
+    })
+    .sort((left, right) => left.path.localeCompare(right.path));
+
+  for (const hierarchyItem of hierarchyItems) {
+    const viewName = path.basename(hierarchyItem.path, ".json");
+    const clusterArtifact =
+      typeof hierarchyItem.artifact.sourceClusterArtifactPath === "string"
+        ? options.clusterArtifactByPath.get(hierarchyItem.artifact.sourceClusterArtifactPath)
+        : undefined;
+    const themes = [...(hierarchyItem.artifact.themes ?? [])].slice(
+      0,
+      options.sampling.themeLimit ?? Number.MAX_SAFE_INTEGER
+    );
+
+    for (const theme of themes) {
+      const prompt = buildThemeMergeReviewPrompt({
+        instructions: options.themeMergeReviewPrompt.source,
+        viewName,
+        theme,
+        clusterArtifact
+      });
+
+      try {
+        const review = await runStructuredQaReview({
+          model: options.qaModel,
+          prompt,
+          projectRoot: options.projectRoot,
+          allowedVerdicts: ["coherent", "borderline", "overmerged"]
+        });
+        const artifactPath = path.join(
+          options.themeReviewDir,
+          `${viewName}--theme-${String(theme.themeId ?? "unknown")}-merge-review.json`
+        );
+        const artifact: ThemeMergeReviewArtifact = {
+          viewName,
+          themeId: theme.themeId ?? "unknown",
+          themeLabel: theme.themeLabel ?? "(missing)",
+          themeSummary: theme.themeSummary ?? "",
+          hierarchyArtifactPath: hierarchyItem.path,
+          qaModel: {
+            name: options.qaModel.name,
+            provider: options.qaModel.provider,
+            modelId: options.qaModel.modelId,
+            region: options.qaModel.region
+          },
+          prompt: {
+            path: options.themeMergeReviewPrompt.path,
+            sha256: options.themeMergeReviewPrompt.sha256
+          },
+          verdict: review.verdict as ThemeMergeVerdict,
+          confidence: review.confidence,
+          rationale: review.rationale,
+          rawText: review.rawText,
+          stopReason: review.stopReason,
+          clusterIds: theme.clusterIds ?? []
+        };
+        await writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
+        summary.themeMergeReviewArtifacts += 1;
+        summary[review.verdict as "coherent" | "borderline" | "overmerged"] += 1;
+      } catch (error) {
+        options.addIssue({
+          phase: "phase3-theme-support",
+          severity: "warning",
+          category: "theme-merge-quality",
+          code: "theme-merge-review-failed",
+          message: `Theme-merge review failed for view '${viewName}' theme '${String(theme.themeId ?? "unknown")}'.`,
+          artifactPath: hierarchyItem.path,
+          details: {
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+    }
+  }
+
+  return summary;
+}
+
 function buildClusterSelectionTargets(options: {
   viewArtifacts: Array<JsonArtifact<LoadedViewArtifact>>;
   clusterArtifactByPath: Map<string, LoadedClusterArtifact>;
@@ -779,8 +1147,33 @@ async function runMembershipReview(options: {
   rawText: string;
   stopReason: string | null;
 }> {
+  return runStructuredQaReview({
+    model: options.model,
+    prompt: options.prompt,
+    projectRoot: options.projectRoot,
+    allowedVerdicts: ["fit", "borderline", "outlier"]
+  }) as Promise<{
+    verdict: ClusterMembershipVerdict;
+    confidence: ClusterMembershipConfidence;
+    rationale: string;
+    rawText: string;
+    stopReason: string | null;
+  }>;
+}
+
+async function runStructuredQaReview(options: {
+  model: RegisteredModel;
+  prompt: string;
+  projectRoot: string;
+  allowedVerdicts: string[];
+}): Promise<{
+  verdict: string;
+  confidence: ClusterMembershipConfidence;
+  rationale: string;
+  rawText: string;
+  stopReason: string | null;
+}> {
   let latestText = "";
-  let latestStopReason: string | null = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const prompt =
@@ -795,8 +1188,7 @@ async function runMembershipReview(options: {
       temperature: 0
     });
     latestText = result.text;
-    latestStopReason = result.stopReason;
-    const parsed = parseClusterMembershipResponse(result.text);
+    const parsed = parseHeaderVerdictResponse(result.text, options.allowedVerdicts);
 
     if (parsed !== null) {
       return {
@@ -807,13 +1199,15 @@ async function runMembershipReview(options: {
     }
   }
 
-  throw new Error(`Model response did not match the required cluster membership format.\n\n${latestText}`);
+  throw new Error(`Model response did not match the required QA format.\n\n${latestText}`);
 }
 
-function parseClusterMembershipResponse(
+function parseHeaderVerdictResponse(
   source: string
+  ,
+  allowedVerdicts: string[]
 ): {
-  verdict: ClusterMembershipVerdict;
+  verdict: string;
   confidence: ClusterMembershipConfidence;
   rationale: string;
 } | null {
@@ -847,7 +1241,8 @@ function parseClusterMembershipResponse(
   const rationale = values.get("rationale")?.trim();
 
   if (
-    (verdictValue !== "fit" && verdictValue !== "borderline" && verdictValue !== "outlier") ||
+    verdictValue === undefined ||
+    allowedVerdicts.includes(verdictValue) === false ||
     (confidenceValue !== "high" && confidenceValue !== "medium" && confidenceValue !== "low")
   ) {
     return null;
@@ -896,6 +1291,77 @@ function buildClusterMembershipPrompt(options: {
     "",
     "## Task",
     "Judge whether the candidate opinion belongs inside this cluster."
+  ].join("\n");
+}
+
+function buildClusterThemeSupportPrompt(options: {
+  instructions: string;
+  viewName: string;
+  cluster: NonNullable<LoadedClusterArtifact["clusters"]>[number];
+  sampledOpinions: Array<LoadedOpinionArtifact & { opinionId: string; opinionText: string }>;
+}): string {
+  const sampledBlock = options.sampledOpinions
+    .map((opinion, index) =>
+      [
+        `Sampled-${index + 1}-Opinion-ID: ${opinion.opinionId}`,
+        `Sampled-${index + 1}-Opinion-Text: ${opinion.opinionText}`,
+        `Sampled-${index + 1}-Opinion-Excerpt: ${opinion.excerpt ?? "(none)"}`
+      ].join("\n")
+    )
+    .join("\n\n");
+
+  return [
+    options.instructions.trim(),
+    "",
+    "## Cluster Under Review",
+    `View-Name: ${options.viewName}`,
+    `Cluster-ID: ${String(options.cluster.clusterId ?? "unknown")}`,
+    `Cluster-Label: ${options.cluster.label ?? "(missing)"}`,
+    `Cluster-Summary: ${options.cluster.summary ?? "(missing)"}`,
+    `Cluster-Top-Terms: ${(options.cluster.topTerms ?? []).join(" | ") || "(none)"}`,
+    "",
+    "## Sampled Source Opinions",
+    sampledBlock.length === 0 ? "(none)" : sampledBlock
+  ].join("\n");
+}
+
+function buildThemeMergeReviewPrompt(options: {
+  instructions: string;
+  viewName: string;
+  theme: NonNullable<LoadedHierarchyArtifact["themes"]>[number];
+  clusterArtifact: LoadedClusterArtifact | undefined;
+}): string {
+  const clusterIds = options.theme.clusterIds ?? [];
+  const referencedClusters = clusterIds
+    .map((clusterId) =>
+      (options.clusterArtifact?.clusters ?? []).find(
+        (cluster) => String(cluster.clusterId ?? "unknown") === String(clusterId)
+      )
+    )
+    .filter((cluster): cluster is NonNullable<LoadedClusterArtifact["clusters"]>[number] => cluster !== undefined);
+  const clusterBlock = referencedClusters
+    .map((cluster) =>
+      [
+        `Cluster-ID: ${String(cluster.clusterId ?? "unknown")}`,
+        `Cluster-Label: ${cluster.label ?? "(missing)"}`,
+        `Cluster-Summary: ${cluster.summary ?? "(missing)"}`
+      ].join("\n")
+    )
+    .join("\n\n");
+
+  return [
+    options.instructions.trim(),
+    "",
+    "## Theme Under Review",
+    `View-Name: ${options.viewName}`,
+    `Theme-ID: ${String(options.theme.themeId ?? "unknown")}`,
+    `Theme-Label: ${options.theme.themeLabel ?? "(missing)"}`,
+    `Theme-Summary: ${options.theme.themeSummary ?? "(missing)"}`,
+    `Theme-Cluster-IDs: ${clusterIds.map(String).join(" | ") || "(none)"}`,
+    `Theme-Merge-Rationale: ${options.theme.mergeRationale ?? "(missing)"}`,
+    "",
+    "## Included Clusters",
+    clusterBlock.length === 0 ? "(none)" : clusterBlock
   ].join("\n");
 }
 
@@ -1266,7 +1732,8 @@ function buildScorecard(
   analysisRunId: string,
   phases: QaPhase[],
   issues: IssueRecord[],
-  clusterMembershipSummary: ClusterMembershipSummary | null
+  clusterMembershipSummary: ClusterMembershipSummary | null,
+  themeSupportSummary: ThemeSupportSummary | null
 ): Scorecard {
   const categories: Scorecard["categories"] = {
     runIntegrity: buildIssueBackedCategory(phases, issues, "phase1-structural", "run-integrity"),
@@ -1277,6 +1744,14 @@ function buildScorecard(
     clusterMembershipQuality:
       phases.includes("phase2-cluster-membership") && clusterMembershipSummary !== null
         ? buildClusterMembershipCategory(clusterMembershipSummary, issues)
+        : createNotRunCategory(),
+    clusterThemeSupport:
+      phases.includes("phase3-theme-support") && themeSupportSummary !== null
+        ? buildClusterThemeSupportCategory(themeSupportSummary, issues)
+        : createNotRunCategory(),
+    themeMergeQuality:
+      phases.includes("phase3-theme-support") && themeSupportSummary !== null
+        ? buildThemeMergeCategory(themeSupportSummary, issues)
         : createNotRunCategory()
   };
 
@@ -1363,6 +1838,50 @@ function buildClusterMembershipCategory(
   };
 }
 
+function buildClusterThemeSupportCategory(
+  summary: ThemeSupportSummary,
+  issues: IssueRecord[]
+): ScorecardCategory {
+  const categoryIssues = issues.filter((issue) => issue.category === "cluster-theme-support");
+  const warnings = categoryIssues.filter((issue) => issue.severity === "warning").length;
+  const errors = categoryIssues.filter((issue) => issue.severity === "error").length;
+  const checks = summary.supported + summary.mixed + summary.unsupported;
+  const passed = summary.supported + summary.mixed;
+  const score =
+    checks === 0 ? 0 : Math.round(((summary.supported + summary.mixed * 0.5) / checks) * 100);
+
+  return {
+    status: "scored",
+    checks,
+    passed,
+    errors,
+    warnings,
+    score
+  };
+}
+
+function buildThemeMergeCategory(
+  summary: ThemeSupportSummary,
+  issues: IssueRecord[]
+): ScorecardCategory {
+  const categoryIssues = issues.filter((issue) => issue.category === "theme-merge-quality");
+  const warnings = categoryIssues.filter((issue) => issue.severity === "warning").length;
+  const errors = categoryIssues.filter((issue) => issue.severity === "error").length;
+  const checks = summary.coherent + summary.borderline + summary.overmerged;
+  const passed = summary.coherent + summary.borderline;
+  const score =
+    checks === 0 ? 0 : Math.round(((summary.coherent + summary.borderline * 0.5) / checks) * 100);
+
+  return {
+    status: "scored",
+    checks,
+    passed,
+    errors,
+    warnings,
+    score
+  };
+}
+
 function createNotRunCategory(): ScorecardCategory {
   return {
     status: "not-run",
@@ -1385,6 +1904,8 @@ function buildQaManifest(options: {
   qaModel: RegisteredModel | null;
   sampling: QaSamplingConfig;
   clusterMembershipPrompt: { path: string | null; source: string; sha256: string };
+  clusterThemeSupportPrompt: { path: string | null; source: string; sha256: string };
+  themeMergeReviewPrompt: { path: string | null; source: string; sha256: string };
   status: QaRunManifest["status"];
   qaDir: string;
   manifestPath: string;
@@ -1392,11 +1913,14 @@ function buildQaManifest(options: {
   provenanceCheckPath: string;
   provenanceFailuresPath: string;
   clusterMembershipDir: string;
+  themeReviewDir: string;
   issueCount: number;
   errorCount: number;
   warningCount: number;
   clusterMembershipArtifacts: number;
   clusterOutlierArtifacts: number;
+  clusterThemeSupportArtifacts: number;
+  themeMergeReviewArtifacts: number;
 }): QaRunManifest {
   const timestamp = new Date().toISOString();
 
@@ -1415,6 +1939,10 @@ function buildQaManifest(options: {
       qaModelFingerprint: options.qaModel === null ? null : modelFingerprintValue(options.qaModel),
       clusterMembershipPromptSha256:
         options.phases.includes("phase2-cluster-membership") ? options.clusterMembershipPrompt.sha256 : null,
+      clusterThemeSupportPromptSha256:
+        options.phases.includes("phase3-theme-support") ? options.clusterThemeSupportPrompt.sha256 : null,
+      themeMergeReviewPromptSha256:
+        options.phases.includes("phase3-theme-support") ? options.themeMergeReviewPrompt.sha256 : null,
       sampling: options.sampling
     },
     input: {
@@ -1433,6 +1961,26 @@ function buildQaManifest(options: {
             options.phases.includes("phase2-cluster-membership") === false
               ? null
               : options.clusterMembershipPrompt.sha256
+        },
+        clusterThemeSupport: {
+          path:
+            options.phases.includes("phase3-theme-support") === false
+              ? null
+              : options.clusterThemeSupportPrompt.path,
+          sha256:
+            options.phases.includes("phase3-theme-support") === false
+              ? null
+              : options.clusterThemeSupportPrompt.sha256
+        },
+        themeMergeReview: {
+          path:
+            options.phases.includes("phase3-theme-support") === false
+              ? null
+              : options.themeMergeReviewPrompt.path,
+          sha256:
+            options.phases.includes("phase3-theme-support") === false
+              ? null
+              : options.themeMergeReviewPrompt.sha256
         }
       }
     },
@@ -1443,11 +1991,14 @@ function buildQaManifest(options: {
       provenanceCheckPath: options.provenanceCheckPath,
       provenanceFailuresPath: options.provenanceFailuresPath,
       clusterMembershipDir: options.clusterMembershipDir,
+      themeReviewDir: options.themeReviewDir,
       issueCount: options.issueCount,
       errorCount: options.errorCount,
       warningCount: options.warningCount,
       clusterMembershipArtifacts: options.clusterMembershipArtifacts,
-      clusterOutlierArtifacts: options.clusterOutlierArtifacts
+      clusterOutlierArtifacts: options.clusterOutlierArtifacts,
+      clusterThemeSupportArtifacts: options.clusterThemeSupportArtifacts,
+      themeMergeReviewArtifacts: options.themeMergeReviewArtifacts
     }
   };
 }
@@ -1587,6 +2138,36 @@ async function resolveClusterMembershipPrompt(promptsDir: string): Promise<{
   };
 }
 
+async function resolveClusterThemeSupportPrompt(promptsDir: string): Promise<{
+  path: string | null;
+  source: string;
+  sha256: string;
+}> {
+  const filePath = path.join(promptsDir, "qa-cluster-theme-support.md");
+  const source = await readFile(filePath, "utf8").catch(() => createDefaultClusterThemeSupportPrompt());
+
+  return {
+    path: (await fileExists(filePath)) ? filePath : null,
+    source,
+    sha256: sha256Hex(source)
+  };
+}
+
+async function resolveThemeMergeReviewPrompt(promptsDir: string): Promise<{
+  path: string | null;
+  source: string;
+  sha256: string;
+}> {
+  const filePath = path.join(promptsDir, "qa-theme-merge-review.md");
+  const source = await readFile(filePath, "utf8").catch(() => createDefaultThemeMergeReviewPrompt());
+
+  return {
+    path: (await fileExists(filePath)) ? filePath : null,
+    source,
+    sha256: sha256Hex(source)
+  };
+}
+
 function createDefaultClusterMembershipPrompt(): string {
   return `# QA Cluster Membership Prompt
 
@@ -1608,6 +2189,54 @@ Judge only the candidate opinion shown in the prompt.
 
 \`\`\`text
 Verdict: fit | borderline | outlier
+Confidence: high | medium | low
+Rationale: One or two sentences explaining the judgment
+\`\`\`
+`;
+}
+
+function createDefaultClusterThemeSupportPrompt(): string {
+  return `# QA Cluster Theme Support Prompt
+
+You are reviewing whether a cluster's label and summary are actually supported by sampled source opinions from that cluster.
+
+## Rules
+
+- Return plain text only using the exact header format below.
+- Do not wrap the response in code fences.
+- Use \`supported\` when the sampled opinions clearly justify the label and summary.
+- Use \`mixed\` when the cluster theme is partly supported but too broad, too narrow, or not well-centered.
+- Use \`unsupported\` when the label and summary do not match the sampled opinions well.
+- Keep the rationale brief and concrete.
+
+## Output format
+
+\`\`\`text
+Verdict: supported | mixed | unsupported
+Confidence: high | medium | low
+Rationale: One or two sentences explaining the judgment
+\`\`\`
+`;
+}
+
+function createDefaultThemeMergeReviewPrompt(): string {
+  return `# QA Theme Merge Review Prompt
+
+You are reviewing whether a higher-level theme groups lower-level clusters in a semantically coherent way.
+
+## Rules
+
+- Return plain text only using the exact header format below.
+- Do not wrap the response in code fences.
+- Use \`coherent\` when the grouped clusters clearly belong together.
+- Use \`borderline\` when the grouping is mostly plausible but somewhat over-broad or fuzzy.
+- Use \`overmerged\` when materially distinct clusters were grouped together.
+- Keep the rationale brief and concrete.
+
+## Output format
+
+\`\`\`text
+Verdict: coherent | borderline | overmerged
 Confidence: high | medium | low
 Rationale: One or two sentences explaining the judgment
 \`\`\`
@@ -1642,7 +2271,16 @@ function resolveQaPhases(values: string[] | undefined): QaPhase[] {
       continue;
     }
 
-    throw new Error(`Unknown QA phase '${value}'. Supported values: structural, cluster-membership.`);
+    if (
+      normalized === "phase3" ||
+      normalized === "theme-support" ||
+      normalized === "phase3-theme-support"
+    ) {
+      phases.add("phase3-theme-support");
+      continue;
+    }
+
+    throw new Error(`Unknown QA phase '${value}'. Supported values: structural, cluster-membership, theme-support.`);
   }
 
   return [...phases];
@@ -1655,7 +2293,8 @@ function resolveSamplingConfig(options: QaCommandOptions): QaSamplingConfig {
       sampleSize: null,
       samplePercent: null,
       viewFilter: options.view ?? [],
-      clusterLimit: options.clusterLimit ?? null
+      clusterLimit: options.clusterLimit ?? null,
+      themeLimit: options.themeLimit ?? null
     };
   }
 
@@ -1664,7 +2303,8 @@ function resolveSamplingConfig(options: QaCommandOptions): QaSamplingConfig {
     sampleSize: options.sampleSize ?? null,
     samplePercent: options.samplePercent ?? null,
     viewFilter: options.view ?? [],
-    clusterLimit: options.clusterLimit ?? null
+    clusterLimit: options.clusterLimit ?? null,
+    themeLimit: options.themeLimit ?? null
   };
 }
 
@@ -1723,6 +2363,10 @@ function formatSamplingLabel(sampling: QaSamplingConfig): string {
 
   if (sampling.clusterLimit !== null) {
     parts.push(`cluster-limit=${sampling.clusterLimit}`);
+  }
+
+  if (sampling.themeLimit !== null) {
+    parts.push(`theme-limit=${sampling.themeLimit}`);
   }
 
   return parts.join(" · ");

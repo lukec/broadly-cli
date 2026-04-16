@@ -117,7 +117,7 @@ program
   .option("--run <runId>", "Analysis run id to review; defaults to the current analysis run, then latest")
   .option(
     "--phase <name>",
-    "QA phase to run; repeat for multiple phases (structural, cluster-membership)",
+    "QA phase to run; repeat for multiple phases (structural, cluster-membership, theme-support)",
     collectOptionValue,
     []
   )
@@ -127,6 +127,7 @@ program
   .option("--qa-all", "Review all eligible opinions instead of sampling", false)
   .option("--view <name>", "Limit semantic QA to one analysis view; repeatable", collectOptionValue, [])
   .option("--cluster-limit <count>", "Limit semantic QA to the first N eligible clusters", parsePositiveInteger)
+  .option("--theme-limit <count>", "Limit theme-support QA to the first N eligible themes", parsePositiveInteger)
   .action(
     async (options: {
       project?: string;
@@ -138,6 +139,7 @@ program
       qaAll: boolean;
       view: string[];
       clusterLimit?: number;
+      themeLimit?: number;
     }) => {
       await runQa({
         ...(options.project === undefined ? {} : { project: options.project }),
@@ -148,7 +150,8 @@ program
         ...(options.samplePercent === undefined ? {} : { samplePercent: options.samplePercent }),
         ...(options.qaAll === true ? { qaAll: true } : {}),
         ...(options.view.length === 0 ? {} : { view: options.view }),
-        ...(options.clusterLimit === undefined ? {} : { clusterLimit: options.clusterLimit })
+        ...(options.clusterLimit === undefined ? {} : { clusterLimit: options.clusterLimit }),
+        ...(options.themeLimit === undefined ? {} : { themeLimit: options.themeLimit })
       });
     }
   );
