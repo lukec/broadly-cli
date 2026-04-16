@@ -2,30 +2,54 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import { parseProjectConfig } from "@broadly/config";
+import { parseProjectConfig, type BroadlyProjectConfig } from "@broadly/config";
 import { resolveProjectPaths, sha256Hex } from "@broadly/core";
+import { type RegisteredModel, runTextPromptWithModel } from "../modelRuntime.js";
 import { readCurrentRunId, writeCurrentRunId } from "../projectArtifacts.js";
 import { withProjectActionLog } from "../projectLog.js";
 import { resolveCommandProjectRoot } from "./projectDashboard.js";
 
+type QaPhase = "phase1-structural" | "phase2-cluster-membership";
+
+type IssueCategory =
+  | "run-integrity"
+  | "cluster-integrity"
+  | "view-integrity"
+  | "evidence-integrity"
+  | "soft-consistency"
+  | "cluster-membership-quality";
+
+type ClusterMembershipVerdict = "fit" | "borderline" | "outlier";
+type ClusterMembershipConfidence = "high" | "medium" | "low";
+
 export interface QaCommandOptions {
   project?: string;
   run?: string;
+  phase?: string[];
+  model?: string;
+  sampleSize?: number;
+  samplePercent?: number;
+  qaAll?: boolean;
+  view?: string[];
+  clusterLimit?: number;
 }
 
 interface IssueRecord {
-  phase: "phase1-structural";
+  phase: QaPhase;
   severity: "error" | "warning";
-  category:
-    | "run-integrity"
-    | "cluster-integrity"
-    | "view-integrity"
-    | "evidence-integrity"
-    | "soft-consistency";
+  category: IssueCategory;
   code: string;
   message: string;
   artifactPath?: string;
   details?: Record<string, unknown>;
+}
+
+interface QaSamplingConfig {
+  qaAll: boolean;
+  sampleSize: number | null;
+  samplePercent: number | null;
+  viewFilter: string[];
+  clusterLimit: number | null;
 }
 
 interface QaRunManifest {
@@ -38,13 +62,24 @@ interface QaRunManifest {
     analysisRunId: string;
     analysisManifestSha256: string;
     reportBundleSha256: string | null;
-    phases: string[];
+    phases: QaPhase[];
+    qaModelAlias: string | null;
+    qaModelFingerprint: string | null;
+    clusterMembershipPromptSha256: string | null;
+    sampling: QaSamplingConfig;
   };
   input: {
     analysisManifestPath: string;
     reportBundlePath: string | null;
-    phases: string[];
+    phases: QaPhase[];
     qaModel?: string;
+    sampling: QaSamplingConfig;
+    prompts: {
+      clusterMembership: {
+        path: string | null;
+        sha256: string | null;
+      };
+    };
   };
   output: {
     qaDir: string;
@@ -52,18 +87,22 @@ interface QaRunManifest {
     scorecardPath: string;
     provenanceCheckPath: string;
     provenanceFailuresPath: string;
+    clusterMembershipDir: string;
     issueCount: number;
     errorCount: number;
     warningCount: number;
+    clusterMembershipArtifacts: number;
+    clusterOutlierArtifacts: number;
   };
 }
 
 interface ScorecardCategory {
+  status: "scored" | "not-run";
   checks: number;
   passed: number;
   errors: number;
   warnings: number;
-  score: number;
+  score: number | null;
 }
 
 interface Scorecard {
@@ -71,7 +110,12 @@ interface Scorecard {
   analysisRunId: string;
   createdAt: string;
   categories: Record<
-    "runIntegrity" | "clusterIntegrity" | "viewIntegrity" | "evidenceIntegrity" | "softConsistency",
+    | "runIntegrity"
+    | "clusterIntegrity"
+    | "viewIntegrity"
+    | "evidenceIntegrity"
+    | "softConsistency"
+    | "clusterMembershipQuality",
     ScorecardCategory
   >;
   totals: {
@@ -102,6 +146,67 @@ interface ProvenanceCheckArtifact {
   issues: IssueRecord[];
 }
 
+interface ClusterMembershipReviewArtifact {
+  viewName: string;
+  clusterId: number;
+  clusterLabel: string;
+  clusterSummary: string;
+  clusterArtifactPath: string;
+  qaModel: {
+    name: string;
+    provider: string;
+    modelId: string;
+    region: string;
+  };
+  prompt: {
+    path: string | null;
+    sha256: string;
+  };
+  sampling: {
+    clusterSize: number;
+    qaAll: boolean;
+    sampleSize: number | null;
+    samplePercent: number | null;
+    sampledOpinionCount: number;
+  };
+  totals: {
+    reviewed: number;
+    fit: number;
+    borderline: number;
+    outlier: number;
+    score: number;
+  };
+  reviews: ClusterMembershipReviewRecord[];
+}
+
+interface ClusterMembershipReviewRecord {
+  opinionId: string;
+  opinionText: string;
+  excerpt: string | null;
+  verdict: ClusterMembershipVerdict;
+  confidence: ClusterMembershipConfidence;
+  rationale: string;
+  rawText: string;
+  stopReason: string | null;
+}
+
+interface ClusterMembershipOutlierArtifact {
+  viewName: string;
+  clusterId: number;
+  clusterLabel: string;
+  clusterArtifactPath: string;
+  outliers: ClusterMembershipReviewRecord[];
+}
+
+interface ClusterMembershipSummary {
+  artifactsWritten: number;
+  outlierArtifactsWritten: number;
+  reviewed: number;
+  fit: number;
+  borderline: number;
+  outlier: number;
+}
+
 interface LoadedAnalysisManifest {
   runId?: string;
   analysisRunId?: string;
@@ -117,8 +222,11 @@ interface LoadedClusterArtifact {
   members?: Array<{ opinionId?: string; clusterId?: number }>;
   clusters?: Array<{
     clusterId?: number;
-    representativeOpinions?: Array<{ opinionId?: string }>;
+    size?: number;
+    label?: string;
     summary?: string;
+    topTerms?: string[];
+    representativeOpinions?: Array<{ opinionId?: string; opinionText?: string; excerpt?: string }>;
   }>;
 }
 
@@ -137,7 +245,10 @@ interface LoadedViewArtifact {
 
 interface LoadedReportBundle {
   analysisRunId?: string;
-  views?: Array<{ viewId?: string; clusters?: Array<{ clusterId?: string; evidenceQuotes?: Array<{ sourceId?: string; excerpt?: string }> }> }>;
+  views?: Array<{
+    viewId?: string;
+    clusters?: Array<{ clusterId?: string; evidenceQuotes?: Array<{ sourceId?: string; excerpt?: string }> }>;
+  }>;
 }
 
 interface LoadedOpinionArtifact {
@@ -155,15 +266,30 @@ interface LoadedNormalizedRecord {
   contentSha256?: string;
 }
 
+interface JsonArtifact<T> {
+  path: string;
+  artifact: T;
+}
+
+interface ClusterSelectionTarget {
+  viewName: string;
+  clusterArtifactPath: string;
+  clusterArtifact: LoadedClusterArtifact;
+  cluster: NonNullable<LoadedClusterArtifact["clusters"]>[number];
+}
+
 export async function runQa(options: QaCommandOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
   await withProjectActionLog({
     projectRoot,
     command: "qa",
     details: {
-      run: options.run ?? "(current-or-latest)"
+      run: options.run ?? "(current-or-latest)",
+      phases: resolveQaPhases(options.phase).join(", ")
     },
     action: async () => {
+      const phases = resolveQaPhases(options.phase);
+      const sampling = resolveSamplingConfig(options);
       const projectPaths = resolveProjectPaths(projectRoot);
       const config = parseProjectConfig(await readFile(projectPaths.configPath, "utf8"));
       const analysisRunId =
@@ -184,6 +310,12 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
       const reportBundle =
         reportBundleSource === null ? null : (JSON.parse(reportBundleSource) as LoadedReportBundle);
 
+      const clusterMembershipPrompt = await resolveClusterMembershipPrompt(projectPaths.promptsDir);
+      const qaModel =
+        phases.includes("phase2-cluster-membership") === false
+          ? null
+          : resolveQaModel(config, options.model);
+
       const qaRootDir = path.join(analysisRunDir, "qa");
       const qaRunId = createQaRunId();
       const qaDir = path.join(qaRootDir, qaRunId);
@@ -192,8 +324,10 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
       const scorecardPath = path.join(qaDir, "scorecard.json");
       const provenanceCheckPath = path.join(qaDir, "provenance-check.json");
       const provenanceFailuresPath = path.join(qaDir, "provenance-failures.jsonl");
+      const clusterMembershipDir = path.join(qaDir, "clusters");
 
       await mkdir(qaDir, { recursive: true });
+      await mkdir(clusterMembershipDir, { recursive: true });
       await writeCurrentRunId(currentRunPointerPath, qaRunId);
 
       const issues: IssueRecord[] = [];
@@ -201,24 +335,33 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
         issues.push(issue);
       };
 
-      await writeQaManifest({
+      await writeQaManifest(
         manifestPath,
-        qaRunId,
-        analysisRunId,
-        analysisManifestPath,
-        analysisManifestSha256: sha256Hex(analysisManifestSource),
-        reportBundleSha256: reportBundleSource === null ? null : sha256Hex(reportBundleSource),
-        reportBundlePath: reportBundleSource === null ? null : reportBundlePath,
-        qaDir,
-        scorecardPath,
-        provenanceCheckPath,
-        provenanceFailuresPath,
-        status: "running",
-        ...(config.qa_model === undefined ? {} : { qaModel: config.qa_model }),
-        issueCount: 0,
-        errorCount: 0,
-        warningCount: 0
-      });
+        buildQaManifest({
+          qaRunId,
+          analysisRunId,
+          analysisManifestPath,
+          manifestPath,
+          analysisManifestSha256: sha256Hex(analysisManifestSource),
+          reportBundlePath: reportBundleSource === null ? null : reportBundlePath,
+          reportBundleSha256: reportBundleSource === null ? null : sha256Hex(reportBundleSource),
+          phases,
+          qaModel,
+          sampling,
+          clusterMembershipPrompt,
+          status: "running",
+          qaDir,
+          scorecardPath,
+          provenanceCheckPath,
+          provenanceFailuresPath,
+          clusterMembershipDir,
+          issueCount: 0,
+          errorCount: 0,
+          warningCount: 0,
+          clusterMembershipArtifacts: 0,
+          clusterOutlierArtifacts: 0
+        })
+      );
 
       const clustersDir = path.join(analysisRunDir, "clusters");
       const hierarchiesDir = path.join(analysisRunDir, "hierarchies");
@@ -227,52 +370,69 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
       const clusterArtifacts = await loadJsonArtifacts<LoadedClusterArtifact>(clustersDir);
       const hierarchyArtifacts = await loadJsonArtifacts<LoadedHierarchyArtifact>(hierarchiesDir);
       const viewArtifacts = await loadJsonArtifacts<LoadedViewArtifact>(viewsDir);
-
-      checkRunIntegrity({
-        analysisRunId,
-        analysisRunDir,
-        analysisManifest,
-        reportBundle,
-        reportBundlePath: reportBundleSource === null ? null : reportBundlePath,
-        clusterArtifacts,
-        hierarchyArtifacts,
-        viewArtifacts,
-        addIssue
-      });
+      const clusterArtifactByPath = new Map(clusterArtifacts.map((item) => [item.path, item.artifact] as const));
 
       const opinionRunIds = collectOpinionRunIds(analysisManifest.input);
       const opinionArtifacts = await loadOpinionArtifacts(projectPaths.dataDir, opinionRunIds);
-      const clusterArtifactByPath = new Map(clusterArtifacts.map((item) => [item.path, item.artifact] as const));
 
-      checkClusterIntegrity({
-        clusterArtifacts,
-        opinionArtifacts,
-        addIssue
-      });
+      if (phases.includes("phase1-structural")) {
+        checkRunIntegrity({
+          analysisRunId,
+          analysisRunDir,
+          analysisManifest,
+          reportBundle,
+          reportBundlePath: reportBundleSource === null ? null : reportBundlePath,
+          clusterArtifacts,
+          hierarchyArtifacts,
+          viewArtifacts,
+          addIssue
+        });
 
-      checkViewIntegrity({
-        viewArtifacts,
-        clusterArtifactByPath,
-        reportBundle,
-        addIssue
-      });
+        checkClusterIntegrity({
+          clusterArtifacts,
+          opinionArtifacts,
+          addIssue
+        });
 
-      await checkEvidenceIntegrity({
-        reportBundle,
-        opinionArtifacts,
-        addIssue
-      });
+        checkViewIntegrity({
+          viewArtifacts,
+          clusterArtifactByPath,
+          reportBundle,
+          addIssue
+        });
 
-      checkSoftWarnings({
-        clusterArtifacts,
-        hierarchyArtifacts,
-        viewArtifacts,
-        reportBundle,
-        clusterArtifactByPath,
-        addIssue
-      });
+        await checkEvidenceIntegrity({
+          reportBundle,
+          opinionArtifacts,
+          addIssue
+        });
 
-      const scorecard = buildScorecard(qaRunId, analysisRunId, issues);
+        checkSoftWarnings({
+          clusterArtifacts,
+          hierarchyArtifacts,
+          viewArtifacts,
+          reportBundle,
+          clusterArtifactByPath,
+          addIssue
+        });
+      }
+
+      const clusterMembershipSummary =
+        qaModel === null || phases.includes("phase2-cluster-membership") === false
+          ? null
+          : await runClusterMembershipPhase({
+              projectRoot,
+              qaModel,
+              clusterMembershipPrompt,
+              viewArtifacts,
+              clusterArtifactByPath,
+              opinionArtifacts,
+              clusterMembershipDir,
+              sampling,
+              addIssue
+            });
+
+      const scorecard = buildScorecard(qaRunId, analysisRunId, phases, issues, clusterMembershipSummary);
       const provenanceCheck: ProvenanceCheckArtifact = {
         qaRunId,
         analysisRunId,
@@ -299,30 +459,47 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
         "utf8"
       );
 
-      await writeQaManifest({
+      await writeQaManifest(
         manifestPath,
-        qaRunId,
-        analysisRunId,
-        analysisManifestPath,
-        analysisManifestSha256: sha256Hex(analysisManifestSource),
-        reportBundleSha256: reportBundleSource === null ? null : sha256Hex(reportBundleSource),
-        reportBundlePath: reportBundleSource === null ? null : reportBundlePath,
-        qaDir,
-        scorecardPath,
-        provenanceCheckPath,
-        provenanceFailuresPath,
-        status: scorecard.status,
-        ...(config.qa_model === undefined ? {} : { qaModel: config.qa_model }),
-        issueCount: issues.length,
-        errorCount: provenanceCheck.errorCount,
-        warningCount: provenanceCheck.warningCount
-      });
+        buildQaManifest({
+          qaRunId,
+          analysisRunId,
+          analysisManifestPath,
+          manifestPath,
+          analysisManifestSha256: sha256Hex(analysisManifestSource),
+          reportBundlePath: reportBundleSource === null ? null : reportBundlePath,
+          reportBundleSha256: reportBundleSource === null ? null : sha256Hex(reportBundleSource),
+          phases,
+          qaModel,
+          sampling,
+          clusterMembershipPrompt,
+          status: scorecard.status,
+          qaDir,
+          scorecardPath,
+          provenanceCheckPath,
+          provenanceFailuresPath,
+          clusterMembershipDir,
+          issueCount: issues.length,
+          errorCount: provenanceCheck.errorCount,
+          warningCount: provenanceCheck.warningCount,
+          clusterMembershipArtifacts: clusterMembershipSummary?.artifactsWritten ?? 0,
+          clusterOutlierArtifacts: clusterMembershipSummary?.outlierArtifactsWritten ?? 0
+        })
+      );
 
       const lines = [
         "Broadly QA",
         "",
         `Analysis run: ${analysisRunId}`,
         `QA run: ${qaRunId}`,
+        `Phases: ${phases.join(", ")}`,
+        ...(qaModel === null ? [] : [`Judge model: ${formatModelLabel(qaModel)}`]),
+        ...(phases.includes("phase2-cluster-membership")
+          ? [
+              `Sampling: ${formatSamplingLabel(sampling)}`,
+              `Cluster membership reviews: ${clusterMembershipSummary?.reviewed ?? 0}`
+            ]
+          : []),
         `Status: ${scorecard.status}`,
         `Checks: ${scorecard.totals.checks}`,
         `Errors: ${scorecard.totals.errors}`,
@@ -339,15 +516,398 @@ export async function runQa(options: QaCommandOptions): Promise<void> {
   });
 }
 
+async function runClusterMembershipPhase(options: {
+  projectRoot: string;
+  qaModel: RegisteredModel;
+  clusterMembershipPrompt: { path: string | null; source: string; sha256: string };
+  viewArtifacts: Array<JsonArtifact<LoadedViewArtifact>>;
+  clusterArtifactByPath: Map<string, LoadedClusterArtifact>;
+  opinionArtifacts: Map<string, LoadedOpinionArtifact>;
+  clusterMembershipDir: string;
+  sampling: QaSamplingConfig;
+  addIssue: (issue: IssueRecord) => void;
+}): Promise<ClusterMembershipSummary> {
+  const selectionTargets = buildClusterSelectionTargets({
+    viewArtifacts: options.viewArtifacts,
+    clusterArtifactByPath: options.clusterArtifactByPath,
+    sampling: options.sampling
+  });
+  const summary: ClusterMembershipSummary = {
+    artifactsWritten: 0,
+    outlierArtifactsWritten: 0,
+    reviewed: 0,
+    fit: 0,
+    borderline: 0,
+    outlier: 0
+  };
+
+  if (selectionTargets.length === 0) {
+    options.addIssue({
+      phase: "phase2-cluster-membership",
+      severity: "warning",
+      category: "cluster-membership-quality",
+      code: "no-clusters-selected",
+      message: "No clusters were eligible for cluster-membership QA."
+    });
+    return summary;
+  }
+
+  process.stdout.write(`\nCluster membership QA\n`);
+
+  for (const [index, target] of selectionTargets.entries()) {
+    const memberOpinions = (target.clusterArtifact.members ?? [])
+      .filter(
+        (member) =>
+          member.clusterId === target.cluster.clusterId &&
+          typeof member.opinionId === "string" &&
+          options.opinionArtifacts.has(member.opinionId)
+      )
+      .map((member) => options.opinionArtifacts.get(member.opinionId as string) as LoadedOpinionArtifact)
+      .filter((opinion): opinion is LoadedOpinionArtifact & { opinionId: string; opinionText: string } => {
+        return typeof opinion.opinionId === "string" && typeof opinion.opinionText === "string";
+      });
+
+    const sampledOpinions = sampleOpinionsForCluster(memberOpinions, options.sampling);
+    const reviews: ClusterMembershipReviewRecord[] = [];
+
+    for (const opinion of sampledOpinions) {
+      const prompt = buildClusterMembershipPrompt({
+        instructions: options.clusterMembershipPrompt.source,
+        viewName: target.viewName,
+        cluster: target.cluster,
+        opinion
+      });
+
+      try {
+        const result = await runMembershipReview({
+          model: options.qaModel,
+          prompt,
+          projectRoot: options.projectRoot
+        });
+        reviews.push({
+          opinionId: opinion.opinionId,
+          opinionText: opinion.opinionText,
+          excerpt: opinion.excerpt ?? null,
+          verdict: result.verdict,
+          confidence: result.confidence,
+          rationale: result.rationale,
+          rawText: result.rawText,
+          stopReason: result.stopReason
+        });
+      } catch (error) {
+        options.addIssue({
+          phase: "phase2-cluster-membership",
+          severity: "warning",
+          category: "cluster-membership-quality",
+          code: "cluster-membership-review-failed",
+          message: `Cluster membership review failed for opinion '${opinion.opinionId}' in view '${target.viewName}' cluster '${String(target.cluster.clusterId ?? "unknown")}'.`,
+          artifactPath: target.clusterArtifactPath,
+          details: {
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+    }
+
+    const fit = reviews.filter((review) => review.verdict === "fit").length;
+    const borderline = reviews.filter((review) => review.verdict === "borderline").length;
+    const outlier = reviews.filter((review) => review.verdict === "outlier").length;
+    const score =
+      reviews.length === 0 ? 0 : Math.round(((fit + borderline * 0.5) / reviews.length) * 100);
+
+    const membershipArtifact: ClusterMembershipReviewArtifact = {
+      viewName: target.viewName,
+      clusterId: target.cluster.clusterId ?? -1,
+      clusterLabel: target.cluster.label ?? `Cluster ${String(target.cluster.clusterId ?? "unknown")}`,
+      clusterSummary: target.cluster.summary ?? "",
+      clusterArtifactPath: target.clusterArtifactPath,
+      qaModel: {
+        name: options.qaModel.name,
+        provider: options.qaModel.provider,
+        modelId: options.qaModel.modelId,
+        region: options.qaModel.region
+      },
+      prompt: {
+        path: options.clusterMembershipPrompt.path,
+        sha256: options.clusterMembershipPrompt.sha256
+      },
+      sampling: {
+        clusterSize: memberOpinions.length,
+        qaAll: options.sampling.qaAll,
+        sampleSize: options.sampling.sampleSize,
+        samplePercent: options.sampling.samplePercent,
+        sampledOpinionCount: reviews.length
+      },
+      totals: {
+        reviewed: reviews.length,
+        fit,
+        borderline,
+        outlier,
+        score
+      },
+      reviews
+    };
+
+    const membershipArtifactPath = path.join(
+      options.clusterMembershipDir,
+      `${target.viewName}--cluster-${String(target.cluster.clusterId ?? "unknown")}-membership.json`
+    );
+    const outliersArtifactPath = path.join(
+      options.clusterMembershipDir,
+      `${target.viewName}--cluster-${String(target.cluster.clusterId ?? "unknown")}-outliers.json`
+    );
+
+    await writeFile(membershipArtifactPath, `${JSON.stringify(membershipArtifact, null, 2)}\n`, "utf8");
+    await writeFile(
+      outliersArtifactPath,
+      `${JSON.stringify(
+        {
+          viewName: target.viewName,
+          clusterId: target.cluster.clusterId ?? -1,
+          clusterLabel: membershipArtifact.clusterLabel,
+          clusterArtifactPath: target.clusterArtifactPath,
+          outliers: reviews.filter((review) => review.verdict === "outlier")
+        } satisfies ClusterMembershipOutlierArtifact,
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    summary.artifactsWritten += 1;
+    summary.outlierArtifactsWritten += 1;
+    summary.reviewed += reviews.length;
+    summary.fit += fit;
+    summary.borderline += borderline;
+    summary.outlier += outlier;
+
+    process.stdout.write(
+      `  ${String(index + 1).padStart(2, "0")}/${String(selectionTargets.length).padStart(2, "0")} ` +
+        `${target.viewName} · cluster ${String(target.cluster.clusterId ?? "unknown")} · reviewed=${reviews.length} · score=${score}\n`
+    );
+  }
+
+  return summary;
+}
+
+function buildClusterSelectionTargets(options: {
+  viewArtifacts: Array<JsonArtifact<LoadedViewArtifact>>;
+  clusterArtifactByPath: Map<string, LoadedClusterArtifact>;
+  sampling: QaSamplingConfig;
+}): ClusterSelectionTarget[] {
+  const targets: ClusterSelectionTarget[] = [];
+
+  for (const item of options.viewArtifacts) {
+    const viewName = item.artifact.viewName ?? item.artifact.mode ?? path.basename(item.path, ".json");
+
+    if (
+      options.sampling.viewFilter.length > 0 &&
+      options.sampling.viewFilter.includes(viewName) === false
+    ) {
+      continue;
+    }
+
+    if (typeof item.artifact.chosenClusterArtifactPath !== "string") {
+      continue;
+    }
+
+    const clusterArtifact = options.clusterArtifactByPath.get(item.artifact.chosenClusterArtifactPath);
+
+    if (clusterArtifact === undefined) {
+      continue;
+    }
+
+    for (const cluster of clusterArtifact.clusters ?? []) {
+      if (typeof cluster.clusterId !== "number") {
+        continue;
+      }
+
+      targets.push({
+        viewName,
+        clusterArtifactPath: item.artifact.chosenClusterArtifactPath,
+        clusterArtifact,
+        cluster
+      });
+    }
+  }
+
+  targets.sort((left, right) => {
+    const viewComparison = left.viewName.localeCompare(right.viewName);
+    if (viewComparison !== 0) {
+      return viewComparison;
+    }
+
+    return (left.cluster.clusterId ?? 0) - (right.cluster.clusterId ?? 0);
+  });
+
+  if (options.sampling.clusterLimit !== null) {
+    return targets.slice(0, options.sampling.clusterLimit);
+  }
+
+  return targets;
+}
+
+function sampleOpinionsForCluster(
+  opinions: Array<LoadedOpinionArtifact & { opinionId: string; opinionText: string }>,
+  sampling: QaSamplingConfig
+): Array<LoadedOpinionArtifact & { opinionId: string; opinionText: string }> {
+  const sorted = [...opinions].sort((left, right) => left.opinionId.localeCompare(right.opinionId));
+
+  if (sampling.qaAll) {
+    return sorted;
+  }
+
+  let desiredCount = 5;
+
+  if (sampling.sampleSize !== null) {
+    desiredCount = sampling.sampleSize;
+  } else if (sampling.samplePercent !== null) {
+    desiredCount = Math.max(1, Math.ceil((sorted.length * sampling.samplePercent) / 100));
+  }
+
+  return sorted.slice(0, Math.max(1, Math.min(sorted.length, desiredCount)));
+}
+
+async function runMembershipReview(options: {
+  model: RegisteredModel;
+  prompt: string;
+  projectRoot: string;
+}): Promise<{
+  verdict: ClusterMembershipVerdict;
+  confidence: ClusterMembershipConfidence;
+  rationale: string;
+  rawText: string;
+  stopReason: string | null;
+}> {
+  let latestText = "";
+  let latestStopReason: string | null = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const prompt =
+      attempt === 0
+        ? options.prompt
+        : `${options.prompt}\n\nReminder: Return only the three required header lines: Verdict, Confidence, Rationale.`;
+    const result = await runTextPromptWithModel({
+      model: options.model,
+      prompt,
+      maxOutputTokens: 250,
+      projectRoot: options.projectRoot,
+      temperature: 0
+    });
+    latestText = result.text;
+    latestStopReason = result.stopReason;
+    const parsed = parseClusterMembershipResponse(result.text);
+
+    if (parsed !== null) {
+      return {
+        ...parsed,
+        rawText: result.text,
+        stopReason: result.stopReason
+      };
+    }
+  }
+
+  throw new Error(`Model response did not match the required cluster membership format.\n\n${latestText}`);
+}
+
+function parseClusterMembershipResponse(
+  source: string
+): {
+  verdict: ClusterMembershipVerdict;
+  confidence: ClusterMembershipConfidence;
+  rationale: string;
+} | null {
+  const lines = source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const values = new Map<string, string>();
+
+  for (const line of lines) {
+    const match = line.match(/^([A-Za-z -]+)\s*:\s*(.*)$/);
+
+    if (match === null) {
+      continue;
+    }
+
+    const rawKey = match[1];
+    const rawValue = match[2];
+
+    if (rawKey === undefined || rawValue === undefined) {
+      continue;
+    }
+
+    const key = rawKey.toLowerCase().replace(/[^a-z]+/g, "");
+    values.set(key, rawValue.trim());
+  }
+
+  const verdictValue = values.get("verdict")?.toLowerCase();
+  const confidenceValue = values.get("confidence")?.toLowerCase();
+  const rationale = values.get("rationale")?.trim();
+
+  if (
+    (verdictValue !== "fit" && verdictValue !== "borderline" && verdictValue !== "outlier") ||
+    (confidenceValue !== "high" && confidenceValue !== "medium" && confidenceValue !== "low")
+  ) {
+    return null;
+  }
+
+  return {
+    verdict: verdictValue,
+    confidence: confidenceValue,
+    rationale: rationale === undefined || rationale.length === 0 ? "No rationale provided." : rationale
+  };
+}
+
+function buildClusterMembershipPrompt(options: {
+  instructions: string;
+  viewName: string;
+  cluster: NonNullable<LoadedClusterArtifact["clusters"]>[number];
+  opinion: LoadedOpinionArtifact & { opinionId: string; opinionText: string };
+}): string {
+  const representativeBlock = (options.cluster.representativeOpinions ?? [])
+    .map((item, index) =>
+      [
+        `Representative-${index + 1}-Opinion-ID: ${item.opinionId ?? "unknown"}`,
+        `Representative-${index + 1}-Opinion-Text: ${item.opinionText ?? "(missing)"}`,
+        `Representative-${index + 1}-Excerpt: ${item.excerpt ?? "(missing)"}`
+      ].join("\n")
+    )
+    .join("\n\n");
+
+  return [
+    options.instructions.trim(),
+    "",
+    "## Cluster Under Review",
+    `View-Name: ${options.viewName}`,
+    `Cluster-ID: ${String(options.cluster.clusterId ?? "unknown")}`,
+    `Cluster-Label: ${options.cluster.label ?? "(missing)"}`,
+    `Cluster-Summary: ${options.cluster.summary ?? "(missing)"}`,
+    `Cluster-Top-Terms: ${(options.cluster.topTerms ?? []).join(" | ") || "(none)"}`,
+    "",
+    "## Representative Opinions",
+    representativeBlock.length === 0 ? "(none)" : representativeBlock,
+    "",
+    "## Candidate Opinion",
+    `Opinion-ID: ${options.opinion.opinionId}`,
+    `Opinion-Text: ${options.opinion.opinionText}`,
+    `Opinion-Excerpt: ${options.opinion.excerpt ?? "(none)"}`,
+    "",
+    "## Task",
+    "Judge whether the candidate opinion belongs inside this cluster."
+  ].join("\n");
+}
+
 function checkRunIntegrity(options: {
   analysisRunId: string;
   analysisRunDir: string;
   analysisManifest: LoadedAnalysisManifest;
   reportBundle: LoadedReportBundle | null;
   reportBundlePath: string | null;
-  clusterArtifacts: Array<{ path: string; artifact: LoadedClusterArtifact }>;
-  hierarchyArtifacts: Array<{ path: string; artifact: LoadedHierarchyArtifact }>;
-  viewArtifacts: Array<{ path: string; artifact: LoadedViewArtifact }>;
+  clusterArtifacts: Array<JsonArtifact<LoadedClusterArtifact>>;
+  hierarchyArtifacts: Array<JsonArtifact<LoadedHierarchyArtifact>>;
+  viewArtifacts: Array<JsonArtifact<LoadedViewArtifact>>;
   addIssue: (issue: IssueRecord) => void;
 }): void {
   if ((options.analysisManifest.runId ?? options.analysisManifest.analysisRunId) !== options.analysisRunId) {
@@ -403,7 +963,7 @@ function checkRunIntegrity(options: {
 }
 
 function checkClusterIntegrity(options: {
-  clusterArtifacts: Array<{ path: string; artifact: LoadedClusterArtifact }>;
+  clusterArtifacts: Array<JsonArtifact<LoadedClusterArtifact>>;
   opinionArtifacts: Map<string, LoadedOpinionArtifact>;
   addIssue: (issue: IssueRecord) => void;
 }): void {
@@ -460,7 +1020,7 @@ function checkClusterIntegrity(options: {
 }
 
 function checkViewIntegrity(options: {
-  viewArtifacts: Array<{ path: string; artifact: LoadedViewArtifact }>;
+  viewArtifacts: Array<JsonArtifact<LoadedViewArtifact>>;
   clusterArtifactByPath: Map<string, LoadedClusterArtifact>;
   reportBundle: LoadedReportBundle | null;
   addIssue: (issue: IssueRecord) => void;
@@ -637,9 +1197,9 @@ async function checkEvidenceIntegrity(options: {
 }
 
 function checkSoftWarnings(options: {
-  clusterArtifacts: Array<{ path: string; artifact: LoadedClusterArtifact }>;
-  hierarchyArtifacts: Array<{ path: string; artifact: LoadedHierarchyArtifact }>;
-  viewArtifacts: Array<{ path: string; artifact: LoadedViewArtifact }>;
+  clusterArtifacts: Array<JsonArtifact<LoadedClusterArtifact>>;
+  hierarchyArtifacts: Array<JsonArtifact<LoadedHierarchyArtifact>>;
+  viewArtifacts: Array<JsonArtifact<LoadedViewArtifact>>;
   reportBundle: LoadedReportBundle | null;
   clusterArtifactByPath: Map<string, LoadedClusterArtifact>;
   addIssue: (issue: IssueRecord) => void;
@@ -704,17 +1264,24 @@ function checkSoftWarnings(options: {
 function buildScorecard(
   qaRunId: string,
   analysisRunId: string,
-  issues: IssueRecord[]
+  phases: QaPhase[],
+  issues: IssueRecord[],
+  clusterMembershipSummary: ClusterMembershipSummary | null
 ): Scorecard {
-  const categories = {
-    runIntegrity: scoreCategory(issues, "run-integrity"),
-    clusterIntegrity: scoreCategory(issues, "cluster-integrity"),
-    viewIntegrity: scoreCategory(issues, "view-integrity"),
-    evidenceIntegrity: scoreCategory(issues, "evidence-integrity"),
-    softConsistency: scoreCategory(issues, "soft-consistency")
+  const categories: Scorecard["categories"] = {
+    runIntegrity: buildIssueBackedCategory(phases, issues, "phase1-structural", "run-integrity"),
+    clusterIntegrity: buildIssueBackedCategory(phases, issues, "phase1-structural", "cluster-integrity"),
+    viewIntegrity: buildIssueBackedCategory(phases, issues, "phase1-structural", "view-integrity"),
+    evidenceIntegrity: buildIssueBackedCategory(phases, issues, "phase1-structural", "evidence-integrity"),
+    softConsistency: buildIssueBackedCategory(phases, issues, "phase1-structural", "soft-consistency"),
+    clusterMembershipQuality:
+      phases.includes("phase2-cluster-membership") && clusterMembershipSummary !== null
+        ? buildClusterMembershipCategory(clusterMembershipSummary, issues)
+        : createNotRunCategory()
   };
 
-  const totals = Object.values(categories).reduce(
+  const activeCategories = Object.values(categories).filter((category) => category.status === "scored");
+  const totals = activeCategories.reduce(
     (accumulator, category) => ({
       checks: accumulator.checks + category.checks,
       passed: accumulator.passed + category.passed,
@@ -724,7 +1291,13 @@ function buildScorecard(
     }),
     { checks: 0, passed: 0, errors: 0, warnings: 0, score: 0 }
   );
-  const score = totals.checks === 0 ? 100 : Math.max(0, Math.round((totals.passed / totals.checks) * 100));
+  const score =
+    activeCategories.length === 0
+      ? 0
+      : Math.round(
+          activeCategories.reduce((sum, category) => sum + (category.score ?? 0), 0) /
+            activeCategories.length
+        );
 
   return {
     qaRunId,
@@ -739,11 +1312,17 @@ function buildScorecard(
   };
 }
 
-function scoreCategory(
+function buildIssueBackedCategory(
+  phases: QaPhase[],
   issues: IssueRecord[],
-  category: IssueRecord["category"]
+  phase: QaPhase,
+  category: IssueCategory
 ): ScorecardCategory {
-  const categoryIssues = issues.filter((issue) => issue.category === category);
+  if (phases.includes(phase) === false) {
+    return createNotRunCategory();
+  }
+
+  const categoryIssues = issues.filter((issue) => issue.phase === phase && issue.category === category);
   const errors = categoryIssues.filter((issue) => issue.severity === "error").length;
   const warnings = categoryIssues.filter((issue) => issue.severity === "warning").length;
   const checks = Math.max(1, errors + warnings + 1);
@@ -751,6 +1330,7 @@ function scoreCategory(
   const score = Math.max(0, Math.round((passed / checks) * 100));
 
   return {
+    status: "scored",
     checks,
     passed,
     errors,
@@ -759,41 +1339,102 @@ function scoreCategory(
   };
 }
 
-async function writeQaManifest(options: {
-  manifestPath: string;
+function buildClusterMembershipCategory(
+  summary: ClusterMembershipSummary,
+  issues: IssueRecord[]
+): ScorecardCategory {
+  const categoryIssues = issues.filter((issue) => issue.category === "cluster-membership-quality");
+  const warnings = categoryIssues.filter((issue) => issue.severity === "warning").length;
+  const errors = categoryIssues.filter((issue) => issue.severity === "error").length;
+  const checks = summary.reviewed;
+  const passed = summary.fit + summary.borderline;
+  const score =
+    summary.reviewed === 0
+      ? 0
+      : Math.round(((summary.fit + summary.borderline * 0.5) / summary.reviewed) * 100);
+
+  return {
+    status: "scored",
+    checks,
+    passed,
+    errors,
+    warnings,
+    score
+  };
+}
+
+function createNotRunCategory(): ScorecardCategory {
+  return {
+    status: "not-run",
+    checks: 0,
+    passed: 0,
+    errors: 0,
+    warnings: 0,
+    score: null
+  };
+}
+
+function buildQaManifest(options: {
   qaRunId: string;
   analysisRunId: string;
   analysisManifestPath: string;
   analysisManifestSha256: string;
-  reportBundleSha256: string | null;
   reportBundlePath: string | null;
+  reportBundleSha256: string | null;
+  phases: QaPhase[];
+  qaModel: RegisteredModel | null;
+  sampling: QaSamplingConfig;
+  clusterMembershipPrompt: { path: string | null; source: string; sha256: string };
+  status: QaRunManifest["status"];
   qaDir: string;
+  manifestPath: string;
   scorecardPath: string;
   provenanceCheckPath: string;
   provenanceFailuresPath: string;
-  status: QaRunManifest["status"];
-  qaModel?: string;
+  clusterMembershipDir: string;
   issueCount: number;
   errorCount: number;
   warningCount: number;
-}): Promise<void> {
-  const manifest: QaRunManifest = {
+  clusterMembershipArtifacts: number;
+  clusterOutlierArtifacts: number;
+}): QaRunManifest {
+  const timestamp = new Date().toISOString();
+
+  return {
     qaRunId: options.qaRunId,
     analysisRunId: options.analysisRunId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
     status: options.status,
     fingerprint: {
       analysisRunId: options.analysisRunId,
       analysisManifestSha256: options.analysisManifestSha256,
       reportBundleSha256: options.reportBundleSha256,
-      phases: ["phase1-structural"]
+      phases: options.phases,
+      qaModelAlias: options.qaModel?.name ?? null,
+      qaModelFingerprint: options.qaModel === null ? null : modelFingerprintValue(options.qaModel),
+      clusterMembershipPromptSha256:
+        options.phases.includes("phase2-cluster-membership") ? options.clusterMembershipPrompt.sha256 : null,
+      sampling: options.sampling
     },
     input: {
       analysisManifestPath: options.analysisManifestPath,
       reportBundlePath: options.reportBundlePath,
-      phases: ["phase1-structural"],
-      ...(options.qaModel === undefined ? {} : { qaModel: options.qaModel })
+      phases: options.phases,
+      ...(options.qaModel === null ? {} : { qaModel: options.qaModel.name }),
+      sampling: options.sampling,
+      prompts: {
+        clusterMembership: {
+          path:
+            options.phases.includes("phase2-cluster-membership") === false
+              ? null
+              : options.clusterMembershipPrompt.path,
+          sha256:
+            options.phases.includes("phase2-cluster-membership") === false
+              ? null
+              : options.clusterMembershipPrompt.sha256
+        }
+      }
     },
     output: {
       qaDir: options.qaDir,
@@ -801,20 +1442,25 @@ async function writeQaManifest(options: {
       scorecardPath: options.scorecardPath,
       provenanceCheckPath: options.provenanceCheckPath,
       provenanceFailuresPath: options.provenanceFailuresPath,
+      clusterMembershipDir: options.clusterMembershipDir,
       issueCount: options.issueCount,
       errorCount: options.errorCount,
-      warningCount: options.warningCount
+      warningCount: options.warningCount,
+      clusterMembershipArtifacts: options.clusterMembershipArtifacts,
+      clusterOutlierArtifacts: options.clusterOutlierArtifacts
     }
   };
+}
 
-  await writeFile(options.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+async function writeQaManifest(filePath: string, manifest: QaRunManifest): Promise<void> {
+  await writeFile(filePath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 async function loadJsonArtifacts<T>(
   directoryPath: string
-): Promise<Array<{ path: string; artifact: T }>> {
+): Promise<Array<JsonArtifact<T>>> {
   const entries = await readdir(directoryPath, { withFileTypes: true }).catch(() => []);
-  const artifacts: Array<{ path: string; artifact: T }> = [];
+  const artifacts: Array<JsonArtifact<T>> = [];
 
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) {
@@ -834,7 +1480,7 @@ async function loadJsonArtifacts<T>(
         artifact: JSON.parse(source) as T
       });
     } catch {
-      // Skip unreadable artifacts in Phase 1; the missing parse will show up via artifact count/absence.
+      continue;
     }
   }
 
@@ -924,6 +1570,162 @@ async function findLatestAnalysisRun(runsDir: string): Promise<string | null> {
 
   runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return runs[0]?.name ?? null;
+}
+
+async function resolveClusterMembershipPrompt(promptsDir: string): Promise<{
+  path: string | null;
+  source: string;
+  sha256: string;
+}> {
+  const filePath = path.join(promptsDir, "qa-cluster-membership.md");
+  const source = await readFile(filePath, "utf8").catch(() => createDefaultClusterMembershipPrompt());
+
+  return {
+    path: (await fileExists(filePath)) ? filePath : null,
+    source,
+    sha256: sha256Hex(source)
+  };
+}
+
+function createDefaultClusterMembershipPrompt(): string {
+  return `# QA Cluster Membership Prompt
+
+You are reviewing whether a candidate opinion truly belongs in a labeled opinion cluster.
+
+Use the cluster label, summary, top terms, and representative opinions as your evidence base.
+Judge only the candidate opinion shown in the prompt.
+
+## Rules
+
+- Return plain text only using the exact header format below.
+- Do not wrap the response in code fences.
+- Use \`fit\` when the opinion clearly belongs in the cluster.
+- Use \`borderline\` when the opinion is adjacent or partially relevant but not a strong example.
+- Use \`outlier\` when the opinion does not really belong in the cluster.
+- Keep the rationale short and concrete.
+
+## Output format
+
+\`\`\`text
+Verdict: fit | borderline | outlier
+Confidence: high | medium | low
+Rationale: One or two sentences explaining the judgment
+\`\`\`
+`;
+}
+
+function resolveQaPhases(values: string[] | undefined): QaPhase[] {
+  if (values === undefined || values.length === 0) {
+    return ["phase1-structural"];
+  }
+
+  const phases = new Set<QaPhase>();
+
+  for (const value of values) {
+    const normalized = value.trim().toLowerCase();
+
+    if (
+      normalized === "phase1" ||
+      normalized === "structural" ||
+      normalized === "phase1-structural"
+    ) {
+      phases.add("phase1-structural");
+      continue;
+    }
+
+    if (
+      normalized === "phase2" ||
+      normalized === "cluster-membership" ||
+      normalized === "phase2-cluster-membership"
+    ) {
+      phases.add("phase2-cluster-membership");
+      continue;
+    }
+
+    throw new Error(`Unknown QA phase '${value}'. Supported values: structural, cluster-membership.`);
+  }
+
+  return [...phases];
+}
+
+function resolveSamplingConfig(options: QaCommandOptions): QaSamplingConfig {
+  if (options.qaAll === true) {
+    return {
+      qaAll: true,
+      sampleSize: null,
+      samplePercent: null,
+      viewFilter: options.view ?? [],
+      clusterLimit: options.clusterLimit ?? null
+    };
+  }
+
+  return {
+    qaAll: false,
+    sampleSize: options.sampleSize ?? null,
+    samplePercent: options.samplePercent ?? null,
+    viewFilter: options.view ?? [],
+    clusterLimit: options.clusterLimit ?? null
+  };
+}
+
+function resolveQaModel(
+  config: BroadlyProjectConfig,
+  explicitModelAlias: string | undefined
+): RegisteredModel {
+  const alias = explicitModelAlias ?? config.qa_model;
+
+  if (alias === undefined) {
+    throw new Error(
+      "No QA model is configured. Set qa_model in broadly.yaml or pass --model <alias>."
+    );
+  }
+
+  const model = config.models.find((item) => item.name === alias);
+
+  if (model === undefined) {
+    throw new Error(`QA model '${alias}' is not registered in broadly.yaml.`);
+  }
+
+  return model;
+}
+
+function modelFingerprintValue(model: RegisteredModel): string {
+  return JSON.stringify({
+    name: model.name,
+    provider: model.provider,
+    modelId: model.modelId,
+    region: model.region
+  });
+}
+
+function formatModelLabel(model: RegisteredModel): string {
+  return `${model.name} (${model.provider} · ${model.region} · ${model.modelId})`;
+}
+
+function formatSamplingLabel(sampling: QaSamplingConfig): string {
+  if (sampling.qaAll) {
+    return "all opinions in every selected cluster";
+  }
+
+  const parts: string[] = [];
+
+  if (sampling.sampleSize !== null) {
+    parts.push(`${sampling.sampleSize} per cluster`);
+  } else if (sampling.samplePercent !== null) {
+    parts.push(`${sampling.samplePercent}% per cluster`);
+  } else {
+    parts.push("5 per cluster");
+  }
+
+  if (sampling.viewFilter.length > 0) {
+    parts.push(`views=${sampling.viewFilter.join(",")}`);
+  }
+
+  if (sampling.clusterLimit !== null) {
+    parts.push(`cluster-limit=${sampling.clusterLimit}`);
+  }
+
+  return parts.join(" · ");
 }
 
 async function readJsonFile<T>(filePath: string): Promise<T | null> {

@@ -112,17 +112,43 @@ program
 
 program
   .command("qa")
-  .description("Run deterministic structural QA checks against an analysis run and report bundle.")
+  .description("Run structural and model-assisted QA checks against an analysis run and report bundle.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
   .option("--run <runId>", "Analysis run id to review; defaults to the current analysis run, then latest")
+  .option(
+    "--phase <name>",
+    "QA phase to run; repeat for multiple phases (structural, cluster-membership)",
+    collectOptionValue,
+    []
+  )
+  .option("--model <name>", "Project model alias to use as the QA judge")
+  .option("--sample-size <count>", "Sample this many opinions per cluster during semantic QA", parsePositiveInteger)
+  .option("--sample-percent <percent>", "Sample this percentage of opinions per cluster during semantic QA", parsePositiveInteger)
+  .option("--qa-all", "Review all eligible opinions instead of sampling", false)
+  .option("--view <name>", "Limit semantic QA to one analysis view; repeatable", collectOptionValue, [])
+  .option("--cluster-limit <count>", "Limit semantic QA to the first N eligible clusters", parsePositiveInteger)
   .action(
     async (options: {
       project?: string;
       run?: string;
+      phase: string[];
+      model?: string;
+      sampleSize?: number;
+      samplePercent?: number;
+      qaAll: boolean;
+      view: string[];
+      clusterLimit?: number;
     }) => {
       await runQa({
         ...(options.project === undefined ? {} : { project: options.project }),
-        ...(options.run === undefined ? {} : { run: options.run })
+        ...(options.run === undefined ? {} : { run: options.run }),
+        ...(options.phase.length === 0 ? {} : { phase: options.phase }),
+        ...(options.model === undefined ? {} : { model: options.model }),
+        ...(options.sampleSize === undefined ? {} : { sampleSize: options.sampleSize }),
+        ...(options.samplePercent === undefined ? {} : { samplePercent: options.samplePercent }),
+        ...(options.qaAll === true ? { qaAll: true } : {}),
+        ...(options.view.length === 0 ? {} : { view: options.view }),
+        ...(options.clusterLimit === undefined ? {} : { clusterLimit: options.clusterLimit })
       });
     }
   );

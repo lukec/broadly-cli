@@ -194,6 +194,7 @@ export function createStarterProjectConfig(
       path: "./data/source.csv",
       format: "auto"
     },
+    qa_model: "my-frontier-text-model",
     questions: [
       "What are the dominant themes in this corpus?",
       "Where do the strongest points of agreement and disagreement appear?",

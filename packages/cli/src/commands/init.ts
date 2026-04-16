@@ -53,6 +53,10 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
     projectPaths.promptsDir,
     "analysis-semantic-merge.md"
   );
+  const qaClusterMembershipPromptPath = path.join(
+    projectPaths.promptsDir,
+    "qa-cluster-membership.md"
+  );
 
   if (options.force || !(await fileExists(starterPromptPath))) {
     await writeFile(starterPromptPath, createStarterOpinionExtractionPrompt(), "utf8");
@@ -78,6 +82,14 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
     await writeFile(
       analysisSemanticMergePromptPath,
       createStarterAnalysisSemanticMergePrompt(),
+      "utf8"
+    );
+  }
+
+  if (options.force || !(await fileExists(qaClusterMembershipPromptPath))) {
+    await writeFile(
+      qaClusterMembershipPromptPath,
+      createStarterQaClusterMembershipPrompt(),
       "utf8"
     );
   }
@@ -133,8 +145,8 @@ function printNextSteps(rootDir: string, configPath: string): void {
     `1. cd ${rootDir}`,
     "2. broadly ingest ./path/to/source.csv",
     "3. broadly models add",
-    "4. Review and edit prompts/opinion-extraction.md and the analysis prompt files for your domain.",
-    "5. Edit broadly.yaml with questions, opinion extractions, and analysis views."
+    "4. Review and edit prompts/opinion-extraction.md, the analysis prompt files, and prompts/qa-cluster-membership.md for your domain.",
+    "5. Edit broadly.yaml with questions, opinion extractions, analysis views, and qa_model."
   ];
 
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -355,6 +367,40 @@ Merge-Rationale: Brief reason these clusters belong together
 \`\`\`
 
 Repeat that block for every theme.
+`;
+}
+
+function createStarterQaClusterMembershipPrompt(): string {
+  return `# QA Cluster Membership Prompt
+
+You are evaluating whether a candidate opinion actually belongs inside a labeled opinion cluster.
+
+You will receive:
+
+- the view name
+- the cluster label and summary
+- top terms
+- representative opinions
+- one candidate opinion
+
+## Rules
+
+- Return plain text only using the exact header format defined below.
+- Do not wrap the response in code fences.
+- Judge only the candidate opinion shown in the prompt.
+- Use \`fit\` when the opinion clearly belongs in the cluster.
+- Use \`borderline\` when the opinion is adjacent, mixed, or only partly aligned.
+- Use \`outlier\` when the opinion does not really belong in the cluster.
+- Keep the rationale brief and concrete.
+- Base the judgment on semantic fit, not on whether the opinion is merely generally related to the same broad topic.
+
+## Output format
+
+\`\`\`text
+Verdict: fit | borderline | outlier
+Confidence: high | medium | low
+Rationale: One or two sentences explaining the judgment
+\`\`\`
 `;
 }
 
