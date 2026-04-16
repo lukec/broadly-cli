@@ -10,6 +10,7 @@ import { runLlm } from "./commands/llm.js";
 import { addModel, checkModels, removeModel } from "./commands/models.js";
 import { extractOpinionsWithModel } from "./commands/opinions.js";
 import { generateReport } from "./commands/report.js";
+import { runQa } from "./commands/qa.js";
 import { showProjectStatus } from "./commands/status.js";
 import { serveProjectWeb } from "./commands/web.js";
 
@@ -103,6 +104,23 @@ program
       run?: string;
     }) => {
       await generateReport({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run })
+      });
+    }
+  );
+
+program
+  .command("qa")
+  .description("Run deterministic structural QA checks against an analysis run and report bundle.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <runId>", "Analysis run id to review; defaults to the current analysis run, then latest")
+  .action(
+    async (options: {
+      project?: string;
+      run?: string;
+    }) => {
+      await runQa({
         ...(options.project === undefined ? {} : { project: options.project }),
         ...(options.run === undefined ? {} : { run: options.run })
       });

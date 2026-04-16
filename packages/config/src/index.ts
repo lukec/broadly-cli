@@ -69,6 +69,7 @@ export const projectConfigSchema = z
       idColumn: z.string().min(1).optional(),
       allowFields: z.array(z.string().min(1)).min(1).optional()
     }),
+    qa_model: z.string().min(1).optional(),
     questions: z.array(z.string().min(1)).min(1),
     opinionExtractions: z.array(opinionExtractionConfigSchema).min(1),
     analysisViews: z.array(analysisViewConfigSchema).min(1),
