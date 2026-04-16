@@ -21,6 +21,12 @@
     },
     {
       "path": "../pipeline"
+    },
+    {
+      "path": "../report-model"
+    },
+    {
+      "path": "../report-site"
     }
   ]
 }

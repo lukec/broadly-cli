@@ -11,15 +11,25 @@ export interface ClusterSummary {
   evidenceQuotes: EvidenceQuote[];
 }
 
+export interface ThemeSummary {
+  themeId: string;
+  label: string;
+  summary: string;
+  clusterIds: string[];
+}
+
 export interface PerspectiveReport {
   perspectiveId: string;
   title: string;
   summary: string;
+  themes?: ThemeSummary[];
   clusters: ClusterSummary[];
 }
 
 export interface ReportBundle {
   reportId: string;
+  createdAt: string;
+  analysisRunId: string;
   projectName: string;
   guidingQuestions: string[];
   primaryPerspectiveId: string;

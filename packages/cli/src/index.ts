@@ -3,9 +3,15 @@
 import { Command } from "commander";
 
 import { addDataSource } from "./commands/addDataSource.js";
+import { runAnalysis } from "./commands/analysis.js";
 import { extractOpinions } from "./commands/extractOpinions.js";
 import { initProject } from "./commands/init.js";
+import { runLlm } from "./commands/llm.js";
 import { addModel, checkModels, removeModel } from "./commands/models.js";
+import { extractOpinionsWithModel } from "./commands/opinions.js";
+import { generateReport } from "./commands/report.js";
+import { showProjectStatus } from "./commands/status.js";
+import { serveProjectWeb } from "./commands/web.js";
 
 const program = new Command();
 
@@ -62,14 +68,157 @@ program
   );
 
 program
+  .command("analysis")
+  .description("Generate embedding, reduction, clustering, and perspective-planning artifacts.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--embedding-model <name>", "Project model alias to use for embeddings")
+  .option("--limit <count>", "Only process the first N opinion artifacts from the selected run", parsePositiveInteger)
+  .option("--offset <count>", "Skip the first N opinion artifacts from the selected run", parsePositiveInteger)
+  .action(
+    async (options: {
+      project?: string;
+      embeddingModel?: string;
+      limit?: number;
+      offset?: number;
+    }) => {
+      await runAnalysis({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.embeddingModel === undefined
+          ? {}
+          : { embeddingModel: options.embeddingModel }),
+        ...(options.limit === undefined ? {} : { limit: options.limit }),
+        ...(options.offset === undefined ? {} : { offset: options.offset })
+      });
+    }
+  );
+
+program
+  .command("report")
+  .description("Generate a report bundle and static site from an analysis run.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <runId>", "Analysis run id to publish; defaults to the latest run")
+  .action(
+    async (options: {
+      project?: string;
+      run?: string;
+    }) => {
+      await generateReport({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run })
+      });
+    }
+  );
+
+program
   .command("extract-opinions")
   .description("Create opinion-unit artifacts from normalized records.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--archive", "Move prior opinion runs into archive/ before starting a new extraction", false)
+  .option("--resume", "Continue the latest run for the configured model and skip records that already succeeded", false)
+  .option(
+    "-c, --concurrency <count>",
+    "Number of opinion extraction requests to run in parallel",
+    parsePositiveInteger
+  )
   .action(
-    async (options: { project?: string }) => {
+    async (options: {
+      project?: string;
+      archive: boolean;
+      resume: boolean;
+      concurrency?: number;
+    }) => {
       await extractOpinions(
-        options.project === undefined ? {} : { project: options.project }
+        {
+          ...(options.project === undefined ? {} : { project: options.project }),
+          ...(options.archive === true ? { archive: true } : {}),
+          ...(options.resume === true ? { resume: true } : {}),
+          ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })
+        }
       );
+    }
+  );
+
+program
+  .command("opinions")
+  .description("Extract opinion units from normalized records with a specified or configured model.")
+  .option("--model <name>", "Project model alias to use for opinion extraction")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--limit <count>", "Only process the first N normalized records", parsePositiveInteger)
+  .option("--offset <count>", "Skip the first N normalized records", parsePositiveInteger)
+  .option("--archive", "Move prior opinion runs into archive/ before starting a new extraction", false)
+  .option("--resume", "Continue the latest run for this model and skip records that already succeeded", false)
+  .option(
+    "-c, --concurrency <count>",
+    "Number of opinion extraction requests to run in parallel",
+    parsePositiveInteger
+  )
+  .action(
+    async (options: {
+      model?: string;
+      project?: string;
+      limit?: number;
+      offset?: number;
+      archive: boolean;
+      resume: boolean;
+      concurrency?: number;
+    }) => {
+      await extractOpinionsWithModel({
+        ...(options.model === undefined ? {} : { model: options.model }),
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.limit === undefined ? {} : { limit: options.limit }),
+        ...(options.offset === undefined ? {} : { offset: options.offset }),
+        ...(options.archive === true ? { archive: true } : {}),
+        ...(options.resume === true ? { resume: true } : {}),
+        ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })
+      });
+    }
+  );
+
+program
+  .command("status")
+  .description("Show project status similar to the Broadly web overview.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .action(async (options: { project?: string }) => {
+    await showProjectStatus(options);
+  });
+
+program
+  .command("web")
+  .description("Start a local web viewer for the current Broadly project.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--port <port>", "Port to bind the local server", parsePositiveInteger)
+  .option("--watch", "Reload browser pages when project files change", false)
+  .action(async (options: { project?: string; port?: number; watch: boolean }) => {
+    await serveProjectWeb(options);
+  });
+
+program
+  .command("llm")
+  .description("Run a prompt against one registered model alias or all registered models.")
+  .argument("<prompt...>", "Prompt text")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--model <name>", "Project model alias to use")
+  .option("--all-models", "Run the prompt against every registered model", false)
+  .option("--max-output-tokens <count>", "Maximum output tokens to request", parsePositiveInteger)
+  .action(
+    async (
+      promptParts: string[],
+      options: {
+        project?: string;
+        model?: string;
+        allModels: boolean;
+        maxOutputTokens?: number;
+      }
+    ) => {
+      await runLlm({
+        prompt: promptParts.join(" "),
+        allModels: options.allModels,
+        ...(options.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: options.maxOutputTokens }),
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.model === undefined ? {} : { model: options.model })
+      });
     }
   );
 
@@ -81,7 +230,7 @@ modelsCommand
   .command("add")
   .description("Add a model alias to this project and check local credentials.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
-  .option("--provider <provider>", "Model provider: bedrock or google-cloud")
+  .option("--provider <provider>", "Model provider: bedrock, google-cloud, or openai")
   .option("--model-id <modelId>", "Provider model identifier")
   .option("--region <region>", "Provider region for this model")
   .option("--name <name>", "Project alias for this model")
@@ -89,7 +238,7 @@ modelsCommand
     async (
       options: {
         project?: string;
-        provider?: "bedrock" | "google-cloud";
+        provider?: "bedrock" | "google-cloud" | "openai";
         modelId?: string;
         region?: string;
         name?: string;
@@ -145,4 +294,14 @@ program.parseAsync(process.argv).catch((error: unknown) => {
 
 function collectOptionValue(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Expected a positive integer, received '${value}'.`);
+  }
+
+  return parsed;
 }

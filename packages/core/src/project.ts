@@ -5,6 +5,10 @@ export const DEFAULT_PROJECT_DIRECTORIES = [
   "data/raw",
   "data/normalized",
   "data/opinions",
+  "data/embeddings",
+  "archive/opinions",
+  "archive/analysis",
+  "llm-cache/text",
   "prompts",
   "runs",
   "reports"
@@ -14,9 +18,13 @@ export interface ProjectPaths {
   rootDir: string;
   configPath: string;
   dataDir: string;
+  archiveDir: string;
+  llmCacheDir: string;
   promptsDir: string;
   runsDir: string;
   reportsDir: string;
+  opinionsCurrentRunPath: string;
+  analysisCurrentRunPath: string;
 }
 
 export function resolveProjectPaths(rootDir: string): ProjectPaths {
@@ -26,9 +34,13 @@ export function resolveProjectPaths(rootDir: string): ProjectPaths {
     rootDir: absoluteRootDir,
     configPath: path.join(absoluteRootDir, "broadly.yaml"),
     dataDir: path.join(absoluteRootDir, "data"),
+    archiveDir: path.join(absoluteRootDir, "archive"),
+    llmCacheDir: path.join(absoluteRootDir, "llm-cache"),
     promptsDir: path.join(absoluteRootDir, "prompts"),
     runsDir: path.join(absoluteRootDir, "runs"),
-    reportsDir: path.join(absoluteRootDir, "reports")
+    reportsDir: path.join(absoluteRootDir, "reports"),
+    opinionsCurrentRunPath: path.join(absoluteRootDir, "data", "opinions", "current-run.txt"),
+    analysisCurrentRunPath: path.join(absoluteRootDir, "runs", "current-run.txt")
   };
 }
 

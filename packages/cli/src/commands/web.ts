@@ -1,0 +1,3080 @@
+import { watch, type FSWatcher } from "node:fs";
+import { createServer, type ServerResponse } from "node:http";
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+
+import { parseProjectConfig } from "@broadly/config";
+import { resolveProjectPaths } from "@broadly/core";
+import type { NormalizedCommentRecord } from "@broadly/ingest";
+import type { ReportBundle } from "@broadly/report-model";
+
+import {
+  buildPipelineSteps,
+  describeOpinionRunStatus,
+  loadProjectDashboard,
+  resolveCommandProjectRoot,
+  resolveRegisteredModelLabel,
+  stageStatusLabel,
+  type PipelineStep,
+  type ProjectDashboardData,
+  type StepStatus
+} from "./projectDashboard.js";
+
+export interface WebCommandOptions {
+  project?: string;
+  port?: number;
+  watch?: boolean;
+}
+
+interface AnalysisReductionArtifact {
+  createdAt?: string;
+  method?: string;
+  dimensions?: number;
+  status?: string;
+  message?: string;
+  pointCount?: number;
+  points?: Array<{ opinionId?: string; x?: number; y?: number }>;
+}
+
+interface AnalysisClusterArtifact {
+  createdAt?: string;
+  method?: string;
+  requestedClusterCount?: number;
+  effectiveClusterCount?: number;
+  status?: string;
+  message?: string;
+  sourceReductionPath?: string;
+  labeling?: {
+    method?: string;
+    stopReason?: string | null;
+    error?: string;
+  };
+  members?: Array<{ opinionId?: string; clusterId?: number; x?: number; y?: number }>;
+  clusters?: Array<{
+    clusterId?: number;
+    size?: number;
+    centroid?: [number, number];
+    label?: string;
+    topTerms?: string[];
+    summary?: string;
+    representativeOpinions?: Array<{
+      opinionId?: string;
+      opinionText?: string;
+      excerpt?: string;
+    }>;
+  }>;
+}
+
+interface AnalysisPerspectiveArtifact {
+  createdAt?: string;
+  mode?: string;
+  status?: string;
+  synthesis?: {
+    method?: string;
+    stopReason?: string | null;
+    error?: string;
+  };
+  title?: string;
+  summary?: string;
+  rationale?: string;
+  chosenClusterArtifactPath?: string;
+  chosenReductionMethod?: string;
+  chosenClusterCount?: number;
+  highlights?: Array<{
+    clusterId?: number;
+    label?: string;
+    size?: number;
+    summary?: string;
+    representativeOpinions?: Array<{
+      opinionId?: string;
+      opinionText?: string;
+      excerpt?: string;
+    }>;
+  }>;
+}
+
+interface LoadedAnalysisRun {
+  manifest: {
+    runId?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    status?: string;
+    input?: {
+      opinionRunId?: string;
+      opinionsSelected?: number;
+      extractionModel?: { name?: string; provider?: string; region?: string; modelId?: string };
+      embeddingModel?: { name?: string; provider?: string; region?: string; modelId?: string };
+      analysisModel?: { name?: string; provider?: string; region?: string; modelId?: string };
+      prompts?: {
+        clusterLabeling?: { path?: string; sha256?: string };
+        perspectiveSummary?: { path?: string; sha256?: string };
+      };
+      reductionMethods?: string[];
+      clusterCounts?: number[];
+      mergeStrategy?: string;
+      synthesisModes?: string[];
+    };
+    output?: {
+      embeddingsDir?: string;
+      reductionsDir?: string;
+      clustersDir?: string;
+      perspectivesDir?: string;
+      embeddingsReady?: number;
+      embeddingsGenerated?: number;
+      embeddingsReused?: number;
+      failedOpinions?: number;
+      reductionsReady?: number;
+      reductionsUnavailable?: number;
+      reductionsFailed?: number;
+      clusterArtifactsWritten?: number;
+      clusterArtifactsFailed?: number;
+      perspectiveArtifactsWritten?: number;
+    };
+  };
+  reductions: Array<{ path: string; artifact: AnalysisReductionArtifact }>;
+  clusters: Array<{ path: string; artifact: AnalysisClusterArtifact }>;
+  perspectives: Array<{ path: string; artifact: AnalysisPerspectiveArtifact }>;
+}
+
+interface LoadedOpinionArtifact {
+  opinionId?: string;
+  opinionText?: string;
+  excerpt?: string;
+  sourceId?: string;
+  fullComment?: string;
+  provenance?: {
+    sourceRowNumber?: number;
+    externalId?: string;
+    normalizedRecordPath?: string;
+    sourceImportPath?: string;
+  };
+}
+
+interface ThemeClusterReference {
+  clusterId: string;
+  label: string;
+}
+
+interface LoadedClusterDetail {
+  artifactPath: string;
+  artifact: AnalysisClusterArtifact;
+  cluster: {
+    clusterId?: number;
+    size?: number;
+    label?: string;
+    summary?: string;
+    topTerms?: string[];
+    representativeOpinions?: Array<{
+      opinionId?: string;
+      opinionText?: string;
+      excerpt?: string;
+    }>;
+  };
+  members: Array<{ opinionId: string; clusterId: number; x: number; y: number }>;
+}
+
+interface NormalizedRecordPreview {
+  sourceId: string;
+  contentSha256: string;
+  contentText: string;
+  externalId: string | null;
+  sourceRowNumber: number | null;
+  normalizedRecordPath: string;
+}
+
+const INGEST_PREVIEW_PAGE_SIZE = 12;
+
+interface LiveReloadController {
+  handleClient(response: ServerResponse): void;
+  close(): void;
+}
+
+export async function serveProjectWeb(options: WebCommandOptions): Promise<void> {
+  const projectRoot = await resolveCommandProjectRoot(options.project);
+  const projectPaths = resolveProjectPaths(projectRoot);
+  const config = parseProjectConfig(await readFile(projectPaths.configPath, "utf8"));
+  const port = options.port ?? 4310;
+  const liveReload = options.watch === true ? createLiveReloadController(projectRoot) : null;
+
+  const server = createServer(async (request, response) => {
+    try {
+      const requestUrl = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+
+      if (requestUrl.pathname === "/__broadly_live_reload") {
+        if (liveReload === null) {
+          response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          response.end("Live reload is not enabled.\n");
+          return;
+        }
+
+        liveReload.handleClient(response);
+        return;
+      }
+
+      const dashboard = await loadProjectDashboard(projectRoot, config, options.watch === true);
+
+      if (requestUrl.pathname === "/") {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderHomePage(dashboard));
+        return;
+      }
+
+      if (requestUrl.pathname === "/pipeline/ingest") {
+        const offset = parseOffset(requestUrl.searchParams.get("offset"));
+        const previews = await loadNormalizedRecordPreviews(
+          path.join(projectPaths.dataDir, "normalized"),
+          offset,
+          INGEST_PREVIEW_PAGE_SIZE
+        );
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderIngestPage(dashboard, previews, offset, INGEST_PREVIEW_PAGE_SIZE));
+        return;
+      }
+
+      if (requestUrl.pathname === "/pipeline/opinions") {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderOpinionsPage(dashboard));
+        return;
+      }
+
+      if (requestUrl.pathname === "/pipeline/analysis") {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderAnalysisPage(dashboard));
+        return;
+      }
+
+      if (requestUrl.pathname === "/pipeline/report") {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderReportPage(dashboard));
+        return;
+      }
+
+      if (requestUrl.pathname === "/report") {
+        const runId = await findLatestReportRun(projectPaths.reportsDir);
+
+        if (runId === null) {
+          response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          response.end("No report bundle found.\n");
+          return;
+        }
+
+        const reportBundle = await loadReportBundle(projectPaths.reportsDir, runId);
+        const analysisRun = await loadAnalysisRun(projectPaths.runsDir, reportBundle.analysisRunId);
+        const opinionLookup = await loadOpinionArtifactLookup(
+          path.join(projectPaths.dataDir, "opinions"),
+          analysisRun.manifest.input?.opinionRunId
+        );
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderPublishedReportPage(dashboard, runId, reportBundle, analysisRun, opinionLookup));
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/reports/")) {
+        const runId = decodeURIComponent(requestUrl.pathname.slice("/reports/".length));
+        const reportBundle = await loadReportBundle(projectPaths.reportsDir, runId);
+        const analysisRun = await loadAnalysisRun(projectPaths.runsDir, reportBundle.analysisRunId);
+        const opinionLookup = await loadOpinionArtifactLookup(
+          path.join(projectPaths.dataDir, "opinions"),
+          analysisRun.manifest.input?.opinionRunId
+        );
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderPublishedReportPage(dashboard, runId, reportBundle, analysisRun, opinionLookup));
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/runs/")) {
+        const runId = decodeURIComponent(requestUrl.pathname.slice("/runs/".length));
+        const run = await loadOpinionRun(path.join(projectPaths.dataDir, "opinions"), runId);
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderRunPage(dashboard, runId, run));
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/analysis-runs/")) {
+        const clusterMatch = requestUrl.pathname.match(
+          /^\/analysis-runs\/([^/]+)\/clusters\/([^/]+)\/([^/]+)$/
+        );
+
+        if (clusterMatch !== null) {
+          const runId = decodeURIComponent(clusterMatch[1] ?? "");
+          const clusterArtifactName = decodeURIComponent(clusterMatch[2] ?? "");
+          const clusterId = decodeURIComponent(clusterMatch[3] ?? "");
+          const run = await loadAnalysisRun(projectPaths.runsDir, runId);
+          const clusterDetail = loadClusterDetail(run, clusterArtifactName, clusterId);
+          const opinionLookup = await loadOpinionArtifactLookup(
+            path.join(projectPaths.dataDir, "opinions"),
+            run.manifest.input?.opinionRunId
+          );
+
+          response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          response.end(
+            renderClusterDetailPage(
+              dashboard,
+              runId,
+              clusterArtifactName,
+              clusterDetail,
+              opinionLookup
+            )
+          );
+          return;
+        }
+
+        const runId = decodeURIComponent(requestUrl.pathname.slice("/analysis-runs/".length));
+        const run = await loadAnalysisRun(projectPaths.runsDir, runId);
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderAnalysisRunPage(dashboard, runId, run));
+        return;
+      }
+
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Not found\n");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      response.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end(`${message}\n`);
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  server.on("close", () => {
+    liveReload?.close();
+  });
+
+  process.stdout.write(
+    `Broadly web viewer running for ${projectRoot}\n${options.watch === true ? "Live reload enabled.\n" : ""}\nOpen: http://127.0.0.1:${port}\n`
+  );
+}
+
+async function loadOpinionRun(
+  opinionsDir: string,
+  runId: string
+): Promise<{
+  manifest: unknown;
+  records: unknown[];
+}> {
+  const runDir = path.join(opinionsDir, runId);
+  const manifest = JSON.parse(await readFile(path.join(runDir, "manifest.json"), "utf8"));
+  const recordsDir = path.join(runDir, "records");
+  const recordEntries = await readdir(recordsDir, { withFileTypes: true });
+  const records: unknown[] = [];
+
+  for (const entry of recordEntries
+    .filter((item) => item.isFile() && item.name.endsWith(".json"))
+    .sort((a, b) => a.name.localeCompare(b.name))) {
+    const record = JSON.parse(await readFile(path.join(recordsDir, entry.name), "utf8")) as {
+      normalizedRecordPath?: string;
+    };
+    const sourceRecord =
+      typeof record.normalizedRecordPath === "string"
+        ? await readJsonFile<NormalizedCommentRecord>(record.normalizedRecordPath)
+        : null;
+
+    records.push({
+      ...record,
+      ...(sourceRecord === null ? {} : { sourceRecord })
+    });
+  }
+
+  return {
+    manifest,
+    records
+  };
+}
+
+async function loadAnalysisRun(
+  runsDir: string,
+  runId: string
+): Promise<LoadedAnalysisRun> {
+  const runDir = path.join(runsDir, runId);
+  const manifest = await readJsonFile<LoadedAnalysisRun["manifest"]>(
+    path.join(runDir, "manifest.json")
+  );
+
+  if (manifest === null) {
+    throw new Error(`Analysis run '${runId}' was not found.`);
+  }
+
+  const reductions = await loadArtifactDirectory<AnalysisReductionArtifact>(
+    path.join(runDir, "reductions")
+  );
+  const clusters = await loadArtifactDirectory<AnalysisClusterArtifact>(
+    path.join(runDir, "clusters")
+  );
+  const perspectives = await loadArtifactDirectory<AnalysisPerspectiveArtifact>(
+    path.join(runDir, "perspectives")
+  );
+
+  return {
+    manifest,
+    reductions,
+    clusters,
+    perspectives
+  };
+}
+
+async function loadReportBundle(reportsDir: string, runId: string): Promise<ReportBundle> {
+  const reportBundle = await readJsonFile<ReportBundle>(
+    path.join(reportsDir, runId, "report-bundle.json")
+  );
+
+  if (reportBundle === null) {
+    throw new Error(`Report '${runId}' was not found.`);
+  }
+
+  return reportBundle;
+}
+
+async function findLatestReportRun(reportsDir: string): Promise<string | null> {
+  const entries = await readdir(reportsDir, { withFileTypes: true }).catch(() => []);
+  const runs: Array<{ runId: string; mtimeMs: number }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const bundlePath = path.join(reportsDir, entry.name, "report-bundle.json");
+    const bundle = await readJsonFile<ReportBundle>(bundlePath);
+
+    if (bundle === null) {
+      continue;
+    }
+
+    const bundleStat = await readFile(bundlePath).then(() => null).catch(() => null);
+    void bundleStat;
+    const createdAt = Date.parse(bundle.createdAt);
+    runs.push({
+      runId: entry.name,
+      mtimeMs: Number.isNaN(createdAt) ? 0 : createdAt
+    });
+  }
+
+  runs.sort((a, b) => b.mtimeMs - a.mtimeMs || a.runId.localeCompare(b.runId));
+  return runs[0]?.runId ?? null;
+}
+
+async function loadOpinionArtifactLookup(
+  opinionsRootDir: string,
+  opinionRunId: string | undefined
+): Promise<Record<string, LoadedOpinionArtifact>> {
+  if (opinionRunId === undefined) {
+    return {};
+  }
+
+  const opinionsDir = path.join(opinionsRootDir, opinionRunId, "opinions");
+  const entries = await readdir(opinionsDir, { withFileTypes: true }).catch(() => []);
+  const lookup: Record<string, LoadedOpinionArtifact> = {};
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      continue;
+    }
+
+    const artifact = await readJsonFile<LoadedOpinionArtifact>(path.join(opinionsDir, entry.name));
+
+    if (artifact?.opinionId !== undefined) {
+      const normalizedRecord =
+        artifact.provenance?.normalizedRecordPath === undefined
+          ? null
+          : await readJsonFile<NormalizedCommentRecord>(artifact.provenance.normalizedRecordPath);
+
+      lookup[artifact.opinionId] = {
+        ...artifact,
+        ...(normalizedRecord === null
+          ? {}
+          : {
+              fullComment: normalizedRecord.contentText
+            })
+      };
+    }
+  }
+
+  return lookup;
+}
+
+async function loadArtifactDirectory<T>(
+  directoryPath: string
+): Promise<Array<{ path: string; artifact: T }>> {
+  const entries = await readdir(directoryPath, { withFileTypes: true }).catch(() => []);
+  const artifacts: Array<{ path: string; artifact: T }> = [];
+
+  for (const entry of entries
+    .filter((item) => item.isFile() && item.name.endsWith(".json"))
+    .sort((a, b) => a.name.localeCompare(b.name))) {
+    const artifactPath = path.join(directoryPath, entry.name);
+    const artifact = await readJsonFile<T>(artifactPath);
+
+    if (artifact !== null) {
+      artifacts.push({ path: artifactPath, artifact });
+    }
+  }
+
+  return artifacts;
+}
+
+async function loadNormalizedRecordPreviews(
+  normalizedDir: string,
+  offset: number,
+  limit: number
+): Promise<NormalizedRecordPreview[]> {
+  const recordPaths = await listNormalizedRecordPaths(normalizedDir);
+  const selectedPaths = recordPaths.slice(offset, offset + limit);
+  const previews: NormalizedRecordPreview[] = [];
+
+  for (const recordPath of selectedPaths) {
+    const record = JSON.parse(await readFile(recordPath, "utf8")) as NormalizedCommentRecord;
+
+    previews.push({
+      sourceId: record.sourceId,
+      contentSha256: record.contentSha256,
+      contentText: record.contentText,
+      externalId: record.provenance.externalId ?? null,
+      sourceRowNumber: record.provenance.sourceRowNumber ?? null,
+      normalizedRecordPath: recordPath
+    });
+  }
+
+  return previews;
+}
+
+function renderHomePage(data: ProjectDashboardData): string {
+  const steps = buildPipelineSteps(data);
+
+  return renderPage(
+    data,
+    "Overview",
+    `<main class="shell">
+      ${renderHeader(data, "Overview")}
+      <section class="panel intro-grid">
+        <article class="card feature-card">
+          <p class="eyebrow">Project</p>
+          <h2>${escapeHtml(data.config.project.name)}</h2>
+          <p class="lede">${escapeHtml(data.config.project.description)}</p>
+          ${data.config.project.goals.length > 0
+            ? `<div class="stack"><p class="section-label">Goals</p>${renderBulletList(data.config.project.goals)}</div>`
+            : ""}
+        </article>
+        <article class="card feature-card">
+          <p class="eyebrow">Key Questions</p>
+          <h2>What this analysis should answer</h2>
+          ${renderBulletList(data.config.guidingQuestions)}
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Pipeline</p>
+            <h2>Where this project is in the workflow</h2>
+          </div>
+          <p class="meta">Open any stage to inspect inputs, outputs, and current status.</p>
+        </div>
+        <div class="pipeline-grid">
+          ${steps.map((step) => renderPipelineCard(step)).join("")}
+        </div>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Recent Runs</p>
+            <h2>Opinion extraction outputs</h2>
+          </div>
+          <a class="text-link" href="/pipeline/opinions">Open opinions stage</a>
+        </div>
+        ${data.opinionRuns.length === 0
+          ? `<article class="card"><p>No opinion runs yet. Run <code>broadly opinions</code> first.</p></article>`
+          : `<section class="grid">
+              ${data.opinionRuns
+                .slice(0, 4)
+                .map(
+                  (run) => `<a class="card link-card" href="/runs/${encodeURIComponent(run.runId)}">
+                      <p class="eyebrow">${escapeHtml(run.createdAt)}</p>
+                      <h3>${escapeHtml(run.runId)}</h3>
+                      <p>${escapeHtml(run.modelLabel)}</p>
+                      <p class="meta">${run.recordsWritten} / ${run.recordsAttempted} records · ${run.opinionsWritten} opinions · ${run.failedRecords} failures</p>
+                    </a>`
+                )
+                .join("")}
+            </section>`}
+      </section>
+    </main>`
+  );
+}
+
+function renderIngestPage(
+  data: ProjectDashboardData,
+  previews: NormalizedRecordPreview[],
+  offset: number,
+  limit: number
+): string {
+  const ingestStep = buildPipelineSteps(data).find((step) => step.step === "ingest");
+  const shownStart = data.ingest.normalizedRecordCount === 0 ? 0 : offset + 1;
+  const shownEnd = Math.min(offset + previews.length, data.ingest.normalizedRecordCount);
+  const nextOffset = offset + previews.length;
+  const hasMore = nextOffset < data.ingest.normalizedRecordCount;
+
+  return renderPage(
+    data,
+    "Ingest Comments",
+    `<main class="shell">
+      ${renderHeader(data, "Ingest Comments")}
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Dataset</p>
+          <h2>Configured source</h2>
+          ${renderKeyValueList([
+            ["Path", data.ingest.sourcePath],
+            ["Format", data.ingest.format],
+            ["Encoding", data.ingest.encoding ?? "not set"],
+            ["Delimiter", data.ingest.delimiter ?? "not set"],
+            ["ID column", data.ingest.idColumn ?? "not set"],
+            [
+              "Allowed fields",
+              data.config.dataset.allowFields === undefined
+                ? "all source fields"
+                : `${data.config.dataset.allowFields.length} selected`
+            ]
+          ])}
+          ${
+            data.config.dataset.allowFields === undefined
+              ? ""
+              : `<div class="stack"><p class="section-label">Included Fields</p>${renderBulletList(
+                  data.config.dataset.allowFields
+                )}</div>`
+          }
+        </article>
+        <article class="card">
+          <p class="eyebrow">Status</p>
+          <h2>${escapeHtml(stageStatusLabel(ingestStep?.status ?? "pending"))}</h2>
+          ${renderKeyValueList([
+            ["Raw files", String(data.ingest.rawFileCount)],
+            ["Normalized records", String(data.ingest.normalizedRecordCount)],
+            ["Manifest", data.ingest.manifestPath ?? "not found"],
+            ["Imported at", data.ingest.latestImport?.createdAt ?? "not recorded"]
+          ])}
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Artifacts</p>
+            <h2>What ingest produced</h2>
+          </div>
+        </div>
+        <section class="grid">
+          <article class="card">
+            <h3>Raw source snapshot</h3>
+            <p class="meta">${data.ingest.latestImport?.sourceFileSha256 ?? "not available"}</p>
+          </article>
+          <article class="card">
+            <h3>Normalized row corpus</h3>
+            <p class="meta">${data.ingest.latestImport?.recordsWritten ?? data.ingest.normalizedRecordCount} record artifacts</p>
+          </article>
+        </section>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Preview</p>
+            <h2>Sample normalized records</h2>
+          </div>
+          <p class="meta">Showing ${shownStart}-${shownEnd} of ${data.ingest.normalizedRecordCount}</p>
+        </div>
+        ${
+          previews.length === 0
+            ? `<article class="card"><p>No normalized records are available yet.</p></article>`
+            : `<section class="record-list">
+                ${previews
+                  .map((preview, index) =>
+                    renderNormalizedRecordPreview(preview, offset + index + 1, data.projectRoot)
+                  )
+                  .join("")}
+              </section>
+              <div class="load-more-row">
+                ${
+                  hasMore
+                    ? `<a class="button-link" href="/pipeline/ingest?offset=${nextOffset}">Load more...</a>`
+                    : `<p class="meta">End of preview list.</p>`
+                }
+              </div>`
+        }
+      </section>
+    </main>`
+  );
+}
+
+function renderOpinionsPage(data: ProjectDashboardData): string {
+  const latestRun = data.opinionRuns[0];
+  const extractionModelLabel =
+    latestRun?.modelLabel ??
+    resolveRegisteredModelLabel(
+      data.config,
+      data.config.default_opinion_extraction_model ?? data.config.analysis.extractionModel
+    );
+  const embeddingModelLabel = resolveRegisteredModelLabel(
+    data.config,
+    data.config.default_embedding_model ?? data.config.analysis.embeddingModel
+  );
+  const opinionsStatus = describeOpinionRunStatus(data);
+
+  return renderPage(
+    data,
+    "Extract Opinions",
+    `<main class="shell">
+      ${renderHeader(data, "Extract Opinions")}
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Configured Analysis</p>
+          <h2>Current model settings</h2>
+          ${renderKeyValueList([
+            ["Opinion extraction model", extractionModelLabel],
+            ["Embedding model", embeddingModelLabel],
+            ["Synthesis modes", data.config.analysis.synthesisModes.join(", ")],
+            ["Merge strategy", data.config.analysis.mergeStrategy],
+            ["Reduction methods", data.config.analysis.reductionMethods.join(", ")],
+            ["Cluster counts", data.config.analysis.clusterCounts.join(", ")]
+          ])}
+        </article>
+        <article class="card">
+          <p class="eyebrow">Status</p>
+          <h2>${escapeHtml(opinionsStatus.label)}</h2>
+          ${renderKeyValueList([
+            ["Opinion runs", String(data.opinionRuns.length)],
+            ["Processed records", opinionsStatus.processedSummary],
+            ["Latest run", latestRun?.runId ?? "none"],
+            ["Latest model", latestRun?.modelLabel ?? "none"]
+          ])}
+          <p class="meta">${escapeHtml(opinionsStatus.detail)}</p>
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Runs</p>
+            <h2>Extracted opinion batches</h2>
+          </div>
+        </div>
+        ${data.opinionRuns.length === 0
+          ? `<article class="card"><p>No runs yet. Run <code>broadly opinions</code> first.</p></article>`
+          : `<section class="grid">
+              ${data.opinionRuns
+                .map(
+                  (run) => `<a class="card link-card" href="/runs/${encodeURIComponent(run.runId)}">
+                      <p class="eyebrow">${escapeHtml(run.createdAt)}</p>
+                      <h3>${escapeHtml(run.runId)}</h3>
+                      <p>${escapeHtml(run.modelLabel)}</p>
+                      <p class="meta">${run.recordsWritten} / ${run.recordsAttempted} records · ${run.opinionsWritten} opinions · ${run.failedRecords} failures</p>
+                    </a>`
+                )
+                .join("")}
+            </section>`}
+      </section>
+    </main>`
+  );
+}
+
+function renderAnalysisPage(data: ProjectDashboardData): string {
+  const status = buildPipelineSteps(data).find((step) => step.step === "analysis")?.status ?? "pending";
+  const latestRun = data.analysis.runs[0];
+  const analysisModelLabel = resolveRegisteredModelLabel(
+    data.config,
+    data.config.analysis_model ??
+      data.config.default_opinion_extraction_model ??
+      data.config.analysis.extractionModel
+  );
+
+  return renderPage(
+    data,
+    "Perform Analysis",
+    `<main class="shell">
+      ${renderHeader(data, "Perform Analysis")}
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Status</p>
+          <h2>${escapeHtml(stageStatusLabel(status))}</h2>
+          <p class="lede">${escapeHtml(describeAnalysisStatus(status, data.analysis.runCount, data.opinionRuns.length))}</p>
+        </article>
+        <article class="card">
+          <p class="eyebrow">Configuration</p>
+          <h2>Analysis settings</h2>
+          ${renderKeyValueList([
+            ["Analysis model", analysisModelLabel],
+            ["Merge strategy", data.config.analysis.mergeStrategy],
+            [
+              "Reduction methods",
+              `${data.config.analysis.reductionMethods.join(", ")} (${data.config.analysis.reductionDimensions}d)`
+            ],
+            ["Cluster counts", data.config.analysis.clusterCounts.join(", ")],
+            ["Synthesis modes", data.config.analysis.synthesisModes.join(", ")],
+            ["Max perspectives", String(data.config.analysis.maxPerspectives)]
+          ])}
+        </article>
+      </section>
+      <section class="panel">
+        <article class="card">
+          <p class="section-label">Current state</p>
+          <p>${escapeHtml(
+            data.analysis.runCount > 0
+              ? `Found ${data.analysis.runCount} item(s) in runs/. This stage has produced analysis artifacts.`
+              : "No analysis artifacts found in runs/ yet. The pipeline has opinion artifacts, but clustering, synthesis, and map-oriented analysis have not been executed."
+          )}</p>
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Runs</p>
+            <h2>Analysis artifact sets</h2>
+          </div>
+          ${
+            latestRun === undefined
+              ? ""
+              : `<p class="meta">Latest run ${escapeHtml(latestRun.runId)}</p>`
+          }
+        </div>
+        ${data.analysis.runs.length === 0
+          ? `<article class="card"><p>No analysis runs yet. Run <code>broadly analysis</code> first.</p></article>`
+          : `<section class="grid">
+              ${data.analysis.runs
+                .map(
+                  (run) => `<a class="card link-card" href="/analysis-runs/${encodeURIComponent(run.runId)}">
+                      <p class="eyebrow">${escapeHtml(run.createdAt)}</p>
+                      <h3>${escapeHtml(run.runId)}</h3>
+                      <p>${escapeHtml(run.embeddingModelLabel)}</p>
+                      <p class="meta">${escapeHtml(run.status)} · reductions ${escapeHtml(run.reductionMethods.join(", "))} · clusters ${escapeHtml(run.clusterCounts.join(", "))}</p>
+                    </a>`
+                )
+                .join("")}
+            </section>`}
+      </section>
+    </main>`
+  );
+}
+
+function renderReportPage(data: ProjectDashboardData): string {
+  const status = buildPipelineSteps(data).find((step) => step.step === "report")?.status ?? "pending";
+  const latestReportRunId = data.report.files[0] ?? null;
+
+  return renderPage(
+    data,
+    "Create Report",
+    `<main class="shell">
+      ${renderHeader(data, "Create Report")}
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Status</p>
+          <h2>${escapeHtml(stageStatusLabel(status))}</h2>
+          <p class="lede">${escapeHtml(
+            data.report.fileCount > 0
+              ? `Found ${data.report.fileCount} file(s) in reports/.`
+              : "No report output exists yet."
+          )}</p>
+        </article>
+        <article class="card">
+          <p class="eyebrow">Output</p>
+          <h2>Report settings</h2>
+          ${renderKeyValueList([
+            ["Report directory", data.report.reportDir],
+            ["Primary perspective", data.report.primaryPerspective]
+          ])}
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Reports</p>
+            <h2>Published report bundles</h2>
+          </div>
+          ${
+            latestReportRunId === null
+              ? ""
+              : `<a class="text-link" href="/report">Open latest report</a>`
+          }
+        </div>
+        ${data.report.files.length === 0
+          ? `<article class="card"><p>No report files yet.</p></article>`
+          : `<section class="grid">
+              ${data.report.files
+                .map(
+                  (runId) => `<a class="card link-card" href="/reports/${encodeURIComponent(runId)}">
+                      <p class="eyebrow">Report bundle</p>
+                      <h3>${escapeHtml(runId)}</h3>
+                      <p class="meta">Open the JSON-backed report view for this run.</p>
+                    </a>`
+                )
+                .join("")}
+            </section>`}
+      </section>
+    </main>`
+  );
+}
+
+function renderPublishedReportPage(
+  data: ProjectDashboardData,
+  runId: string,
+  report: ReportBundle,
+  analysisRun: LoadedAnalysisRun,
+  opinionLookup: Record<string, LoadedOpinionArtifact>
+): string {
+  const primaryPerspective =
+    report.perspectives.find((perspective) => perspective.perspectiveId === report.primaryPerspectiveId) ??
+    report.perspectives[0];
+  const clusterArtifactByPath = new Map(
+    analysisRun.clusters.map((cluster) => [cluster.path, cluster.artifact] as const)
+  );
+  const perspectiveArtifactByMode = new Map(
+    analysisRun.perspectives
+      .filter((perspective) => perspective.artifact.mode !== undefined)
+      .map((perspective) => [perspective.artifact.mode as string, perspective.artifact] as const)
+  );
+  const perspectiveConfigs = report.perspectives.map((perspective) => {
+    const perspectiveArtifact = perspectiveArtifactByMode.get(perspective.perspectiveId);
+    const clusterArtifact =
+      perspectiveArtifact?.chosenClusterArtifactPath === undefined
+        ? undefined
+        : clusterArtifactByPath.get(perspectiveArtifact.chosenClusterArtifactPath);
+
+    return {
+      perspectiveId: perspective.perspectiveId,
+      reductionMethod: perspectiveArtifact?.chosenReductionMethod ?? "unknown",
+      clusterCount:
+        perspectiveArtifact?.chosenClusterCount === undefined
+          ? String(clusterArtifact?.effectiveClusterCount ?? clusterArtifact?.clusters?.length ?? "unknown")
+          : String(perspectiveArtifact.chosenClusterCount),
+      mergeStrategy: analysisRun.manifest.input?.mergeStrategy ?? "unknown",
+      highlightedCount: String(perspective.clusters.length),
+      themeCount: String(perspective.themes?.length ?? 0)
+    };
+  });
+  const perspectiveGroupId = `perspectives-${escapeHtmlAttribute(runId)}`;
+
+  return renderPage(
+    data,
+    "Report",
+    `<main class="shell">
+      ${renderHeader(data, "Report")}
+      <section class="panel report-hero">
+        <p class="eyebrow"><a href="/pipeline/report">Back to Create Report</a></p>
+        <h2>${escapeHtml(report.projectName)}</h2>
+        <p class="lede">${escapeHtml(primaryPerspective?.title ?? report.primaryPerspectiveId)}</p>
+        <p class="meta">Report ${escapeHtml(runId)} · analysis run ${escapeHtml(report.analysisRunId)} · generated ${escapeHtml(report.createdAt)}</p>
+      </section>
+      <section class="panel">
+        <article class="card feature-card">
+          <p class="eyebrow">Perspectives</p>
+          <h2>Analysis views</h2>
+          <p class="meta">Switch between the different readings produced from the same opinion set. Each view keeps the same source evidence, but may use a different cluster configuration or emphasis.</p>
+          <div class="perspective-switcher" data-perspective-group="${perspectiveGroupId}">
+            ${report.perspectives
+              .map((perspective) => {
+                const config = perspectiveConfigs.find(
+                  (item) => item.perspectiveId === perspective.perspectiveId
+                );
+                const isPrimary = perspective.perspectiveId === report.primaryPerspectiveId;
+
+                return `<button type="button" class="perspective-switcher-tab ${isPrimary ? "active" : ""}" data-perspective-target="perspective-${escapeHtmlAttribute(
+                  perspective.perspectiveId
+                )}">
+                    <span class="perspective-switcher-title">${escapeHtml(perspective.title)}</span>
+                    <span class="perspective-switcher-meta">${escapeHtml(
+                      config === undefined ? "configuration unavailable" : buildPerspectiveFullSummary(config)
+                    )}</span>
+                  </button>`;
+              })
+              .join("")}
+          </div>
+        </article>
+      </section>
+      ${report.perspectives
+        .map(
+          (perspective) => {
+            const perspectiveArtifact = perspectiveArtifactByMode.get(perspective.perspectiveId);
+            const clusterArtifact =
+              perspectiveArtifact?.chosenClusterArtifactPath === undefined
+                ? undefined
+                : clusterArtifactByPath.get(perspectiveArtifact.chosenClusterArtifactPath);
+            const highlightedClusterIds = perspective.clusters.map((cluster) => cluster.clusterId);
+            const tabGroupId = `tabs-${escapeHtmlAttribute(perspective.perspectiveId)}`;
+            const themesTabId = `${tabGroupId}-themes`;
+            const highlightedTabId = `${tabGroupId}-highlighted`;
+            const allTabId = `${tabGroupId}-all`;
+            const perspectiveTabId = `perspective-${escapeHtmlAttribute(perspective.perspectiveId)}`;
+            const isPrimary = perspective.perspectiveId === report.primaryPerspectiveId;
+            const config = perspectiveConfigs.find(
+              (item) => item.perspectiveId === perspective.perspectiveId
+            );
+
+            return `<section class="panel perspective-panel ${isPrimary ? "active" : ""}" id="${perspectiveTabId}" data-cluster-scope data-perspective-panel="${perspectiveTabId}">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">${escapeHtml(perspective.perspectiveId)}</p>
+                  <h2>${escapeHtml(perspective.title)}</h2>
+                </div>
+                ${
+                  config === undefined
+                    ? ""
+                    : `<p class="meta perspective-panel-meta">${escapeHtml(
+                        buildPerspectiveFullSummary(config)
+                      )}</p>`
+                }
+              </div>
+              <article class="card">
+                <p class="lede">${escapeHtml(perspective.summary)}</p>
+              </article>
+              ${
+                clusterArtifact === undefined
+                  ? ""
+                  : `<article class="card">
+                      <div class="section-head">
+                        <div>
+                          <p class="eyebrow">Scatterplot</p>
+                          <h3>Cluster map</h3>
+                        </div>
+                        <p class="meta">${escapeHtml(clusterArtifact.method ?? "map")} · ${clusterArtifact.effectiveClusterCount ?? clusterArtifact.clusters?.length ?? 0} clusters</p>
+                      </div>
+                      <p class="meta">This perspective highlights a subset of clusters, but the map below shows the full chosen cluster set so you can inspect what was emphasized and what was left out.</p>
+                      ${renderClusterLegend(
+                        clusterArtifact,
+                        perspectiveArtifact?.chosenClusterArtifactPath ?? "",
+                        report.analysisRunId,
+                        perspective.perspectiveId,
+                        new Set(perspective.clusters.map((cluster) => cluster.clusterId))
+                      )}
+                      ${renderClusterScatterplot(clusterArtifact, highlightedClusterIds)}
+                    </article>`
+              }
+              <section class="panel" data-tab-group="${tabGroupId}">
+                <div class="tab-strip">
+                  <button type="button" class="report-subtab active" data-tab-target="${themesTabId}">Themes</button>
+                  <button type="button" class="report-subtab" data-tab-target="${highlightedTabId}">Highlighted Clusters</button>
+                  <button type="button" class="report-subtab" data-tab-target="${allTabId}">All Clusters</button>
+                </div>
+                <div class="tab-panel active" data-tab-panel="${themesTabId}">
+                  ${
+                    perspective.themes === undefined || perspective.themes.length === 0
+                      ? `<article class="card"><p class="meta">No higher-level themes are available for this report yet.</p></article>`
+                      : `<article class="card">
+                          <div class="section-head">
+                            <div>
+                              <p class="eyebrow">Theme Atlas</p>
+                              <h3>Higher-level themes</h3>
+                            </div>
+                          </div>
+                          <section class="theme-grid">
+                            ${perspective.themes
+                              .map((theme) => {
+                                const relatedClusters = resolveThemeClusterReferences(
+                                  theme.clusterIds,
+                                  clusterArtifact
+                                );
+
+                                return `<article class="theme-card" data-theme-clusters="${theme.clusterIds
+                                  .map((clusterId) => escapeHtmlAttribute(clusterId))
+                                  .join(",")}">
+                                    <p class="eyebrow">Theme ${escapeHtml(theme.themeId)}</p>
+                                    <h4>${escapeHtml(theme.label)}</h4>
+                                    <p>${escapeHtml(theme.summary)}</p>
+                                    <div class="stack">
+                                      <p class="section-label">Supporting clusters</p>
+                                      <ul class="bullets compact-bullets">
+                                        ${relatedClusters
+                                          .map(
+                                            (cluster) =>
+                                              `<li><a href="#${clusterAnchorId(
+                                                perspective.perspectiveId,
+                                                cluster.clusterId
+                                              )}" data-cluster-focus="${escapeHtmlAttribute(cluster.clusterId)}" href="${clusterDetailHref(
+                                                report.analysisRunId,
+                                                perspectiveArtifact?.chosenClusterArtifactPath ?? "",
+                                                cluster.clusterId
+                                              )}">#${escapeHtml(cluster.clusterId)} ${escapeHtml(cluster.label)}</a></li>`
+                                          )
+                                          .join("")}
+                                      </ul>
+                                    </div>
+                                  </article>`;
+                              })
+                              .join("")}
+                          </section>
+                        </article>`
+                  }
+                </div>
+                <div class="tab-panel" data-tab-panel="${highlightedTabId}">
+                  <section class="record-list">
+                    ${perspective.clusters
+                      .map((cluster, clusterIndex) => {
+                        const clusterColor = clusterColorForId(cluster.clusterId);
+                        return `<article class="card report-cluster-card highlighted-cluster-card" id="${clusterAnchorId(
+                          perspective.perspectiveId,
+                          cluster.clusterId
+                        )}" style="--cluster-accent:${clusterColor}">
+                            <p class="eyebrow">Cluster ${escapeHtml(cluster.clusterId)}</p>
+                            <h3><a href="${clusterDetailHref(
+                              report.analysisRunId,
+                              perspectiveArtifact?.chosenClusterArtifactPath ?? "",
+                              cluster.clusterId
+                            )}">${escapeHtml(cluster.label)}</a></h3>
+                            <p>${escapeHtml(cluster.summary)}</p>
+                            <div class="stack">
+                              <p class="section-label">Evidence</p>
+                              ${cluster.evidenceQuotes.length === 0
+                                ? `<p class="meta">No evidence quotes available.</p>`
+                                : cluster.evidenceQuotes
+                                    .map((quote, quoteIndex) => {
+                                      const opinion = opinionLookup[quote.sourceId];
+                                      const dialogId = `dialog-${escapeHtmlAttribute(perspective.perspectiveId)}-${clusterIndex}-${quoteIndex}`;
+                                      return `<div class="evidence-card">
+                                          <blockquote>${escapeHtml(quote.excerpt)}</blockquote>
+                                          <div class="evidence-meta">
+                                            ${
+                                              opinion === undefined
+                                                ? `<span></span>`
+                                                : `<button type="button" class="text-button" data-dialog-open="${dialogId}">View source opinion</button>`
+                                            }
+                                          </div>
+                                          ${
+                                            opinion === undefined
+                                              ? ""
+                                              : renderOpinionDialog(dialogId, quote.sourceId, opinion, data.projectRoot)
+                                          }
+                                        </div>`;
+                                    })
+                                    .join("")}
+                            </div>
+                          </article>`;
+                      })
+                      .join("")}
+                  </section>
+                </div>
+                <div class="tab-panel" data-tab-panel="${allTabId}">
+                  ${
+                    clusterArtifact === undefined
+                      ? `<article class="card"><p class="meta">No cluster atlas is available for this perspective.</p></article>`
+                      : renderFullClusterAtlas(
+                          clusterArtifact,
+                          perspective,
+                          opinionLookup,
+                          data.projectRoot,
+                          report.analysisRunId,
+                          perspectiveArtifact?.chosenClusterArtifactPath
+                        )
+                  }
+                </div>
+              </section>
+            </section>`;
+          }
+        )
+        .join("")}
+    </main>`
+  );
+}
+
+function buildPerspectiveFullSummary(config: {
+  perspectiveId: string;
+  reductionMethod: string;
+  clusterCount: string;
+  mergeStrategy: string;
+  highlightedCount: string;
+  themeCount: string;
+}): string {
+  return [
+    config.reductionMethod,
+    `k${config.clusterCount}`,
+    `${config.mergeStrategy} merge`,
+    `${config.highlightedCount} highlighted clusters`,
+    `${config.themeCount} themes`
+  ].join(" · ");
+}
+
+function renderClusterScatterplot(
+  artifact: AnalysisClusterArtifact,
+  highlightedClusterIds: string[]
+): string {
+  const members = artifact.members ?? [];
+
+  if (members.length === 0) {
+    return `<p class="meta">No plotted cluster members are available.</p>`;
+  }
+
+  const width = 760;
+  const height = 380;
+  const padding = 28;
+  const xValues = members.map((member) => member.x ?? 0);
+  const yValues = members.map((member) => member.y ?? 0);
+  const minX = Math.min(...xValues);
+  const maxX = Math.max(...xValues);
+  const minY = Math.min(...yValues);
+  const maxY = Math.max(...yValues);
+  const xSpan = maxX - minX || 1;
+  const ySpan = maxY - minY || 1;
+  const highlighted = new Set(highlightedClusterIds.map((value) => Number(value)).filter(Number.isFinite));
+
+  const points = members
+    .map((member) => {
+      const clusterId = member.clusterId ?? 0;
+      const color = clusterColorForId(String(clusterId));
+      const x = padding + (((member.x ?? 0) - minX) / xSpan) * (width - padding * 2);
+      const y = height - padding - (((member.y ?? 0) - minY) / ySpan) * (height - padding * 2);
+      const isHighlighted = highlighted.size === 0 || highlighted.has(clusterId);
+
+      return `<circle class="plot-point${isHighlighted ? " is-focused" : ""}" data-cluster-id="${escapeHtmlAttribute(String(clusterId))}" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${isHighlighted ? "5.4" : "3.2"}" fill="${color}" fill-opacity="${isHighlighted ? "0.88" : "0.22"}" stroke="${isHighlighted ? "rgba(8,38,64,0.45)" : "rgba(8,38,64,0.10)"}" stroke-width="${isHighlighted ? "1.1" : "0.6"}">
+          <title>Cluster ${escapeHtml(String(clusterId))} · opinion ${escapeHtml(member.opinionId ?? "")}</title>
+        </circle>`;
+    })
+    .join("");
+
+  return `<div class="plot-shell">
+      <svg class="plot" viewBox="0 0 ${width} ${height}" role="img" aria-label="Scatterplot of clustered opinions">
+        <rect x="0" y="0" width="${width}" height="${height}" fill="url(#plot-bg)" />
+        <defs>
+          <linearGradient id="plot-bg" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stop-color="#fdfefe" />
+            <stop offset="100%" stop-color="#f2f7fb" />
+          </linearGradient>
+        </defs>
+        ${points}
+      </svg>
+    </div>`;
+}
+
+function renderClusterLegend(
+  clusterArtifact: AnalysisClusterArtifact,
+  clusterArtifactPath: string,
+  runId: string,
+  perspectiveId: string,
+  highlightedClusterIds: Set<string>
+): string {
+  if ((clusterArtifact.clusters?.length ?? 0) === 0) {
+    return "";
+  }
+
+  return `<div class="cluster-legend">
+      ${(clusterArtifact.clusters ?? [])
+        .map(
+          (cluster) => `<a class="cluster-chip" data-cluster-focus="${escapeHtmlAttribute(String(cluster.clusterId ?? "unknown"))}" href="${clusterDetailHref(
+            runId,
+            clusterArtifactPath,
+            String(cluster.clusterId ?? "unknown")
+          )}" style="--cluster-accent:${clusterColorForId(String(cluster.clusterId ?? "unknown"))}">
+              <span class="cluster-chip-swatch"></span>
+              <span>#${escapeHtml(String(cluster.clusterId ?? "unknown"))} ${escapeHtml(cluster.label ?? "Cluster")}</span>
+              ${
+                highlightedClusterIds.has(String(cluster.clusterId ?? "unknown"))
+                  ? `<span class="cluster-chip-flag">highlighted</span>`
+                  : ""
+              }
+            </a>`
+        )
+        .join("")}
+    </div>`;
+}
+
+function renderFullClusterAtlas(
+  clusterArtifact: AnalysisClusterArtifact,
+  perspective: ReportBundle["perspectives"][number],
+  opinionLookup: Record<string, LoadedOpinionArtifact>,
+  projectRoot: string,
+  runId?: string,
+  clusterArtifactPath?: string
+): string {
+  const highlightedClusterIds = new Set(
+    perspective.clusters.map((cluster) => cluster.clusterId)
+  );
+
+  return `<section class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Cluster Atlas</p>
+          <h3>All clusters in the chosen map</h3>
+        </div>
+        <p class="meta">${escapeHtml(
+          `${clusterArtifact.clusters?.length ?? 0} total clusters · ${highlightedClusterIds.size} highlighted in this perspective`
+        )}</p>
+      </div>
+      <section class="record-list">
+        ${(clusterArtifact.clusters ?? [])
+          .map((cluster, clusterIndex) => {
+            const clusterId = String(cluster.clusterId ?? "unknown");
+            const clusterColor = clusterColorForId(clusterId);
+            const isHighlighted = highlightedClusterIds.has(clusterId);
+
+            return `<article class="card report-cluster-card ${isHighlighted ? "highlighted-cluster-card" : "secondary-cluster-card"}" id="${clusterAnchorId(
+              perspective.perspectiveId,
+              clusterId
+            )}" style="--cluster-accent:${clusterColor}">
+                <div class="section-head">
+                  <div>
+                    <p class="eyebrow">Cluster ${escapeHtml(clusterId)}</p>
+                    <h3>${
+                      runId === undefined || clusterArtifactPath === undefined
+                        ? escapeHtml(cluster.label ?? "Cluster")
+                        : `<a href="${clusterDetailHref(
+                            runId,
+                            clusterArtifactPath,
+                            clusterId
+                          )}">${escapeHtml(cluster.label ?? "Cluster")}</a>`
+                    }</h3>
+                  </div>
+                  <p class="meta">${isHighlighted ? "Highlighted in this perspective" : "Not highlighted in this perspective"} · ${escapeHtml(String(cluster.size ?? 0))} opinions</p>
+                </div>
+                <p>${escapeHtml(cluster.summary ?? "")}</p>
+                ${
+                  (cluster.topTerms?.length ?? 0) === 0
+                    ? ""
+                    : `<p class="meta">Top terms: ${escapeHtml((cluster.topTerms ?? []).join(", "))}</p>`
+                }
+                <div class="stack">
+                  <p class="section-label">Representative opinions</p>
+                  ${(cluster.representativeOpinions ?? [])
+                    .slice(0, 3)
+                    .map((opinion, opinionIndex) => {
+                      const loadedOpinion =
+                        opinion.opinionId === undefined
+                          ? undefined
+                          : opinionLookup[opinion.opinionId];
+                      const dialogId = `atlas-dialog-${escapeHtmlAttribute(perspective.perspectiveId)}-${clusterIndex}-${opinionIndex}`;
+
+                      return `<div class="evidence-card">
+                          <blockquote>${escapeHtml(opinion.excerpt ?? opinion.opinionText ?? "")}</blockquote>
+                          <div class="evidence-meta">
+                            ${
+                              loadedOpinion === undefined || opinion.opinionId === undefined
+                                ? `<span></span>`
+                                : `<button type="button" class="text-button" data-dialog-open="${dialogId}">View source opinion</button>`
+                            }
+                          </div>
+                          ${
+                            loadedOpinion === undefined || opinion.opinionId === undefined
+                              ? ""
+                              : renderOpinionDialog(
+                                  dialogId,
+                                  opinion.opinionId,
+                                  loadedOpinion,
+                                  projectRoot
+                                )
+                          }
+                        </div>`;
+                    })
+                    .join("")}
+                </div>
+              </article>`;
+          })
+          .join("")}
+      </section>
+    </section>`;
+}
+
+function resolveThemeClusterReferences(
+  clusterIds: string[],
+  clusterArtifact: AnalysisClusterArtifact | undefined
+): ThemeClusterReference[] {
+  const clusterById = new Map(
+    (clusterArtifact?.clusters ?? []).map((cluster) => [
+      String(cluster.clusterId ?? "unknown"),
+      cluster.label ?? "Cluster"
+    ] as const)
+  );
+
+  return clusterIds.map((clusterId) => ({
+    clusterId,
+    label: clusterById.get(clusterId) ?? "Cluster"
+  }));
+}
+
+function renderOpinionDialog(
+  dialogId: string,
+  sourceOpinionId: string,
+  opinion: LoadedOpinionArtifact,
+  projectRoot: string
+): string {
+  return `<dialog class="opinion-dialog" id="${escapeHtmlAttribute(dialogId)}">
+      <form method="dialog" class="dialog-shell">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">Source opinion</p>
+            <h3>Opinion provenance</h3>
+          </div>
+          <button type="submit" class="dialog-close" aria-label="Close">×</button>
+        </div>
+        <div class="stack">
+          <p class="section-label">Opinion text</p>
+          <p>${escapeHtml(opinion.opinionText ?? "(missing)")}</p>
+        </div>
+        ${
+          opinion.excerpt === undefined
+            ? ""
+            : `<div class="stack">
+                <p class="section-label">Excerpt</p>
+                <blockquote>${escapeHtml(opinion.excerpt)}</blockquote>
+              </div>`
+        }
+        ${
+          opinion.fullComment === undefined
+            ? ""
+            : `<div class="stack">
+                <p class="section-label">Full comment</p>
+                <pre>${escapeHtml(opinion.fullComment)}</pre>
+              </div>`
+        }
+        <div class="stack">
+          ${renderKeyValueList([
+            ["Opinion ID", sourceOpinionId],
+            ["Source ID", opinion.sourceId ?? "unknown"],
+            ["Source row", opinion.provenance?.sourceRowNumber === undefined ? "unknown" : String(opinion.provenance.sourceRowNumber)],
+            ["External ID", opinion.provenance?.externalId ?? "not set"],
+            [
+              "Normalized record",
+              opinion.provenance?.normalizedRecordPath === undefined
+                ? "not set"
+                : toPortableRelativePath(projectRoot, opinion.provenance.normalizedRecordPath)
+            ]
+          ])}
+        </div>
+      </form>
+    </dialog>`;
+}
+
+function clusterColorForId(clusterId: string): string {
+  const palette = [
+    "#145688",
+    "#2A8DC8",
+    "#CC7418",
+    "#15794F",
+    "#A85E12",
+    "#6E4FF6",
+    "#C53F7B",
+    "#008B8B",
+    "#8D5E2B",
+    "#51606F"
+  ];
+  const numeric = Number(clusterId);
+  const index = Number.isFinite(numeric) ? Math.abs(numeric) % palette.length : 0;
+  return palette[index] ?? palette[0] ?? "#145688";
+}
+
+function clusterAnchorId(perspectiveId: string, clusterId: string): string {
+  return `cluster-${escapeHtmlAttribute(perspectiveId)}-${escapeHtmlAttribute(clusterId)}`;
+}
+
+function clusterDetailHref(runId: string, clusterArtifactPath: string, clusterId: string): string {
+  const artifactName = path.basename(clusterArtifactPath);
+  return `/analysis-runs/${encodeURIComponent(runId)}/clusters/${encodeURIComponent(artifactName)}/${encodeURIComponent(clusterId)}`;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replaceAll("`", "&#96;");
+}
+
+function loadClusterDetail(
+  run: LoadedAnalysisRun,
+  clusterArtifactName: string,
+  clusterId: string
+): LoadedClusterDetail {
+  const clusterArtifactEntry = run.clusters.find(
+    ({ path: artifactPath }) => path.basename(artifactPath) === clusterArtifactName
+  );
+
+  if (clusterArtifactEntry === undefined) {
+    throw new Error(`Cluster artifact '${clusterArtifactName}' was not found in this analysis run.`);
+  }
+
+  const numericClusterId = Number.parseInt(clusterId, 10);
+  const cluster = (clusterArtifactEntry.artifact.clusters ?? []).find(
+    (item) => item.clusterId === numericClusterId
+  );
+
+  if (cluster === undefined) {
+    throw new Error(`Cluster '${clusterId}' was not found in artifact '${clusterArtifactName}'.`);
+  }
+
+  const members = (clusterArtifactEntry.artifact.members ?? []).filter(
+    (member): member is { opinionId: string; clusterId: number; x: number; y: number } =>
+      typeof member.opinionId === "string" &&
+      typeof member.clusterId === "number" &&
+      typeof member.x === "number" &&
+      typeof member.y === "number" &&
+      member.clusterId === numericClusterId
+  );
+
+  return {
+    artifactPath: clusterArtifactEntry.path,
+    artifact: clusterArtifactEntry.artifact,
+    cluster,
+    members
+  };
+}
+
+function renderRunPage(
+  data: ProjectDashboardData,
+  runId: string,
+  run: {
+    manifest: unknown;
+    records: unknown[];
+  }
+): string {
+  const manifest = run.manifest as {
+    createdAt?: string;
+    model?: { name?: string; provider?: string; region?: string; modelId?: string };
+    prompt?: { path?: string; sha256?: string };
+    output?: { opinionsWritten?: number; failedRecords?: number };
+  };
+
+  return renderPage(
+    data,
+    "Opinion Run",
+    `<main class="shell">
+      ${renderHeader(data, "Opinion Run")}
+      <section class="panel">
+        <p class="eyebrow"><a href="/pipeline/opinions">Back to Extract Opinions</a></p>
+        <h2>${escapeHtml(runId)}</h2>
+        <p class="lede">${escapeHtml(
+          `${manifest.model?.name ?? "unknown"} · ${manifest.model?.provider ?? "unknown"} · ${manifest.model?.region ?? "unknown"} · ${manifest.model?.modelId ?? "unknown"}`
+        )}</p>
+        <p class="meta">${escapeHtml(manifest.createdAt ?? "")} · ${manifest.output?.opinionsWritten ?? 0} opinions · ${manifest.output?.failedRecords ?? 0} failures</p>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Transparency</p>
+            <h2>Run inputs</h2>
+          </div>
+        </div>
+        <article class="card">
+          ${renderKeyValueList([
+            [
+              "Prompt file",
+              manifest.prompt?.path === undefined
+                ? "unknown"
+                : toPortableRelativePath(data.projectRoot, manifest.prompt.path)
+            ],
+            ["Prompt SHA-256", manifest.prompt?.sha256 ?? "unknown"]
+          ])}
+        </article>
+      </section>
+      <section class="record-list">
+        ${run.records
+          .map((record, index) => renderRecordCard(record, index + 1, data.projectRoot))
+          .join("")}
+      </section>
+    </main>`
+  );
+}
+
+function renderAnalysisRunPage(
+  data: ProjectDashboardData,
+  runId: string,
+  run: LoadedAnalysisRun
+): string {
+  const manifest = run.manifest;
+  const extractionModelLabel =
+    manifest.input?.extractionModel === undefined
+      ? "unknown"
+      : `${manifest.input.extractionModel.name ?? "unknown"} (${manifest.input.extractionModel.provider ?? "unknown"} · ${manifest.input.extractionModel.region ?? "unknown"} · ${manifest.input.extractionModel.modelId ?? "unknown"})`;
+  const embeddingModelLabel =
+    manifest.input?.embeddingModel === undefined
+      ? "unknown"
+      : `${manifest.input.embeddingModel.name ?? "unknown"} (${manifest.input.embeddingModel.provider ?? "unknown"} · ${manifest.input.embeddingModel.region ?? "unknown"} · ${manifest.input.embeddingModel.modelId ?? "unknown"})`;
+  const analysisModelLabel =
+    manifest.input?.analysisModel === undefined
+      ? "unknown"
+      : `${manifest.input.analysisModel.name ?? "unknown"} (${manifest.input.analysisModel.provider ?? "unknown"} · ${manifest.input.analysisModel.region ?? "unknown"} · ${manifest.input.analysisModel.modelId ?? "unknown"})`;
+
+  return renderPage(
+    data,
+    "Analysis Run",
+    `<main class="shell">
+      ${renderHeader(data, "Analysis Run")}
+      <section class="panel">
+        <p class="eyebrow"><a href="/pipeline/analysis">Back to Perform Analysis</a></p>
+        <h2>${escapeHtml(runId)}</h2>
+        <p class="lede">${escapeHtml(manifest.status ?? "unknown")} · ${escapeHtml(manifest.createdAt ?? "")}</p>
+      </section>
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Inputs</p>
+          <h2>Run configuration</h2>
+          ${renderKeyValueList([
+            ["Opinion run", manifest.input?.opinionRunId ?? "unknown"],
+            ["Opinions selected", String(manifest.input?.opinionsSelected ?? 0)],
+            ["Extraction model", extractionModelLabel],
+            ["Embedding model", embeddingModelLabel],
+            ["Analysis model", analysisModelLabel],
+            ["Merge strategy", manifest.input?.mergeStrategy ?? "unknown"],
+            ["Reduction methods", (manifest.input?.reductionMethods ?? []).join(", ") || "none"],
+            ["Cluster counts", (manifest.input?.clusterCounts ?? []).join(", ") || "none"],
+            ["Synthesis modes", (manifest.input?.synthesisModes ?? []).join(", ") || "none"]
+          ])}
+        </article>
+        <article class="card">
+          <p class="eyebrow">Outputs</p>
+          <h2>Run results</h2>
+          ${renderKeyValueList([
+            ["Embeddings ready", String(manifest.output?.embeddingsReady ?? 0)],
+            ["Generated now", String(manifest.output?.embeddingsGenerated ?? 0)],
+            ["Reused", String(manifest.output?.embeddingsReused ?? 0)],
+            ["Failed opinions", String(manifest.output?.failedOpinions ?? 0)],
+            ["Cluster artifacts", String(manifest.output?.clusterArtifactsWritten ?? 0)],
+            ["Perspective artifacts", String(manifest.output?.perspectiveArtifactsWritten ?? 0)]
+          ])}
+        </article>
+      </section>
+      <section class="panel">
+        <article class="card">
+          <p class="eyebrow">Transparency</p>
+          <h2>Analysis prompts</h2>
+          ${renderKeyValueList([
+            [
+              "Cluster labeling prompt",
+              manifest.input?.prompts?.clusterLabeling?.path === undefined
+                ? "unknown"
+                : toPortableRelativePath(data.projectRoot, manifest.input.prompts.clusterLabeling.path)
+            ],
+            [
+              "Cluster labeling prompt SHA-256",
+              manifest.input?.prompts?.clusterLabeling?.sha256 ?? "unknown"
+            ],
+            [
+              "Perspective summary prompt",
+              manifest.input?.prompts?.perspectiveSummary?.path === undefined
+                ? "unknown"
+                : toPortableRelativePath(data.projectRoot, manifest.input.prompts.perspectiveSummary.path)
+            ],
+            [
+              "Perspective summary prompt SHA-256",
+              manifest.input?.prompts?.perspectiveSummary?.sha256 ?? "unknown"
+            ]
+          ])}
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Perspectives</p>
+            <h2>Current synthesized readings</h2>
+          </div>
+        </div>
+        ${run.perspectives.length === 0
+          ? `<article class="card"><p>No perspective artifacts are available yet.</p></article>`
+          : `<section class="grid">
+              ${run.perspectives
+                .map(({ path: artifactPath, artifact }) => renderPerspectiveCard(artifact, artifactPath, data.projectRoot))
+                .join("")}
+            </section>`}
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Reductions</p>
+            <h2>Map projections</h2>
+          </div>
+        </div>
+        ${run.reductions.length === 0
+          ? `<article class="card"><p>No reduction artifacts are available yet.</p></article>`
+          : `<section class="record-list">
+              ${run.reductions
+                .map(({ path: artifactPath, artifact }) => renderReductionCard(artifact, artifactPath, data.projectRoot))
+                .join("")}
+            </section>`}
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Clusters</p>
+            <h2>Cluster sets and labels</h2>
+          </div>
+        </div>
+        ${run.clusters.length === 0
+          ? `<article class="card"><p>No cluster artifacts are available yet.</p></article>`
+          : `<section class="record-list">
+              ${run.clusters
+                .map(({ path: artifactPath, artifact }) =>
+                  renderClusterCard(artifact, artifactPath, data.projectRoot, runId)
+                )
+                .join("")}
+            </section>`}
+      </section>
+    </main>`
+  );
+}
+
+function renderClusterDetailPage(
+  data: ProjectDashboardData,
+  runId: string,
+  clusterArtifactName: string,
+  detail: LoadedClusterDetail,
+  opinionLookup: Record<string, LoadedOpinionArtifact>
+): string {
+  const clusterId = String(detail.cluster.clusterId ?? "unknown");
+  const linkedOpinions = detail.members.map((member) => ({
+    member,
+    opinion: opinionLookup[member.opinionId]
+  }));
+
+  return renderPage(
+    data,
+    "Cluster Detail",
+    `<main class="shell">
+      ${renderHeader(data, "Cluster Detail")}
+      <section class="panel">
+        <p class="eyebrow"><a href="/analysis-runs/${encodeURIComponent(runId)}">Back to Analysis Run</a></p>
+        <h2>${escapeHtml(detail.cluster.label ?? `Cluster ${clusterId}`)}</h2>
+        <p class="lede">Cluster ${escapeHtml(clusterId)} from ${escapeHtml(clusterArtifactName)}</p>
+        <p class="meta">${escapeHtml(String(detail.members.length))} supporting opinions</p>
+      </section>
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Summary</p>
+          <h3>Cluster overview</h3>
+          <p>${escapeHtml(detail.cluster.summary ?? "")}</p>
+          ${renderKeyValueList([
+            ["Cluster ID", clusterId],
+            ["Supporting opinions", String(detail.members.length)],
+            ["Artifact", detail.artifactPath]
+          ])}
+          ${
+            (detail.cluster.topTerms?.length ?? 0) === 0
+              ? ""
+              : `<div class="stack"><p class="section-label">Top terms</p><p class="meta">${escapeHtml(
+                  (detail.cluster.topTerms ?? []).join(", ")
+                )}</p></div>`
+          }
+        </article>
+        <article class="card">
+          <p class="eyebrow">Map</p>
+          <h3>Cluster position</h3>
+          ${renderScatterPlot(undefined, detail.artifact.members?.filter(
+            (member): member is { opinionId: string; clusterId: number; x: number; y: number } =>
+              typeof member.opinionId === "string" &&
+              typeof member.clusterId === "number" &&
+              typeof member.x === "number" &&
+              typeof member.y === "number"
+          ))}
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Supporting Opinions</p>
+            <h3>All opinions assigned to this cluster</h3>
+          </div>
+        </div>
+        ${
+          linkedOpinions.length === 0
+            ? `<article class="card"><p>No supporting opinions were found for this cluster.</p></article>`
+            : `<section class="record-list">
+                ${linkedOpinions
+                  .map(({ opinion, member }, index) => {
+                    const dialogId = `cluster-detail-opinion-${index}`;
+                    return `<article class="card record-card">
+                        <div class="record-header">
+                          <p class="eyebrow">Opinion ${index + 1}</p>
+                          <h3>${escapeHtml(opinion?.opinionText ?? member.opinionId)}</h3>
+                          <p class="meta">${escapeHtml(opinion?.sourceId ?? "unknown source")}</p>
+                        </div>
+                        ${
+                          opinion?.excerpt === undefined
+                            ? ""
+                            : `<blockquote>${escapeHtml(opinion.excerpt)}</blockquote>`
+                        }
+                        ${
+                          opinion === undefined
+                            ? `<p class="meta">Opinion artifact unavailable.</p>`
+                            : `<div class="evidence-meta">
+                                <span></span>
+                                <button type="button" class="text-button" data-dialog-open="${dialogId}">View source opinion</button>
+                              </div>
+                              ${renderOpinionDialog(dialogId, member.opinionId, opinion, data.projectRoot)}`
+                        }
+                      </article>`;
+                  })
+                  .join("")}
+              </section>`
+        }
+      </section>
+    </main>`
+  );
+}
+
+function renderHeader(data: ProjectDashboardData, activePage: string): string {
+  const navItems: Array<{ href: string; label: string; key: string }> = [
+    { href: "/", label: "Overview", key: "Overview" },
+    { href: "/pipeline/ingest", label: "Ingest Comments", key: "Ingest Comments" },
+    { href: "/pipeline/opinions", label: "Extract Opinions", key: "Extract Opinions" },
+    { href: "/pipeline/analysis", label: "Perform Analysis", key: "Perform Analysis" },
+    { href: "/pipeline/report", label: "Create Report", key: "Create Report" }
+  ];
+
+  return `<header class="site-header">
+    <div>
+      <p class="eyebrow">Broadly Web</p>
+      <h1>${escapeHtml(data.config.project.name)}</h1>
+      <p class="lede">${escapeHtml(activePage)}</p>
+    </div>
+    <nav class="tab-nav">
+      ${navItems
+        .map(
+          (item) => `<a class="tab ${item.key === activePage ? "active" : ""}" href="${item.href}">${escapeHtml(item.label)}</a>`
+        )
+        .join("")}
+    </nav>
+  </header>`;
+}
+
+function renderRecordCard(record: unknown, index: number, projectRoot: string): string {
+  const parsed = record as {
+    sourceId?: string;
+    splitDecision?: string;
+    splitRationale?: string;
+    normalizedRecordPath?: string;
+    response?: { rawText?: string };
+    parsed?: {
+      opinions?: Array<{
+        opinion_text?: string;
+        source_excerpt?: string;
+        source_fields?: string[];
+      }>;
+    };
+    error?: string;
+    sourceRecord?: {
+      contentText?: string;
+      rawRow?: Record<string, string>;
+      provenance?: {
+        sourceRowNumber?: number;
+        externalId?: string;
+        importPath?: string;
+      };
+    };
+  };
+
+  return `<article class="card record-card">
+    <div class="record-header">
+      <p class="eyebrow">Record ${index}</p>
+      <h3>${escapeHtml(parsed.sourceId ?? "unknown source")}</h3>
+      ${
+        parsed.error === undefined
+          ? `<p class="meta">${escapeHtml(parsed.splitDecision ?? "unknown")} · ${escapeHtml(parsed.splitRationale ?? "")}</p>`
+          : `<p class="meta error">${escapeHtml(parsed.error)}</p>`
+      }
+    </div>
+    <div class="columns">
+      <section>
+        <h4>Parsed Opinions</h4>
+        ${
+          Array.isArray(parsed.parsed?.opinions) && parsed.parsed.opinions.length > 0
+            ? parsed.parsed.opinions
+                .map(
+                  (opinion) => `<div class="opinion">
+                      <p><strong>Opinion:</strong> ${escapeHtml(opinion.opinion_text ?? "")}</p>
+                      <p><strong>Excerpt:</strong> ${escapeHtml(opinion.source_excerpt ?? "")}</p>
+                      <p><strong>Fields:</strong> ${escapeHtml((opinion.source_fields ?? []).join(", "))}</p>
+                    </div>`
+                )
+                .join("")
+            : `<p>No opinions extracted.</p>`
+        }
+      </section>
+      <section>
+        <h4>Raw Model Response</h4>
+        <pre>${escapeHtml(parsed.response?.rawText ?? parsed.error ?? "")}</pre>
+      </section>
+    </div>
+    <section class="source-record">
+      <h4>Raw Source Record</h4>
+      <pre>${escapeHtml(renderSourceRecordText(parsed.sourceRecord, projectRoot))}</pre>
+    </section>
+    <p class="meta">Normalized record: ${escapeHtml(parsed.normalizedRecordPath ?? "")}</p>
+  </article>`;
+}
+
+function renderPerspectiveCard(
+  perspective: AnalysisPerspectiveArtifact,
+  artifactPath: string,
+  projectRoot: string
+): string {
+  const highlights = perspective.highlights ?? [];
+
+  return `<article class="card record-card">
+    <div class="record-header">
+      <p class="eyebrow">${escapeHtml((perspective.mode ?? "unknown").toUpperCase())}</p>
+      <h3>${escapeHtml(perspective.title ?? perspective.mode ?? "Perspective")}</h3>
+      <p class="meta">${escapeHtml(perspective.status ?? "unknown")} · ${escapeHtml(perspective.synthesis?.method ?? "unknown")} · ${escapeHtml(perspective.summary ?? perspective.rationale ?? "")}</p>
+    </div>
+    <div class="columns">
+      <section>
+        <h4>Highlights</h4>
+        ${
+          highlights.length === 0
+            ? "<p>No highlights are available.</p>"
+            : highlights
+                .map(
+                  (highlight) => `<div class="opinion">
+                      <p><strong>${escapeHtml(highlight.label ?? `Cluster ${highlight.clusterId ?? "?"}`)}</strong> · ${escapeHtml(String(highlight.size ?? 0))} opinions</p>
+                      <p>${escapeHtml(highlight.summary ?? "")}</p>
+                      ${
+                        (highlight.representativeOpinions ?? []).length === 0
+                          ? ""
+                          : `<p class="meta">${escapeHtml(
+                              (highlight.representativeOpinions ?? [])
+                                .slice(0, 2)
+                                .map((item) => truncateForUi(item.opinionText ?? "", 90))
+                                .join(" | ")
+                            )}</p>`
+                      }
+                    </div>`
+                )
+                .join("")
+        }
+      </section>
+      <section>
+        <h4>Selection</h4>
+        ${renderKeyValueList([
+          ["Reduction", perspective.chosenReductionMethod ?? "unknown"],
+          ["Cluster count", String(perspective.chosenClusterCount ?? "unknown")],
+          ["Stop reason", perspective.synthesis?.stopReason ?? "unknown"],
+          ["Artifact", toPortableRelativePath(projectRoot, artifactPath)]
+        ])}
+        <p class="meta">${escapeHtml(perspective.synthesis?.error ?? perspective.rationale ?? "")}</p>
+      </section>
+    </div>
+  </article>`;
+}
+
+function renderReductionCard(
+  reduction: AnalysisReductionArtifact,
+  artifactPath: string,
+  projectRoot: string
+): string {
+  const points = (reduction.points ?? [])
+    .filter(
+      (point): point is { opinionId: string; x: number; y: number } =>
+        typeof point.opinionId === "string" &&
+        typeof point.x === "number" &&
+        typeof point.y === "number"
+    );
+
+  return `<article class="card record-card">
+    <div class="record-header">
+      <p class="eyebrow">${escapeHtml(reduction.method ?? "unknown")}</p>
+      <h3>${escapeHtml((reduction.method ?? "reduction").toUpperCase())}</h3>
+      <p class="meta">${escapeHtml(reduction.status ?? "unknown")} · ${escapeHtml(String(reduction.pointCount ?? 0))} points</p>
+    </div>
+    ${
+      reduction.status === "ready"
+        ? renderScatterPlot(points, undefined)
+        : `<p class="meta">${escapeHtml(reduction.message ?? "No plot available.")}</p>`
+    }
+    <p class="meta">Artifact ${escapeHtml(toPortableRelativePath(projectRoot, artifactPath))}</p>
+  </article>`;
+}
+
+function renderClusterCard(
+  clusterArtifact: AnalysisClusterArtifact,
+  artifactPath: string,
+  projectRoot: string,
+  runId?: string
+): string {
+  const members = (clusterArtifact.members ?? [])
+    .filter(
+      (member): member is { opinionId: string; clusterId: number; x: number; y: number } =>
+        typeof member.opinionId === "string" &&
+        typeof member.clusterId === "number" &&
+        typeof member.x === "number" &&
+        typeof member.y === "number"
+    );
+  const clusters = (clusterArtifact.clusters ?? [])
+    .filter(
+      (
+        cluster
+      ): cluster is {
+        clusterId: number;
+        size: number;
+        label?: string;
+        summary?: string;
+        representativeOpinions?: Array<{ opinionId?: string; opinionText?: string; excerpt?: string }>;
+      } => typeof cluster.clusterId === "number" && typeof cluster.size === "number"
+    )
+    .sort((left, right) => right.size - left.size || left.clusterId - right.clusterId);
+
+  return `<article class="card record-card">
+    <div class="record-header">
+      <p class="eyebrow">${escapeHtml((clusterArtifact.method ?? "unknown").toUpperCase())} · K=${escapeHtml(String(clusterArtifact.effectiveClusterCount ?? clusterArtifact.requestedClusterCount ?? "?"))}</p>
+      <h3>${escapeHtml(clusterArtifact.status ?? "unknown")}</h3>
+      <p class="meta">${escapeHtml(String(members.length))} assigned points · requested ${escapeHtml(String(clusterArtifact.requestedClusterCount ?? "?"))} · ${escapeHtml(clusterArtifact.labeling?.method ?? "unknown")}</p>
+    </div>
+    ${
+      clusterArtifact.status === "ready"
+        ? renderScatterPlot(undefined, members)
+        : `<p class="meta">${escapeHtml(clusterArtifact.message ?? "No clustered plot available.")}</p>`
+    }
+    <div class="stack">
+      <h4>Cluster labels</h4>
+      ${
+        clusters.length === 0
+          ? "<p>No cluster summaries are available.</p>"
+          : clusters
+              .map(
+                (cluster) => `<div class="opinion">
+                    <p><strong>${
+                      runId === undefined
+                        ? escapeHtml(cluster.label ?? `Cluster ${cluster.clusterId + 1}`)
+                        : `<a href="${clusterDetailHref(
+                            runId,
+                            artifactPath,
+                            String(cluster.clusterId)
+                          )}">${escapeHtml(cluster.label ?? `Cluster ${cluster.clusterId + 1}`)}</a>`
+                    }</strong> · ${escapeHtml(String(cluster.size))} opinions</p>
+                    <p>${escapeHtml(cluster.summary ?? "")}</p>
+                    ${
+                      (cluster.representativeOpinions ?? []).length === 0
+                        ? ""
+                        : `<p class="meta">${escapeHtml(
+                            (cluster.representativeOpinions ?? [])
+                              .slice(0, 2)
+                              .map((item) => truncateForUi(item.opinionText ?? "", 90))
+                              .join(" | ")
+                          )}</p>`
+                    }
+                  </div>`
+              )
+              .join("")
+      }
+    </div>
+    <p class="meta">Label stop reason: ${escapeHtml(clusterArtifact.labeling?.stopReason ?? "unknown")}</p>
+    <p class="meta">Artifact ${escapeHtml(toPortableRelativePath(projectRoot, artifactPath))}</p>
+  </article>`;
+}
+
+function renderScatterPlot(
+  reductionPoints?: Array<{ opinionId: string; x: number; y: number }>,
+  clusterMembers?: Array<{ opinionId: string; clusterId: number; x: number; y: number }>
+): string {
+  const points =
+    clusterMembers?.map((member) => ({
+      x: member.x,
+      y: member.y,
+      color: CLUSTER_COLORS[member.clusterId % CLUSTER_COLORS.length] ?? "#5D6378"
+    })) ??
+    reductionPoints?.map((point) => ({
+      x: point.x,
+      y: point.y,
+      color: "#2A8DC8"
+    })) ??
+    [];
+
+  if (points.length === 0) {
+    return `<div class="plot-shell"><p class="meta">No plot data available.</p></div>`;
+  }
+
+  const width = 560;
+  const height = 320;
+  const padding = 24;
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const xSpan = Math.max(maxX - minX, 1);
+  const ySpan = Math.max(maxY - minY, 1);
+  const circles = points
+    .map((point) => {
+      const x = padding + ((point.x - minX) / xSpan) * (width - padding * 2);
+      const y = height - padding - ((point.y - minY) / ySpan) * (height - padding * 2);
+      return `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="5" fill="${point.color}" fill-opacity="0.88" />`;
+    })
+    .join("");
+
+  return `<div class="plot-shell">
+    <svg class="plot" viewBox="0 0 ${width} ${height}" aria-label="analysis plot" role="img">
+      <rect x="0" y="0" width="${width}" height="${height}" rx="18" fill="#F7F8FA" stroke="#DCDFE7" />
+      ${circles}
+    </svg>
+  </div>`;
+}
+
+function renderNormalizedRecordPreview(
+  record: NormalizedRecordPreview,
+  index: number,
+  projectRoot: string
+): string {
+  return `<article class="card record-card">
+    <div class="record-header">
+      <p class="eyebrow">Normalized Record ${index}</p>
+      <h3>${escapeHtml(record.sourceId)}</h3>
+      <p class="meta">Row ${escapeHtml(record.sourceRowNumber?.toString() ?? "unknown")} · External ID ${escapeHtml(record.externalId ?? "none")}</p>
+    </div>
+    <pre>${escapeHtml(record.contentText)}</pre>
+    <p class="meta">SHA-256 ${escapeHtml(record.contentSha256)}</p>
+    <p class="meta">Artifact ${escapeHtml(toPortableRelativePath(projectRoot, record.normalizedRecordPath))}</p>
+  </article>`;
+}
+
+function renderSourceRecordText(
+  sourceRecord:
+    | {
+        contentText?: string;
+        rawRow?: Record<string, string>;
+        provenance?: {
+          sourceRowNumber?: number;
+          externalId?: string;
+          importPath?: string;
+        };
+      }
+    | undefined,
+  projectRoot: string
+): string {
+  if (sourceRecord === undefined) {
+    return "Source record unavailable.";
+  }
+
+  const rawRowLines =
+    sourceRecord.rawRow === undefined
+      ? []
+      : Object.entries(sourceRecord.rawRow).map(([field, value]) => `${field}: ${value}`);
+  const provenanceLines = [
+    sourceRecord.provenance?.sourceRowNumber === undefined
+      ? null
+      : `Source Row Number: ${sourceRecord.provenance.sourceRowNumber}`,
+    sourceRecord.provenance?.externalId === undefined
+      ? null
+      : `External ID: ${sourceRecord.provenance.externalId}`,
+    sourceRecord.provenance?.importPath === undefined
+      ? null
+      : `Import Path: ${toPortableRelativePath(projectRoot, sourceRecord.provenance.importPath)}`
+  ].filter((line): line is string => line !== null);
+
+  return [...rawRowLines, ...(rawRowLines.length > 0 && provenanceLines.length > 0 ? [""] : []), ...provenanceLines]
+    .join("\n")
+    .trim() || sourceRecord.contentText || "Source record unavailable.";
+}
+
+function renderPipelineCard(step: {
+  step: PipelineStep;
+  title: string;
+  href: string;
+  status: StepStatus;
+  summary: string;
+  detail: string;
+}): string {
+  return `<a class="card link-card pipeline-card ${step.status}" href="${step.href}">
+    <p class="eyebrow">${escapeHtml(stageStatusLabel(step.status))}</p>
+    <h3>${escapeHtml(step.title)}</h3>
+    <p>${escapeHtml(step.summary)}</p>
+    <p class="meta">${escapeHtml(step.detail)}</p>
+  </a>`;
+}
+
+function renderKeyValueList(items: Array<[string, string]>): string {
+  return `<dl class="facts">
+    ${items
+      .map(
+        ([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`
+      )
+      .join("")}
+  </dl>`;
+}
+
+function renderBulletList(items: string[]): string {
+  return `<ul class="bullets">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+function truncateForUi(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+const CLUSTER_COLORS = [
+  "#1B72B0",
+  "#E8913A",
+  "#15794F",
+  "#A64D79",
+  "#6C63FF",
+  "#B85C38",
+  "#0E3D66",
+  "#7D9D0B",
+  "#C44536",
+  "#2A9D8F",
+  "#8D5A97",
+  "#F4A261"
+];
+
+function describeAnalysisStatus(
+  status: StepStatus,
+  analysisRunCount: number,
+  opinionRunCount: number
+): string {
+  if (status === "ready") {
+    return `${analysisRunCount} analysis artifact set(s) are already present.`;
+  }
+
+  if (status === "active") {
+    return opinionRunCount > 0
+      ? "Opinion extraction exists, so this is the next meaningful stage."
+      : "This stage will become relevant after opinion extraction.";
+  }
+
+  return "This stage is waiting on earlier pipeline steps.";
+}
+
+function renderPage(data: ProjectDashboardData, title: string, body: string): string {
+  const behaviorScript = `
+    <script>
+      const clearClusterFocus = (scope) => {
+        if (!(scope instanceof HTMLElement)) return;
+        scope.querySelectorAll(".plot").forEach((plot) => {
+          plot.classList.remove("focus-mode");
+          plot.querySelectorAll(".plot-point").forEach((point) => {
+            point.classList.remove("is-focused");
+          });
+        });
+      };
+
+      const applyClusterFocus = (scope, clusterId) => {
+        if (!(scope instanceof HTMLElement)) return;
+        scope.querySelectorAll(".plot").forEach((plot) => {
+          plot.classList.add("focus-mode");
+          plot.querySelectorAll(".plot-point").forEach((point) => {
+            const matches = point.getAttribute("data-cluster-id") === clusterId;
+            point.classList.toggle("is-focused", matches);
+          });
+        });
+      };
+
+      const applyThemeFocus = (scope, clusterIds) => {
+        if (!(scope instanceof HTMLElement)) return;
+        const wanted = new Set(clusterIds);
+        scope.querySelectorAll(".plot").forEach((plot) => {
+          plot.classList.add("focus-mode");
+          plot.querySelectorAll(".plot-point").forEach((point) => {
+            const matches = wanted.has(point.getAttribute("data-cluster-id"));
+            point.classList.toggle("is-focused", matches);
+          });
+        });
+      };
+
+      document.addEventListener("mouseover", (event) => {
+        const chip = event.target.closest("[data-cluster-focus]");
+        if (!(chip instanceof HTMLElement)) return;
+        const clusterId = chip.getAttribute("data-cluster-focus");
+        const scope = chip.closest("[data-cluster-scope]");
+        if (clusterId && scope instanceof HTMLElement) {
+          applyClusterFocus(scope, clusterId);
+        }
+      });
+
+      document.addEventListener("mouseover", (event) => {
+        const card = event.target.closest("[data-theme-clusters]");
+        if (!(card instanceof HTMLElement)) return;
+        const raw = card.getAttribute("data-theme-clusters");
+        const scope = card.closest("[data-cluster-scope]");
+        if (raw && scope instanceof HTMLElement) {
+          applyThemeFocus(scope, raw.split(",").map((value) => value.trim()).filter(Boolean));
+        }
+      });
+
+      document.addEventListener("mouseout", (event) => {
+        const chip = event.target.closest("[data-cluster-focus]");
+        if (!(chip instanceof HTMLElement)) return;
+        const related = event.relatedTarget;
+        if (related instanceof Node && chip.contains(related)) return;
+        const scope = chip.closest("[data-cluster-scope]");
+        clearClusterFocus(scope);
+      });
+
+      document.addEventListener("mouseout", (event) => {
+        const card = event.target.closest("[data-theme-clusters]");
+        if (!(card instanceof HTMLElement)) return;
+        const related = event.relatedTarget;
+        if (related instanceof Node && card.contains(related)) return;
+        const scope = card.closest("[data-cluster-scope]");
+        clearClusterFocus(scope);
+      });
+
+      document.addEventListener("click", (event) => {
+        const card = event.target.closest("[data-theme-clusters]");
+        if (!(card instanceof HTMLElement)) return;
+        const raw = card.getAttribute("data-theme-clusters");
+        const scope = card.closest("[data-cluster-scope]");
+        if (raw && scope instanceof HTMLElement) {
+          applyThemeFocus(scope, raw.split(",").map((value) => value.trim()).filter(Boolean));
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        const openButton = event.target.closest("[data-dialog-open]");
+        if (openButton instanceof HTMLElement) {
+          const dialogId = openButton.getAttribute("data-dialog-open");
+          if (dialogId) {
+            const dialog = document.getElementById(dialogId);
+            if (dialog instanceof HTMLDialogElement) {
+              dialog.showModal();
+            }
+          }
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        const tabButton = event.target.closest("[data-tab-target]");
+        if (!(tabButton instanceof HTMLElement)) return;
+        const tabTarget = tabButton.getAttribute("data-tab-target");
+        const tabGroup = tabButton.closest("[data-tab-group]");
+        if (!tabTarget || !(tabGroup instanceof HTMLElement)) return;
+
+        event.preventDefault();
+
+        tabGroup.querySelectorAll("[data-tab-target]").forEach((button) => {
+          button.classList.toggle("active", button === tabButton);
+        });
+        tabGroup.querySelectorAll("[data-tab-panel]").forEach((panel) => {
+          const matches = panel.getAttribute("data-tab-panel") === tabTarget;
+          panel.classList.toggle("active", matches);
+        });
+      });
+
+      document.addEventListener("click", (event) => {
+        const tabButton = event.target.closest("[data-perspective-target]");
+        if (!(tabButton instanceof HTMLElement)) return;
+        const tabTarget = tabButton.getAttribute("data-perspective-target");
+        const tabGroup = tabButton.closest("[data-perspective-group]");
+        if (!tabTarget || !(tabGroup instanceof HTMLElement)) return;
+
+        event.preventDefault();
+
+        tabGroup.querySelectorAll("[data-perspective-target]").forEach((button) => {
+          button.classList.toggle("active", button === tabButton);
+        });
+        document.querySelectorAll("[data-perspective-panel]").forEach((panel) => {
+          const matches = panel.getAttribute("data-perspective-panel") === tabTarget;
+          panel.classList.toggle("active", matches);
+        });
+        if (window.location.hash !== "#" + tabTarget) {
+          history.replaceState(null, "", "#" + tabTarget);
+        }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+
+      const hashPanelId = window.location.hash.startsWith("#")
+        ? window.location.hash.slice(1)
+        : "";
+      if (hashPanelId) {
+        const matchingButton = document.querySelector('[data-perspective-target="' + CSS.escape(hashPanelId) + '"]');
+        if (matchingButton instanceof HTMLElement) {
+          matchingButton.click();
+        }
+      }
+    </script>`;
+  const liveReloadScript = data.liveReloadEnabled
+    ? `
+    <script>
+      const broadlyLiveReload = new EventSource("/__broadly_live_reload");
+      broadlyLiveReload.addEventListener("reload", () => {
+        window.location.reload();
+      });
+    </script>`
+    : "";
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(`${data.config.project.name} · ${title}`)}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --bl-primary-900: #082640;
+        --bl-primary-800: #0E3D66;
+        --bl-primary-700: #145688;
+        --bl-primary-600: #1B72B0;
+        --bl-primary-500: #2A8DC8;
+        --bl-primary-300: #85C3E8;
+        --bl-primary-200: #B8DEF3;
+        --bl-primary-100: #E0F1FB;
+        --bl-accent-700: #A85E12;
+        --bl-accent-600: #CC7418;
+        --bl-accent-500: #E8913A;
+        --bl-accent-100: #FDF2E3;
+        --bl-success-600: #15794F;
+        --bl-warning-600: #A67B0A;
+        --bl-gray-900: #1A1D25;
+        --bl-gray-800: #2B3041;
+        --bl-gray-700: #444A5E;
+        --bl-gray-600: #5D6378;
+        --bl-gray-500: #7A8197;
+        --bl-gray-300: #BFC4D0;
+        --bl-gray-200: #DCDFE7;
+        --bl-gray-100: #ECEEF3;
+        --bl-gray-50: #F7F8FA;
+        --bl-white: #FFFFFF;
+        --bl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        --bg: var(--bl-gray-50);
+        --card: var(--bl-white);
+        --ink: var(--bl-gray-800);
+        --muted: var(--bl-gray-600);
+        --line: var(--bl-gray-200);
+        --accent: var(--bl-primary-700);
+        --warm: var(--bl-accent-600);
+        --ready: var(--bl-success-600);
+        --active: var(--bl-accent-600);
+        --pending: var(--bl-gray-500);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: var(--bl-font);
+        background:
+          radial-gradient(circle at top left, rgba(42,141,200,0.12), transparent 28%),
+          radial-gradient(circle at top right, rgba(232,145,58,0.14), transparent 24%),
+          var(--bg);
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+      }
+      a { color: var(--bl-primary-600); text-decoration: none; }
+      .shell { max-width: 1240px; margin: 0 auto; padding: 32px 24px 72px; }
+      .site-header {
+        display: grid;
+        gap: 18px;
+        align-items: end;
+        margin-bottom: 28px;
+      }
+      .tab-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .tab {
+        padding: 10px 14px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255,255,255,0.72);
+        color: var(--muted);
+        font: 600 14px/1.2 ui-monospace, monospace;
+        transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      }
+      .tab.active {
+        color: white;
+        background: linear-gradient(135deg, var(--bl-primary-800), var(--bl-primary-600));
+        border-color: var(--bl-primary-700);
+      }
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--warm);
+        font: 700 12px/1.2 ui-monospace, monospace;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .section-label {
+        margin: 0 0 6px;
+        color: var(--muted);
+        font: 700 12px/1.2 ui-monospace, monospace;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(2.2rem, 5vw, 4.4rem);
+        line-height: 0.94;
+        letter-spacing: -0.03em;
+        color: var(--bl-primary-900);
+      }
+      h2, h3, h4 {
+        margin: 0 0 10px;
+        color: var(--bl-gray-900);
+      }
+      .lede, .meta {
+        margin: 0;
+        color: var(--muted);
+      }
+      .panel {
+        margin-top: 22px;
+      }
+      .grid,
+      .record-list,
+      .intro-grid,
+      .two-up,
+      .pipeline-grid {
+        display: grid;
+        gap: 18px;
+      }
+      .grid,
+      .intro-grid,
+      .two-up {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+      .pipeline-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        align-items: stretch;
+      }
+      .card {
+        background: rgba(255,255,255,0.92);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 18px 20px;
+        box-shadow: 0 10px 24px rgba(0,0,0,0.08), 0 4px 8px rgba(0,0,0,0.04);
+      }
+      .feature-card {
+        padding: 24px;
+      }
+      .link-card:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 20px 40px rgba(0,0,0,0.10);
+        border-color: var(--bl-primary-300);
+      }
+      .pipeline-card.ready {
+        border-color: rgba(21,121,79,0.42);
+        background: linear-gradient(180deg, rgba(231,248,239,0.98), rgba(255,255,255,0.96));
+      }
+      .pipeline-card.ready .eyebrow {
+        color: #15794f;
+      }
+      .pipeline-card.active {
+        border-color: rgba(232,145,58,0.52);
+        background: linear-gradient(180deg, rgba(255,244,226,0.98), rgba(255,255,255,0.96));
+      }
+      .pipeline-card.active .eyebrow {
+        color: #b66411;
+      }
+      .pipeline-card.pending {
+        border-color: rgba(122,129,151,0.26);
+        background: rgba(255,255,255,0.92);
+      }
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: end;
+        margin-bottom: 14px;
+      }
+      .text-link {
+        font: 700 13px/1.2 ui-monospace, monospace;
+      }
+      .button-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px 18px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, var(--bl-primary-800), var(--bl-primary-600));
+        color: white;
+        font: 700 14px/1.2 ui-monospace, monospace;
+        box-shadow: 0 10px 24px rgba(8,38,64,0.18);
+      }
+      .button-link:hover {
+        text-decoration: none;
+        filter: brightness(1.03);
+      }
+      .facts {
+        display: grid;
+        gap: 12px;
+        margin: 0;
+      }
+      .facts div {
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+      }
+      .facts div:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .facts dt {
+        color: var(--muted);
+        font: 700 12px/1.2 ui-monospace, monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 4px;
+      }
+      .facts dd {
+        margin: 0;
+        word-break: break-word;
+      }
+      .bullets {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .bullets li + li {
+        margin-top: 8px;
+      }
+      .compact-bullets li + li {
+        margin-top: 4px;
+      }
+      .stack {
+        margin-top: 18px;
+      }
+      .record-card { padding: 22px; }
+      .record-header { margin-bottom: 16px; }
+      .load-more-row {
+        display: flex;
+        justify-content: center;
+        margin-top: 18px;
+      }
+      .columns {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+      .opinion {
+        padding: 12px 0;
+        border-top: 1px solid var(--line);
+      }
+      .opinion:first-of-type {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .plot-shell {
+        margin-top: 12px;
+        border-radius: 18px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(247,248,250,0.98));
+      }
+      .plot {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .plot-point {
+        transition: fill-opacity 120ms ease, stroke-opacity 120ms ease, r 120ms ease, transform 120ms ease;
+      }
+      .plot.focus-mode .plot-point {
+        fill-opacity: 0.14 !important;
+        stroke-opacity: 0.12 !important;
+      }
+      .plot.focus-mode .plot-point.is-focused {
+        fill-opacity: 0.98 !important;
+        stroke-opacity: 0.75 !important;
+      }
+      .report-hero {
+        background:
+          linear-gradient(135deg, rgba(8,38,64,0.98), rgba(20,86,136,0.92)),
+          radial-gradient(circle at top right, rgba(232,145,58,0.24), transparent 40%);
+        color: white;
+        border-radius: 24px;
+        padding: 28px;
+        border: 0;
+      }
+      .report-hero h2,
+      .report-hero .lede,
+      .report-hero .meta,
+      .report-hero a {
+        color: white;
+      }
+      .report-hero .eyebrow {
+        color: rgba(255, 231, 205, 0.94);
+      }
+      .perspective-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .perspective-switcher {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+      }
+      .perspective-switcher-tab {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(242,249,253,0.92));
+        color: var(--bl-gray-900);
+        cursor: pointer;
+        text-align: left;
+        box-shadow: 0 10px 24px rgba(0,0,0,0.06), 0 4px 8px rgba(0,0,0,0.03);
+        transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
+      }
+      .perspective-switcher-tab:hover {
+        transform: translateY(-1px);
+        border-color: var(--bl-primary-300);
+        box-shadow: 0 16px 32px rgba(20,86,136,0.10), 0 4px 10px rgba(0,0,0,0.04);
+      }
+      .perspective-switcher-tab.active {
+        border-color: var(--bl-primary-500);
+        background: linear-gradient(135deg, rgba(8,38,64,0.98), rgba(20,86,136,0.94));
+        color: white;
+      }
+      .perspective-switcher-title {
+        font-size: 1.02rem;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+      .perspective-switcher-meta {
+        color: var(--bl-gray-600);
+        font: 700 12px/1.35 ui-monospace, monospace;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .perspective-switcher-tab.active .perspective-switcher-meta {
+        color: rgba(236, 246, 252, 0.92);
+      }
+      .perspective-panel {
+        display: none;
+      }
+      .perspective-panel.active {
+        display: block;
+      }
+      .perspective-panel-meta {
+        max-width: 480px;
+        text-align: right;
+      }
+      .cluster-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .cluster-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 12px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.92);
+        color: var(--bl-gray-800);
+        font: 700 12px/1.2 ui-monospace, monospace;
+        transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+      }
+      .cluster-chip:hover {
+        border-color: var(--bl-primary-300);
+        background: #fff;
+        transform: translateY(-1px);
+      }
+      .tab-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .report-subtab {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.92);
+        color: var(--bl-gray-700);
+        font: 700 13px/1.2 ui-monospace, monospace;
+        cursor: pointer;
+      }
+      .report-subtab.active {
+        background: linear-gradient(135deg, var(--bl-primary-800), var(--bl-primary-600));
+        border-color: var(--bl-primary-700);
+        color: white;
+      }
+      .tab-panel {
+        display: none;
+        margin-top: 18px;
+      }
+      .tab-panel.active {
+        display: block;
+      }
+      .cluster-chip-flag {
+        padding: 3px 7px;
+        border-radius: 999px;
+        background: rgba(20,86,136,0.10);
+        color: var(--bl-primary-800);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .cluster-chip-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--cluster-accent, var(--bl-primary-600));
+        box-shadow: 0 0 0 2px rgba(8,38,64,0.08);
+      }
+      .theme-grid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .theme-card {
+        padding: 16px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(248,251,254,0.98), rgba(255,255,255,0.98));
+        border: 1px solid var(--line);
+        cursor: pointer;
+        transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+      }
+      .theme-card:hover {
+        border-color: var(--bl-primary-300);
+        box-shadow: 0 12px 24px rgba(20,86,136,0.08);
+        transform: translateY(-1px);
+      }
+      .perspective-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 9px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--bl-gray-50);
+        color: var(--bl-primary-800);
+        font: 700 13px/1.2 ui-monospace, monospace;
+      }
+      .perspective-pill.primary {
+        background: linear-gradient(135deg, var(--bl-primary-800), var(--bl-primary-600));
+        border-color: var(--bl-primary-700);
+        color: white;
+      }
+      .report-cluster-card {
+        border-top: 4px solid var(--cluster-accent, var(--bl-primary-600));
+      }
+      .highlighted-cluster-card {
+        box-shadow: 0 16px 32px rgba(20,86,136,0.10), 0 4px 10px rgba(0,0,0,0.04);
+      }
+      .secondary-cluster-card {
+        background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,248,250,0.96));
+      }
+      .evidence-card + .evidence-card {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }
+      .evidence-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-top: 8px;
+      }
+      .text-button {
+        border: 0;
+        padding: 0;
+        background: none;
+        color: var(--bl-primary-700);
+        cursor: pointer;
+        font: 700 13px/1.2 ui-monospace, monospace;
+      }
+      .text-button:hover {
+        text-decoration: underline;
+      }
+      .opinion-dialog {
+        width: min(760px, calc(100vw - 32px));
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 0;
+        box-shadow: 0 32px 72px rgba(0,0,0,0.22);
+      }
+      .opinion-dialog::backdrop {
+        background: rgba(8,38,64,0.36);
+        backdrop-filter: blur(2px);
+      }
+      .dialog-shell {
+        padding: 22px 24px 24px;
+      }
+      .dialog-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: start;
+      }
+      .dialog-close {
+        border: 0;
+        background: var(--bl-gray-100);
+        color: var(--bl-gray-800);
+        width: 36px;
+        height: 36px;
+        border-radius: 999px;
+        cursor: pointer;
+        font: 700 22px/1 Inter, sans-serif;
+      }
+      blockquote {
+        margin: 10px 0 0;
+        padding: 12px 14px;
+        border-left: 4px solid var(--bl-primary-300);
+        background: #f7fbfe;
+        border-radius: 12px;
+      }
+      pre {
+        margin: 0;
+        padding: 14px;
+        border-radius: 14px;
+        background: var(--bl-gray-50);
+        border: 1px solid var(--bl-gray-200);
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font: 13px/1.45 ui-monospace, monospace;
+      }
+      code {
+        font: 0.95em ui-monospace, monospace;
+      }
+      .error {
+        color: #B5312B;
+      }
+      @media (max-width: 1120px) {
+        .pipeline-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 720px) {
+        .shell {
+          padding: 24px 16px 56px;
+        }
+        .pipeline-grid {
+          grid-template-columns: 1fr;
+        }
+        .section-head {
+          align-items: start;
+          flex-direction: column;
+        }
+        .perspective-panel-meta {
+          text-align: left;
+        }
+      }
+    </style>
+  </head>
+  <body>${body}${behaviorScript}${liveReloadScript}</body>
+</html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+async function listNormalizedRecordPaths(normalizedDir: string): Promise<string[]> {
+  const entries = await readdir(normalizedDir, { withFileTypes: true }).catch(() => []);
+
+  return entries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith(".json") &&
+        entry.name !== "ingest-manifest.json"
+    )
+    .map((entry) => path.join(normalizedDir, entry.name))
+    .sort();
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function toPortableRelativePath(fromDirectory: string, toPath: string): string {
+  const relativePath = path.relative(fromDirectory, toPath);
+  const portablePath = relativePath.split(path.sep).join("/");
+
+  return portablePath.startsWith(".") ? portablePath : `./${portablePath}`;
+}
+
+function createLiveReloadController(projectRoot: string): LiveReloadController {
+  const clients = new Set<ServerResponse>();
+  const watchers: FSWatcher[] = [];
+  let reloadTimer: NodeJS.Timeout | null = null;
+
+  const broadcastReload = (): void => {
+    for (const client of clients) {
+      client.write("event: reload\ndata: project-changed\n\n");
+    }
+  };
+
+  const scheduleReload = (): void => {
+    if (reloadTimer !== null) {
+      clearTimeout(reloadTimer);
+    }
+
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      broadcastReload();
+    }, 120);
+  };
+
+  try {
+    watchers.push(watch(projectRoot, { recursive: true }, scheduleReload));
+  } catch {
+    const fallbackTargets = [
+      path.join(projectRoot, "broadly.yaml"),
+      path.join(projectRoot, "data"),
+      path.join(projectRoot, "runs"),
+      path.join(projectRoot, "reports"),
+      path.join(projectRoot, "prompts")
+    ];
+
+    for (const target of fallbackTargets) {
+      try {
+        watchers.push(watch(target, scheduleReload));
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return {
+    handleClient(response: ServerResponse): void {
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive"
+      });
+      response.write("retry: 500\n\n");
+      clients.add(response);
+
+      response.on("close", () => {
+        clients.delete(response);
+      });
+    },
+    close(): void {
+      if (reloadTimer !== null) {
+        clearTimeout(reloadTimer);
+      }
+
+      for (const watcher of watchers) {
+        watcher.close();
+      }
+
+      for (const client of clients) {
+        client.end();
+      }
+
+      clients.clear();
+    }
+  };
+}
+
+function parseOffset(value: string | null): number {
+  if (value === null) {
+    return 0;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+
+  return parsed;
+}

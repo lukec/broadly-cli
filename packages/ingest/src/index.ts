@@ -43,6 +43,8 @@ export interface IngestManifest {
     idColumn?: string;
   };
   dataset: {
+    sourceHeaderCount: number;
+    sourceHeaders: string[];
     headerCount: number;
     rowCount: number;
     filesWritten: number;
@@ -57,6 +59,7 @@ export interface IngestManifest {
 export interface AddTabularDataSourceOptions {
   projectRoot: string;
   datasetPath: string;
+  allowFields?: string[];
 }
 
 export interface AddTabularDataSourceResult {
@@ -72,6 +75,7 @@ export interface AddTabularDataSourceResult {
   normalizedDir: string;
   manifestPath: string;
   headers: string[];
+  sourceHeaders: string[];
 }
 
 export async function addTabularDataSource(
@@ -95,8 +99,9 @@ export async function addTabularDataSource(
     throw new Error(`Could not read a header row from dataset: ${absoluteDatasetPath}`);
   }
 
-  const headers = dedupeHeaders(headerRow);
-  const idColumn = detectIdColumn(headers);
+  const sourceHeaders = dedupeHeaders(headerRow);
+  const headers = resolveAllowedHeaders(sourceHeaders, options.allowFields);
+  const idColumn = detectIdColumn(sourceHeaders);
   const createdAt = new Date().toISOString();
   const datasetFormat = parsedDataset.delimiter === "\t" ? "tsv" : "csv";
   const storedDatasetPath = path.join(
@@ -113,7 +118,8 @@ export async function addTabularDataSource(
   let rowCount = 0;
 
   for (const [index, row] of dataRows.entries()) {
-    const rawRow = buildRawRow(headers, row);
+    const sourceRawRow = buildRawRow(sourceHeaders, row);
+    const rawRow = filterRawRow(headers, sourceRawRow);
 
     if (isEmptyRow(rawRow)) {
       continue;
@@ -133,9 +139,11 @@ export async function addTabularDataSource(
         importEncoding: decodedSource.encoding,
         delimiter: parsedDataset.delimiter,
         sourceRowNumber: index + 2,
-        ...(idColumn === undefined || rawRow[idColumn] === undefined || rawRow[idColumn].length === 0
+        ...(idColumn === undefined ||
+        sourceRawRow[idColumn] === undefined ||
+        sourceRawRow[idColumn].length === 0
           ? {}
-          : { externalId: rawRow[idColumn] })
+          : { externalId: sourceRawRow[idColumn] })
       }
     };
 
@@ -171,6 +179,8 @@ export async function addTabularDataSource(
       ...(idColumn === undefined ? {} : { idColumn })
     },
     dataset: {
+      sourceHeaderCount: sourceHeaders.length,
+      sourceHeaders,
       headerCount: headers.length,
       rowCount,
       filesWritten,
@@ -196,7 +206,8 @@ export async function addTabularDataSource(
     filesWritten,
     normalizedDir,
     manifestPath,
-    headers
+    headers,
+    sourceHeaders
   };
 }
 
@@ -365,6 +376,19 @@ function buildRawRow(headers: string[], row: string[]): Record<string, string> {
   return rawRow;
 }
 
+function filterRawRow(
+  headers: string[],
+  rawRow: Record<string, string>
+): Record<string, string> {
+  const filteredRow: Record<string, string> = {};
+
+  for (const header of headers) {
+    filteredRow[header] = rawRow[header] ?? "";
+  }
+
+  return filteredRow;
+}
+
 function renderContentText(headers: string[], rawRow: Record<string, string>): string {
   const lines: string[] = [];
 
@@ -395,6 +419,21 @@ function isEmptyRow(rawRow: Record<string, string>): boolean {
 
 function detectIdColumn(headers: string[]): string | undefined {
   return headers.find((header) => likelyIdColumnNames.has(header.toLowerCase()));
+}
+
+function resolveAllowedHeaders(headers: string[], allowFields: string[] | undefined): string[] {
+  if (allowFields === undefined || allowFields.length === 0) {
+    return headers;
+  }
+
+  const allowed = new Set(allowFields);
+  const matchedHeaders = headers.filter((header) => allowed.has(header));
+
+  if (matchedHeaders.length === 0) {
+    throw new Error("No configured dataset.allowFields matched the dataset headers.");
+  }
+
+  return matchedHeaders;
 }
 
 function resolveStoredExtension(

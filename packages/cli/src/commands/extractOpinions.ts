@@ -1,36 +1,23 @@
 import { access } from "node:fs/promises";
 import path from "node:path";
-import process from "node:process";
 
-import { resolveProjectPaths } from "@broadly/core";
-import { extractOpinionUnits } from "@broadly/pipeline";
+import { extractOpinionsWithModel } from "./opinions.js";
 
 export interface ExtractOpinionsOptions {
   project?: string;
+  archive?: boolean;
+  resume?: boolean;
+  concurrency?: number;
 }
 
 export async function extractOpinions(options: ExtractOpinionsOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
-  const projectPaths = resolveProjectPaths(projectRoot);
-  const normalizedDir = path.join(projectPaths.dataDir, "normalized");
-  const opinionsDir = path.join(projectPaths.dataDir, "opinions");
-  const result = await extractOpinionUnits({
-    normalizedDir,
-    outputDir: opinionsDir
+  await extractOpinionsWithModel({
+    project: projectRoot,
+    ...(options.archive === true ? { archive: true } : {}),
+    ...(options.resume === true ? { resume: true } : {}),
+    ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })
   });
-  const relativeManifestPath = toPortableRelativePath(projectRoot, result.manifestPath);
-
-  const lines = [
-    `Extracted opinion units for ${projectRoot}`,
-    "",
-    `Method: ${result.extractionMethod}`,
-    `Normalized records read: ${result.recordsRead}`,
-    `Opinion files written: ${result.opinionsWritten}`,
-    `Opinions output: ${result.outputDir}`,
-    `Manifest: ${relativeManifestPath}`
-  ];
-
-  process.stdout.write(`${lines.join("\n")}\n`);
 }
 
 async function resolveCommandProjectRoot(project: string | undefined): Promise<string> {
@@ -71,13 +58,6 @@ function resolveProjectRoot(project: string): string {
   }
 
   return path.resolve("projects", normalizedProject);
-}
-
-function toPortableRelativePath(fromDirectory: string, toPath: string): string {
-  const relativePath = path.relative(fromDirectory, toPath);
-  const portablePath = relativePath.split(path.sep).join("/");
-
-  return portablePath.startsWith(".") ? portablePath : `./${portablePath}`;
 }
 
 async function fileExists(filePath: string): Promise<boolean> {

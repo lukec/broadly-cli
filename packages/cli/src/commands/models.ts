@@ -10,8 +10,15 @@ import {
   type BroadlyProjectConfig
 } from "@broadly/config";
 import { resolveProjectPaths } from "@broadly/core";
+import { probeBedrockModelAccess } from "../bedrock.js";
+import {
+  fileExists,
+  probeGoogleCloudModelAccess,
+  probeGoogleCloudRuntime
+} from "../googleCloud.js";
+import { probeOpenAiModelAccess, probeOpenAiRuntime } from "../openai.js";
 
-type SupportedModelProvider = "bedrock" | "google-cloud";
+type SupportedModelProvider = "bedrock" | "google-cloud" | "openai";
 
 export interface AddModelOptions {
   project?: string;
@@ -39,11 +46,16 @@ interface ProviderCredentialCheck {
   nextSteps: string[];
 }
 
+type RegisteredModel = BroadlyProjectConfig["models"][number];
+
 export async function addModel(options: AddModelOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
   const projectPaths = resolveProjectPaths(projectRoot);
   const config = await loadProjectConfig(projectPaths.configPath);
   const provider = await resolveProvider(options.provider);
+  const suggestedRegion =
+    config.models.find((model) => model.provider === provider)?.region ??
+    (provider === "openai" ? "global" : undefined);
   const modelId = await resolveRequiredText(
     "Provider model name",
     options.modelId,
@@ -52,21 +64,21 @@ export async function addModel(options: AddModelOptions): Promise<void> {
   const region = await resolveRequiredText(
     "Region",
     options.region,
-    "Provide --region when not running interactively."
+    "Provide --region when not running interactively.",
+    suggestedRegion
   );
   const name = await resolveRequiredText(
     "Project alias for this model",
     options.name,
     "Provide --name when not running interactively."
   );
-  const credentialCheck = await checkProviderCredentials(provider);
-  const existingIndex = config.models.findIndex((model) => model.name === name);
   const modelRecord = {
     name,
     provider,
     modelId,
     region
   };
+  const existingIndex = config.models.findIndex((model) => model.name === name);
 
   if (existingIndex >= 0) {
     config.models[existingIndex] = modelRecord;
@@ -76,6 +88,7 @@ export async function addModel(options: AddModelOptions): Promise<void> {
 
   await writeFile(projectPaths.configPath, serializeProjectConfig(config), "utf8");
 
+  const credentialCheck = await checkProviderCredentials(modelRecord, projectRoot);
   const lines = [
     `${existingIndex >= 0 ? "Updated" : "Added"} model alias in ${projectPaths.configPath}`,
     "",
@@ -83,24 +96,14 @@ export async function addModel(options: AddModelOptions): Promise<void> {
     `Provider: ${provider}`,
     `Model ID: ${modelId}`,
     `Region: ${region}`,
-    `Credential check: ${credentialCheck.ok ? "ok" : "not ready"}`,
-    `Status: ${credentialCheck.summary}`
+    "",
+    ...renderModelChecksReport(projectPaths.configPath, [
+      {
+        ...modelRecord,
+        __credentialCheck: credentialCheck
+      }
+    ])
   ];
-
-  if (credentialCheck.detected.length > 0) {
-    lines.push("Detected credential sources:");
-    for (const detected of credentialCheck.detected) {
-      lines.push(`- ${detected}`);
-    }
-  }
-
-  if (!credentialCheck.ok) {
-    lines.push("Next steps:");
-    for (const nextStep of credentialCheck.nextSteps) {
-      lines.push(`- ${nextStep}`);
-    }
-    lines.push("- Then run `broadly models check`.");
-  }
 
   process.stdout.write(`${lines.join("\n")}\n`);
 }
@@ -144,34 +147,69 @@ export async function checkModels(options: CheckModelsOptions): Promise<void> {
     throw new Error(`No model alias named '${options.name}' is registered in this project.`);
   }
 
-  const lines = [`Model checks for ${projectPaths.configPath}`, ""];
+  const checkedModels: CheckedModelRecord[] = [];
 
   for (const model of modelsToCheck) {
-    const credentialCheck = await checkProviderCredentials(model.provider);
+    checkedModels.push({
+      ...model,
+      __credentialCheck: await checkProviderCredentials(model, projectRoot)
+    });
+  }
 
-    lines.push(`${model.name}`);
-    lines.push(`- provider: ${model.provider}`);
-    lines.push(`- model id: ${model.modelId}`);
-    lines.push(`- region: ${model.region}`);
-    lines.push(`- credentials: ${credentialCheck.ok ? "ok" : "not ready"}`);
-    lines.push(`- status: ${credentialCheck.summary}`);
+  const lines = renderModelChecksReport(projectPaths.configPath, checkedModels);
 
-    if (credentialCheck.detected.length > 0) {
+  process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+function renderModelChecksReport(
+  configPath: string,
+  modelsToCheck: CheckedModelRecord[]
+): string[] {
+  const lines: string[] = [];
+  const readyCount = modelsToCheck.filter((model) => model.__credentialCheck?.ok).length;
+  const needsAttentionCount = modelsToCheck.length - readyCount;
+
+  lines.push(color.heading("Broadly Models Check"));
+  lines.push(color.muted(rule("=")));
+  lines.push(formatDetailLine("Config", configPath));
+  lines.push(
+    formatDetailLine(
+      "Summary",
+      `${modelsToCheck.length} checked, ${readyCount} ready, ${needsAttentionCount} need attention`
+    )
+  );
+  lines.push("");
+
+  for (const model of modelsToCheck) {
+    const credentialCheck = model.__credentialCheck;
+
+    if (credentialCheck === undefined) {
+      continue;
+    }
+
+    lines.push(
+      `${credentialCheck.ok ? color.goodBadge("READY") : color.warnBadge("ATTN ")} ${color.title(model.name)} ${color.muted(`(${model.provider} · ${model.region} · ${model.modelId})`)}`
+    );
+    lines.push(formatDetailLine("Status", credentialCheck.summary));
+
+    if (!credentialCheck.ok && credentialCheck.detected.length > 0) {
+      lines.push(color.section("Detected"));
       for (const detected of credentialCheck.detected) {
-        lines.push(`- detected: ${detected}`);
+        lines.push(`  ${color.bullet("+")} ${detected}`);
       }
     }
 
-    if (!credentialCheck.ok) {
+    if (!credentialCheck.ok && credentialCheck.nextSteps.length > 0) {
+      lines.push(color.section("Next"));
       for (const nextStep of credentialCheck.nextSteps) {
-        lines.push(`- next: ${nextStep}`);
+        lines.push(`  ${color.bullet("!")} ${nextStep}`);
       }
     }
 
     lines.push("");
   }
 
-  process.stdout.write(`${lines.join("\n").trimEnd()}\n`);
+  return lines.map((line) => line.replace(/\s+$/g, ""));
 }
 
 async function loadProjectConfig(configPath: string): Promise<BroadlyProjectConfig> {
@@ -233,7 +271,8 @@ async function resolveProvider(
 
   const answer = await promptSelect("Provider", [
     { label: "bedrock", value: "bedrock" },
-    { label: "google-cloud", value: "google-cloud" }
+    { label: "google-cloud", value: "google-cloud" },
+    { label: "openai", value: "openai" }
   ]);
 
   return answer;
@@ -242,7 +281,8 @@ async function resolveProvider(
 async function resolveRequiredText(
   label: string,
   providedValue: string | undefined,
-  missingMessage: string
+  missingMessage: string,
+  defaultValue?: string
 ): Promise<string> {
   const trimmedProvidedValue = providedValue?.trim();
 
@@ -254,8 +294,12 @@ async function resolveRequiredText(
     throw new Error(missingMessage);
   }
 
-  const answer = await promptText(label);
+  const answer = await promptText(label, defaultValue);
   const trimmedAnswer = answer.trim();
+
+  if (trimmedAnswer.length === 0 && defaultValue !== undefined && defaultValue.trim().length > 0) {
+    return defaultValue.trim();
+  }
 
   if (trimmedAnswer.length === 0) {
     throw new Error(`${label} is required.`);
@@ -286,16 +330,27 @@ async function resolveModelNameToRemove(
 }
 
 async function checkProviderCredentials(
-  provider: SupportedModelProvider
+  model: RegisteredModel,
+  projectRoot?: string
 ): Promise<ProviderCredentialCheck> {
-  if (provider === "bedrock") {
-    return checkBedrockCredentials();
+  if (model.provider === "bedrock") {
+    return checkBedrockCredentials(model);
   }
 
-  return checkGoogleCloudCredentials();
+  if (model.provider === "openai") {
+    return checkOpenAiCredentials(model, projectRoot);
+  }
+
+  return checkGoogleCloudCredentials(model);
 }
 
-async function checkBedrockCredentials(): Promise<ProviderCredentialCheck> {
+type CheckedModelRecord = RegisteredModel & {
+  __credentialCheck?: ProviderCredentialCheck;
+};
+
+async function checkBedrockCredentials(
+  model: RegisteredModel
+): Promise<ProviderCredentialCheck> {
   const detected: string[] = [];
   const nextSteps: string[] = [];
   const credentialsFile =
@@ -332,55 +387,201 @@ async function checkBedrockCredentials(): Promise<ProviderCredentialCheck> {
     detected.push(`AWS default region in config file at ${configFile}`);
   }
 
+  let modelAccessSummary: string | null = null;
+  let modelAccessOk = false;
+
+  if (hasAnyCredentialsSource) {
+    const modelAccessProbe = await probeBedrockModelAccess({
+      region: model.region,
+      modelId: model.modelId
+    });
+
+    if (modelAccessProbe.ok) {
+      modelAccessOk = true;
+      detected.push(
+        modelAccessProbe.modelKind === "embedding"
+          ? "Bedrock embedding invocation check succeeded"
+          : "Bedrock Converse inference check succeeded"
+      );
+    } else {
+      modelAccessSummary = formatBedrockModelAccessFailure(modelAccessProbe);
+      nextSteps.push(...suggestBedrockNextSteps(modelAccessProbe, model));
+    }
+  }
+
   return {
-    ok: hasAnyCredentialsSource,
+    ok: hasAnyCredentialsSource && modelAccessOk,
     provider: "bedrock",
     summary: hasAnyCredentialsSource
-      ? "AWS credential source detected for Bedrock."
+      ? modelAccessOk
+        ? "AWS credentials and Bedrock model access resolved."
+        : modelAccessSummary ?? "AWS credentials are available, but Bedrock model access failed."
       : "Missing an AWS credential source for Bedrock.",
     detected,
     nextSteps
   };
 }
 
-async function checkGoogleCloudCredentials(): Promise<ProviderCredentialCheck> {
+async function checkGoogleCloudCredentials(
+  model: RegisteredModel
+): Promise<ProviderCredentialCheck> {
   const detected: string[] = [];
   const nextSteps: string[] = [];
-  const configuredCredentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const gcloudConfigDir =
-    process.env.CLOUDSDK_CONFIG ?? path.join(os.homedir(), ".config", "gcloud");
-  const adcPath = path.join(gcloudConfigDir, "application_default_credentials.json");
+  const runtimeProbe = await probeGoogleCloudRuntime();
   const hasConfiguredCredentialsPath =
-    configuredCredentialsPath !== undefined &&
-    configuredCredentialsPath.trim().length > 0 &&
-    (await fileExists(configuredCredentialsPath));
-  const hasApplicationDefaultCredentials = await fileExists(adcPath);
+    runtimeProbe.configuredCredentialsPath !== null &&
+    (await fileExists(runtimeProbe.configuredCredentialsPath));
+  const hasApplicationDefaultCredentials = await fileExists(runtimeProbe.adcPath);
 
   if (hasConfiguredCredentialsPath) {
-    detected.push(`GOOGLE_APPLICATION_CREDENTIALS at ${configuredCredentialsPath}`);
+    detected.push(`GOOGLE_APPLICATION_CREDENTIALS at ${runtimeProbe.configuredCredentialsPath}`);
   }
 
   if (hasApplicationDefaultCredentials) {
-    detected.push(`Google application default credentials at ${adcPath}`);
+    detected.push(`Google application default credentials at ${runtimeProbe.adcPath}`);
+  }
+
+  if (runtimeProbe.envProjectId !== null) {
+    detected.push(`Google Cloud project from environment: ${runtimeProbe.envProjectId}`);
+  }
+
+  if (runtimeProbe.tokenAvailable) {
+    detected.push("google-auth-library obtained an access token");
+  } else if (runtimeProbe.tokenError !== null) {
+    nextSteps.push(`google-auth-library token check failed: ${runtimeProbe.tokenError}`);
+  }
+
+  if (runtimeProbe.projectId !== null) {
+    detected.push(`Google Cloud project resolved as ${runtimeProbe.projectId}`);
+  }
+
+  let modelAccessSummary: string | null = null;
+  let modelAccessOk = false;
+
+  if (runtimeProbe.tokenAvailable && runtimeProbe.accessToken !== null && runtimeProbe.projectId !== null) {
+    const modelAccessProbe = await probeGoogleCloudModelAccess({
+      accessToken: runtimeProbe.accessToken,
+      projectId: runtimeProbe.projectId,
+      region: model.region,
+      modelId: model.modelId
+    });
+
+    if (modelAccessProbe.ok) {
+      modelAccessOk = true;
+      detected.push(
+        modelAccessProbe.modelKind === "embedding"
+          ? "Vertex AI embedding prediction endpoint is reachable"
+          : "Vertex AI publisher model endpoint is reachable"
+      );
+    } else {
+      modelAccessSummary = formatGoogleModelAccessFailure(modelAccessProbe);
+
+      if (shouldSuggestVertexApiEnable(modelAccessProbe)) {
+        nextSteps.push(
+          `Enable Vertex AI API: gcloud services enable aiplatform.googleapis.com --project ${runtimeProbe.projectId}`
+        );
+      }
+    }
   }
 
   if (!hasConfiguredCredentialsPath && !hasApplicationDefaultCredentials) {
     nextSteps.push(
       "Set GOOGLE_APPLICATION_CREDENTIALS to a service account key or run `gcloud auth application-default login`"
     );
+    nextSteps.push(
+      `Checked GOOGLE_APPLICATION_CREDENTIALS=${runtimeProbe.configuredCredentialsPath ?? "(not set)"}`
+    );
+    nextSteps.push(`Checked ADC path ${runtimeProbe.adcPath}`);
   }
 
-  if (!hasNonEmptyEnv("GOOGLE_CLOUD_PROJECT") && !hasNonEmptyEnv("GCLOUD_PROJECT")) {
+  if (runtimeProbe.projectId === null) {
     nextSteps.push("Set GOOGLE_CLOUD_PROJECT or GCLOUD_PROJECT for Vertex AI usage");
+    nextSteps.push("No Google Cloud project ID could be resolved from env, auth, or ADC");
+  }
+
+  const runtimeReady = runtimeProbe.tokenAvailable && runtimeProbe.projectId !== null;
+
+  return {
+    ok: runtimeReady && modelAccessOk,
+    provider: "google-cloud",
+    summary:
+      runtimeReady && modelAccessOk
+        ? "Google Cloud credentials, project ID, and Vertex AI access resolved."
+        : runtimeReady
+          ? modelAccessSummary ?? "Google Cloud runtime is ready, but Vertex AI model access failed."
+          : runtimeProbe.tokenAvailable
+          ? "Google Cloud credentials are available, but project ID resolution failed."
+          : "Missing usable Google Cloud application credentials.",
+    detected,
+    nextSteps
+  };
+}
+
+async function checkOpenAiCredentials(
+  model: RegisteredModel,
+  projectRoot?: string
+): Promise<ProviderCredentialCheck> {
+  const detected: string[] = [];
+  const nextSteps: string[] = [];
+  const runtimeProbe = probeOpenAiRuntime(projectRoot);
+
+  if (runtimeProbe.apiKeyPresent) {
+    detected.push(
+      runtimeProbe.apiKeySource === "env"
+        ? "OPENAI_API_KEY is set in the environment"
+        : runtimeProbe.apiKeySource === "project-env"
+          ? `OPENAI_API_KEY loaded from ${runtimeProbe.projectEnvPath}`
+          : `OPENAI_API_KEY loaded from ${runtimeProbe.authEnvPath}`
+    );
+  } else {
+    nextSteps.push("Set OPENAI_API_KEY for OpenAI API access");
+    if (runtimeProbe.projectEnvPath !== null) {
+      nextSteps.push(`Checked project env file ${runtimeProbe.projectEnvPath}`);
+    }
+    nextSteps.push(`Checked auth file ${runtimeProbe.authEnvPath}`);
+  }
+
+  if (runtimeProbe.organization !== null) {
+    detected.push(`OpenAI organization from OPENAI_ORG_ID=${runtimeProbe.organization}`);
+  }
+
+  if (runtimeProbe.project !== null) {
+    detected.push(`OpenAI project from OPENAI_PROJECT=${runtimeProbe.project}`);
+  }
+
+  if (!runtimeProbe.apiKeyPresent) {
+    return {
+      ok: false,
+      provider: "openai",
+      summary: "Missing OPENAI_API_KEY for OpenAI.",
+      detected,
+      nextSteps
+    };
+  }
+
+  const modelAccessProbe = await probeOpenAiModelAccess(model.modelId, projectRoot);
+
+  if (modelAccessProbe.ok) {
+    return {
+      ok: true,
+      provider: "openai",
+      summary: "OpenAI credentials and model access resolved.",
+      detected,
+      nextSteps
+    };
+  }
+
+  const accessSummary = formatOpenAiModelAccessFailure(modelAccessProbe);
+
+  if (accessSummary !== null) {
+    nextSteps.push(accessSummary);
   }
 
   return {
-    ok: hasConfiguredCredentialsPath || hasApplicationDefaultCredentials,
-    provider: "google-cloud",
+    ok: false,
+    provider: "openai",
     summary:
-      hasConfiguredCredentialsPath || hasApplicationDefaultCredentials
-        ? "Google Cloud application credentials detected."
-        : "Missing Google Cloud application credentials.",
+      accessSummary ?? "OpenAI credentials are available, but the model check failed.",
     detected,
     nextSteps
   };
@@ -435,13 +636,97 @@ function hasNonEmptyEnv(name: string): boolean {
   return value !== undefined && value.trim().length > 0;
 }
 
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath);
-    return true;
-  } catch {
-    return false;
+function formatGoogleModelAccessFailure(probe: {
+  statusCode: number | null;
+  errorStatus: string | null;
+  errorMessage: string | null;
+  modelKind?: "embedding" | "generative";
+}): string | null {
+  const parts = [
+    probe.statusCode === null ? null : `Vertex AI check returned ${probe.statusCode}`,
+    probe.errorStatus,
+    probe.errorMessage
+  ].filter((value): value is string => value !== null && value.trim().length > 0);
+
+  return parts.length > 0 ? parts.join(" - ") : null;
+}
+
+function shouldSuggestVertexApiEnable(probe: {
+  errorStatus: string | null;
+  errorMessage: string | null;
+}): boolean {
+  const combinedMessage = `${probe.errorStatus ?? ""} ${probe.errorMessage ?? ""}`.toLowerCase();
+
+  return (
+    combinedMessage.includes("aiplatform.googleapis.com") &&
+    (combinedMessage.includes("disabled") ||
+      combinedMessage.includes("has not been used") ||
+      combinedMessage.includes("enable it"))
+  );
+}
+
+function formatBedrockModelAccessFailure(probe: {
+  errorCode: string | null;
+  errorMessage: string | null;
+}): string | null {
+  const parts = [probe.errorCode, probe.errorMessage].filter(
+    (value): value is string => value !== null && value.trim().length > 0
+  );
+
+  return parts.length > 0 ? parts.join(" - ") : null;
+}
+
+function formatOpenAiModelAccessFailure(probe: {
+  statusCode: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}): string | null {
+  const parts = [
+    probe.statusCode === null ? null : `OpenAI model check returned ${probe.statusCode}`,
+    probe.errorCode,
+    probe.errorMessage
+  ].filter((value): value is string => value !== null && value.trim().length > 0);
+
+  return parts.length > 0 ? parts.join(" - ") : null;
+}
+
+function suggestBedrockNextSteps(
+  probe: {
+    errorCode: string | null;
+    errorMessage: string | null;
+  },
+  model: RegisteredModel
+): string[] {
+  const nextSteps: string[] = [];
+  const combinedMessage = `${probe.errorCode ?? ""} ${probe.errorMessage ?? ""}`.toLowerCase();
+
+  if (
+    combinedMessage.includes("accessdenied") ||
+    combinedMessage.includes("not authorized") ||
+    combinedMessage.includes("not authorized to invoke") ||
+    combinedMessage.includes("access denied")
+  ) {
+    nextSteps.push(
+      `Grant Bedrock inference access for ${model.modelId} in ${model.region} and ensure your IAM principal can call bedrock:InvokeModel and bedrock:Converse.`
+    );
   }
+
+  if (
+    combinedMessage.includes("could not resolve the foundation model") ||
+    combinedMessage.includes("model identifier is invalid") ||
+    combinedMessage.includes("validationexception") ||
+    combinedMessage.includes("not found")
+  ) {
+    nextSteps.push(
+      `Check that model '${model.modelId}' is available in Bedrock region ${model.region} and that the model ID is correct.`
+    );
+  }
+
+  if (nextSteps.length === 0 && probe.errorMessage !== null) {
+    nextSteps.push(`Review the Bedrock error and retry once the model is callable: ${probe.errorMessage}`);
+  }
+
+  return nextSteps;
 }
 
 async function fileContains(filePath: string, pattern: RegExp): Promise<boolean> {
@@ -451,4 +736,32 @@ async function fileContains(filePath: string, pattern: RegExp): Promise<boolean>
   } catch {
     return false;
   }
+}
+
+function formatDetailLine(label: string, value: string): string {
+  return `  ${color.label(label.padEnd(8))} ${value}`;
+}
+
+function rule(character: string): string {
+  const width = process.stdout.columns ?? 72;
+  return character.repeat(Math.max(24, Math.min(width, 72)));
+}
+
+const color = {
+  heading: (value: string) => applyAnsi(value, ["1", "36"]),
+  title: (value: string) => applyAnsi(value, ["1", "37"]),
+  label: (value: string) => applyAnsi(value, ["1", "34"]),
+  muted: (value: string) => applyAnsi(value, ["2", "37"]),
+  section: (value: string) => applyAnsi(`  ${value}`, ["1", "35"]),
+  bullet: (value: string) => applyAnsi(value, ["1", "36"]),
+  goodBadge: (value: string) => applyAnsi(`[${value}]`, ["1", "30", "42"]),
+  warnBadge: (value: string) => applyAnsi(`[${value}]`, ["1", "30", "43"])
+};
+
+function applyAnsi(value: string, codes: string[]): string {
+  if (!process.stdout.isTTY) {
+    return value;
+  }
+
+  return `\u001B[${codes.join(";")}m${value}\u001B[0m`;
 }

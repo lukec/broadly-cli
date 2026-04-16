@@ -2,9 +2,40 @@ import YAML from "yaml";
 import { z } from "zod";
 
 const datasetFormatValues = ["auto", "csv", "tsv", "xlsx", "json", "jsonl"] as const;
-const reductionMethodValues = ["umap", "pca", "tsne"] as const;
+const reductionMethodValues = ["umap", "pacmap"] as const;
 const synthesisModeValues = ["balanced", "consensus", "dissent"] as const;
-const modelProviderValues = ["bedrock", "google-cloud"] as const;
+const mergeStrategyValues = ["semantic"] as const;
+const modelProviderValues = ["bedrock", "google-cloud", "openai"] as const;
+
+const analysisConfigSchema = z
+  .object({
+    extractionModel: z.string().min(1),
+    embeddingModel: z.string().min(1),
+    synthesisModes: z.array(z.enum(synthesisModeValues)).min(1),
+    clusterCounts: z.array(z.number().int().positive()).min(1),
+    mergeStrategy: z.enum(mergeStrategyValues).default("semantic"),
+    reductionMethods: z.array(z.enum(reductionMethodValues)).min(1).optional(),
+    reductionDimensions: z.literal(2).optional(),
+    reduction: z
+      .object({
+        method: z.enum(reductionMethodValues),
+        dimensions: z.literal(2)
+      })
+      .optional(),
+    maxPerspectives: z.number().int().positive().default(3)
+  })
+  .transform((value) => ({
+    extractionModel: value.extractionModel,
+    embeddingModel: value.embeddingModel,
+    synthesisModes: value.synthesisModes,
+    clusterCounts: value.clusterCounts,
+    mergeStrategy: value.mergeStrategy,
+    reductionMethods:
+      value.reductionMethods ??
+      (value.reduction === undefined ? ["umap"] : [value.reduction.method]),
+    reductionDimensions: value.reductionDimensions ?? value.reduction?.dimensions ?? 2,
+    maxPerspectives: value.maxPerspectives
+  }));
 
 export const projectConfigSchema = z.object({
   schemaVersion: z.literal(1),
@@ -14,6 +45,9 @@ export const projectConfigSchema = z.object({
     description: z.string().default(""),
     goals: z.array(z.string().min(1)).default([])
   }),
+  analysis_model: z.string().min(1).optional(),
+  default_opinion_extraction_model: z.string().min(1).optional(),
+  default_embedding_model: z.string().min(1).optional(),
   models: z.array(
     z.object({
       name: z.string().min(1),
@@ -27,20 +61,11 @@ export const projectConfigSchema = z.object({
     format: z.enum(datasetFormatValues).default("auto"),
     encoding: z.string().min(1).optional(),
     delimiter: z.string().min(1).optional(),
-    idColumn: z.string().min(1).optional()
+    idColumn: z.string().min(1).optional(),
+    allowFields: z.array(z.string().min(1)).min(1).optional()
   }),
   guidingQuestions: z.array(z.string().min(1)).min(1),
-  analysis: z.object({
-    extractionModel: z.string().min(1),
-    embeddingModel: z.string().min(1),
-    synthesisModes: z.array(z.enum(synthesisModeValues)).min(1),
-    clusterCounts: z.array(z.number().int().positive()).min(1),
-    reduction: z.object({
-      method: z.enum(reductionMethodValues),
-      dimensions: z.literal(2)
-    }),
-    maxPerspectives: z.number().int().positive().default(3)
-  }),
+  analysis: analysisConfigSchema,
   output: z.object({
     reportDir: z.string().min(1).default("reports"),
     primaryPerspective: z.enum(synthesisModeValues).default("balanced")
@@ -84,6 +109,9 @@ export function createStarterProjectConfig(
       description: options.description ?? "Local-first Broadly analysis project.",
       goals: options.goals ?? []
     },
+    analysis_model: "my-text-model",
+    default_opinion_extraction_model: "my-text-model",
+    default_embedding_model: "my-embedding-model",
     models: [],
     dataset: {
       path: "./data/source.csv",
@@ -97,12 +125,11 @@ export function createStarterProjectConfig(
     analysis: {
       extractionModel: "my-text-model",
       embeddingModel: "my-embedding-model",
-      synthesisModes: ["balanced", "consensus", "dissent"],
-      clusterCounts: [12, 20, 32],
-      reduction: {
-        method: "umap",
-        dimensions: 2
-      },
+      synthesisModes: ["balanced", "dissent"],
+      clusterCounts: [12, 20],
+      mergeStrategy: "semantic",
+      reductionMethods: ["umap", "pacmap"],
+      reductionDimensions: 2,
       maxPerspectives: 3
     },
     output: {

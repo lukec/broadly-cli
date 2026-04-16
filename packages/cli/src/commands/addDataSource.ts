@@ -8,6 +8,7 @@ import {
 } from "@broadly/config";
 import { resolveProjectPaths } from "@broadly/core";
 import { addTabularDataSource } from "@broadly/ingest";
+import { withProjectActionLog } from "../projectLog.js";
 
 export interface AddDataSourceOptions {
   datasetPath: string;
@@ -16,48 +17,72 @@ export interface AddDataSourceOptions {
 
 export async function addDataSource(options: AddDataSourceOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
-  const projectPaths = resolveProjectPaths(projectRoot);
-
-  if (!(await fileExists(projectPaths.configPath))) {
-    throw new Error(`Could not find broadly.yaml at ${projectPaths.configPath}`);
-  }
-
-  const absoluteDatasetPath = path.resolve(options.datasetPath);
-  const configSource = await readFile(projectPaths.configPath, "utf8");
-  const config = parseProjectConfig(configSource);
-  const ingestResult = await addTabularDataSource({
+  await withProjectActionLog({
     projectRoot,
-    datasetPath: absoluteDatasetPath
+    command: "ingest",
+    details: {
+      datasetPath: path.resolve(options.datasetPath)
+    },
+    summarizeResult: (result) => ({
+      rowsNormalized: result.rowCount,
+      filesWritten: result.filesWritten,
+      datasetFormat: result.datasetFormat
+    }),
+    action: async () => {
+      const projectPaths = resolveProjectPaths(projectRoot);
+
+      if (!(await fileExists(projectPaths.configPath))) {
+        throw new Error(`Could not find broadly.yaml at ${projectPaths.configPath}`);
+      }
+
+      const absoluteDatasetPath = path.resolve(options.datasetPath);
+      const configSource = await readFile(projectPaths.configPath, "utf8");
+      const config = parseProjectConfig(configSource);
+      const ingestResult = await addTabularDataSource({
+        projectRoot,
+        datasetPath: absoluteDatasetPath,
+        ...(config.dataset.allowFields === undefined
+          ? {}
+          : { allowFields: config.dataset.allowFields })
+      });
+      const relativeDatasetPath = toPortableRelativePath(projectRoot, ingestResult.storedDatasetPath);
+      const relativeManifestPath = toPortableRelativePath(projectRoot, ingestResult.manifestPath);
+
+      config.dataset = {
+        path: relativeDatasetPath,
+        format: ingestResult.datasetFormat,
+        encoding: ingestResult.encoding,
+        delimiter: ingestResult.delimiter,
+        ...(ingestResult.idColumn === undefined ? {} : { idColumn: ingestResult.idColumn }),
+        ...(config.dataset.allowFields === undefined
+          ? {}
+          : { allowFields: config.dataset.allowFields })
+      };
+
+      await writeFile(projectPaths.configPath, serializeProjectConfig(config), "utf8");
+
+      const lines = [
+        `Ingested data source into ${projectPaths.configPath}`,
+        "",
+        `Source file: ${ingestResult.originalDatasetPath}`,
+        `Copied to: ${relativeDatasetPath}`,
+        `Source SHA-256: ${ingestResult.storedDatasetSha256}`,
+        `Detected format: ${ingestResult.datasetFormat}`,
+        `Detected encoding: ${ingestResult.encoding}`,
+        `Detected delimiter: ${renderDelimiterLabel(ingestResult.delimiter)}`,
+        ...(config.dataset.allowFields === undefined
+          ? []
+          : [`Allowed fields: ${config.dataset.allowFields.length}`]),
+        `Rows normalized: ${ingestResult.rowCount}`,
+        `JSON files written: ${ingestResult.filesWritten}`,
+        `Normalized output: ${ingestResult.normalizedDir}`,
+        `Manifest: ${relativeManifestPath}`
+      ];
+
+      process.stdout.write(`${lines.join("\n")}\n`);
+      return ingestResult;
+    }
   });
-  const relativeDatasetPath = toPortableRelativePath(projectRoot, ingestResult.storedDatasetPath);
-  const relativeManifestPath = toPortableRelativePath(projectRoot, ingestResult.manifestPath);
-
-  config.dataset = {
-    path: relativeDatasetPath,
-    format: ingestResult.datasetFormat,
-    encoding: ingestResult.encoding,
-    delimiter: ingestResult.delimiter,
-    ...(ingestResult.idColumn === undefined ? {} : { idColumn: ingestResult.idColumn })
-  };
-
-  await writeFile(projectPaths.configPath, serializeProjectConfig(config), "utf8");
-
-  const lines = [
-    `Ingested data source into ${projectPaths.configPath}`,
-    "",
-    `Source file: ${ingestResult.originalDatasetPath}`,
-    `Copied to: ${relativeDatasetPath}`,
-    `Source SHA-256: ${ingestResult.storedDatasetSha256}`,
-    `Detected format: ${ingestResult.datasetFormat}`,
-    `Detected encoding: ${ingestResult.encoding}`,
-    `Detected delimiter: ${renderDelimiterLabel(ingestResult.delimiter)}`,
-    `Rows normalized: ${ingestResult.rowCount}`,
-    `JSON files written: ${ingestResult.filesWritten}`,
-    `Normalized output: ${ingestResult.normalizedDir}`,
-    `Manifest: ${relativeManifestPath}`
-  ];
-
-  process.stdout.write(`${lines.join("\n")}\n`);
 }
 
 async function resolveCommandProjectRoot(project: string | undefined): Promise<string> {

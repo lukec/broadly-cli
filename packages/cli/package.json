@@ -22,10 +22,16 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1030.0",
     "@broadly/config": "0.1.0",
     "@broadly/core": "0.1.0",
     "@broadly/ingest": "0.1.0",
     "@broadly/pipeline": "0.1.0",
-    "commander": "^13.1.0"
+    "@broadly/report-model": "0.1.0",
+    "@broadly/report-site": "0.1.0",
+    "commander": "^13.1.0",
+    "google-auth-library": "^10.6.2",
+    "ml-kmeans": "^7.0.0",
+    "umap-js": "^1.4.0"
   }
 }
