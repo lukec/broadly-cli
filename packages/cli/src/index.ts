@@ -113,6 +113,7 @@ program
   .command("extract-opinions")
   .description("Create opinion-unit artifacts from normalized records.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--extraction <name>", "Configured opinion extraction name to run; defaults to all configured extractions")
   .option("--archive", "Move prior opinion runs into archive/ before starting a new extraction", false)
   .option("--resume", "Continue the latest run for the configured model and skip records that already succeeded", false)
   .option(
@@ -123,6 +124,7 @@ program
   .action(
     async (options: {
       project?: string;
+      extraction?: string;
       archive: boolean;
       resume: boolean;
       concurrency?: number;
@@ -130,6 +132,7 @@ program
       await extractOpinions(
         {
           ...(options.project === undefined ? {} : { project: options.project }),
+          ...(options.extraction === undefined ? {} : { extraction: options.extraction }),
           ...(options.archive === true ? { archive: true } : {}),
           ...(options.resume === true ? { resume: true } : {}),
           ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })
@@ -140,7 +143,8 @@ program
 
 program
   .command("opinions")
-  .description("Extract opinion units from normalized records with a specified or configured model.")
+  .description("Extract opinion units from normalized records using one or more configured opinion extractions.")
+  .option("--extraction <name>", "Configured opinion extraction name to run; defaults to all configured extractions")
   .option("--model <name>", "Project model alias to use for opinion extraction")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
   .option("--limit <count>", "Only process the first N normalized records", parsePositiveInteger)
@@ -154,6 +158,7 @@ program
   )
   .action(
     async (options: {
+      extraction?: string;
       model?: string;
       project?: string;
       limit?: number;
@@ -163,6 +168,7 @@ program
       concurrency?: number;
     }) => {
       await extractOpinionsWithModel({
+        ...(options.extraction === undefined ? {} : { extraction: options.extraction }),
         ...(options.model === undefined ? {} : { model: options.model }),
         ...(options.project === undefined ? {} : { project: options.project }),
         ...(options.limit === undefined ? {} : { limit: options.limit }),

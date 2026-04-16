@@ -70,7 +70,7 @@ function renderStatusReport(data: ProjectDashboardData, configPath: string): str
   }
 
   lines.push(color.section("Key Questions"));
-  for (const question of data.config.guidingQuestions) {
+  for (const question of data.config.questions) {
     lines.push(`  ${color.bullet("?")} ${question}`);
   }
 
@@ -123,7 +123,7 @@ function renderStatusReport(data: ProjectDashboardData, configPath: string): str
       lines.push(
         formatDetailLine(
           "Output",
-          `${data.report.fileCount} file(s) in ${data.report.reportDir} · primary ${data.report.primaryPerspective}`
+          `${data.report.fileCount} file(s) in ${data.report.reportDir} · primary ${data.report.primaryView}`
         )
       );
     }

@@ -6,7 +6,7 @@ This repository is the implementation workspace for **Phase 0** of the Broad Lis
 
 The current goal is narrow:
 
-> Given a real consultation dataset and a set of guiding questions, generate a useful, evidence-linked, locally viewable report with more than one defensible interpretation of the data.
+> Given a real consultation dataset and a set of analysis questions, generate a useful, evidence-linked, locally viewable report with more than one defensible interpretation of the data.
 
 The strategy context for this repo lives in the sibling wiki at `/Users/lukec/src/broadly`.
 
@@ -55,6 +55,7 @@ Requirements:
 
 - Node.js `20+`
 - npm `10+`
+- Python `3.10+` if you want to run `pacmap` reductions
 
 Install dependencies:
 
@@ -67,6 +68,15 @@ Build the workspace:
 ```bash
 npm run build
 ```
+
+Optional: enable the `pacmap` reduction backend in a repo-local virtual environment:
+
+```bash
+python3 -m venv .venv-pacmap
+.venv-pacmap/bin/python -m pip install pacmap numpy
+```
+
+Broadly will automatically prefer `./.venv-pacmap/bin/python` when running `pacmap` reductions.
 
 Initialize a local project:
 
@@ -163,10 +173,19 @@ node ../../packages/cli/dist/index.js extract-opinions --archive
 Opinion extraction:
 
 - reads each normalized JSON record from `data/normalized`
-- writes one run under `data/opinions/<run-id>/`
+- writes one configured extraction batch under `data/opinions/<run-id>/`
 - keeps a `data/opinions/current-run.txt` pointer for downstream commands
 - archives older runs into `archive/opinions/` when you use `--archive`
 - caches model responses under `llm-cache/` so compatible reruns do not spend tokens again
+
+The project config now declares:
+
+- `questions`
+- `opinionExtractions`
+- `analysisViews`
+- `report.primaryView`
+
+So `broadly opinions`, `broadly analysis`, and `broadly report` can follow the named extraction and view specs from `broadly.yaml` instead of relying on a single implicit default model.
 
 Projects also include `prompts/`, which is intended to hold reusable prompt files for stages such as opinion extraction.
 New projects start with:

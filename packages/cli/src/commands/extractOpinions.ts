@@ -5,6 +5,7 @@ import { extractOpinionsWithModel } from "./opinions.js";
 
 export interface ExtractOpinionsOptions {
   project?: string;
+  extraction?: string;
   archive?: boolean;
   resume?: boolean;
   concurrency?: number;
@@ -14,6 +15,7 @@ export async function extractOpinions(options: ExtractOpinionsOptions): Promise<
   const projectRoot = await resolveCommandProjectRoot(options.project);
   await extractOpinionsWithModel({
     project: projectRoot,
+    ...(options.extraction === undefined ? {} : { extraction: options.extraction }),
     ...(options.archive === true ? { archive: true } : {}),
     ...(options.resume === true ? { resume: true } : {}),
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })

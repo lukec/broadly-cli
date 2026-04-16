@@ -68,6 +68,8 @@ interface AnalysisClusterArtifact {
 
 interface AnalysisPerspectiveArtifact {
   createdAt?: string;
+  viewName?: string;
+  viewTitle?: string;
   mode?: string;
   status?: string;
   synthesis?: {
@@ -103,6 +105,9 @@ interface LoadedAnalysisRun {
     input?: {
       opinionRunId?: string;
       opinionsSelected?: number;
+      groups?: Array<{
+        opinionRunId?: string;
+      }>;
       extractionModel?: { name?: string; provider?: string; region?: string; modelId?: string };
       embeddingModel?: { name?: string; provider?: string; region?: string; modelId?: string };
       analysisModel?: { name?: string; provider?: string; region?: string; modelId?: string };
@@ -264,7 +269,7 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         const analysisRun = await loadAnalysisRun(projectPaths.runsDir, reportBundle.analysisRunId);
         const opinionLookup = await loadOpinionArtifactLookup(
           path.join(projectPaths.dataDir, "opinions"),
-          analysisRun.manifest.input?.opinionRunId
+          collectOpinionRunIds(analysisRun.manifest.input)
         );
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -278,7 +283,7 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         const analysisRun = await loadAnalysisRun(projectPaths.runsDir, reportBundle.analysisRunId);
         const opinionLookup = await loadOpinionArtifactLookup(
           path.join(projectPaths.dataDir, "opinions"),
-          analysisRun.manifest.input?.opinionRunId
+          collectOpinionRunIds(analysisRun.manifest.input)
         );
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -308,7 +313,7 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
           const clusterDetail = loadClusterDetail(run, clusterArtifactName, clusterId);
           const opinionLookup = await loadOpinionArtifactLookup(
             path.join(projectPaths.dataDir, "opinions"),
-            run.manifest.input?.opinionRunId
+            collectOpinionRunIds(run.manifest.input)
           );
 
           response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -468,41 +473,67 @@ async function findLatestReportRun(reportsDir: string): Promise<string | null> {
 
 async function loadOpinionArtifactLookup(
   opinionsRootDir: string,
-  opinionRunId: string | undefined
+  opinionRunIds: string[]
 ): Promise<Record<string, LoadedOpinionArtifact>> {
-  if (opinionRunId === undefined) {
+  if (opinionRunIds.length === 0) {
     return {};
   }
 
-  const opinionsDir = path.join(opinionsRootDir, opinionRunId, "opinions");
-  const entries = await readdir(opinionsDir, { withFileTypes: true }).catch(() => []);
   const lookup: Record<string, LoadedOpinionArtifact> = {};
 
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) {
-      continue;
-    }
+  for (const opinionRunId of opinionRunIds) {
+    const opinionsDir = path.join(opinionsRootDir, opinionRunId, "opinions");
+    const entries = await readdir(opinionsDir, { withFileTypes: true }).catch(() => []);
 
-    const artifact = await readJsonFile<LoadedOpinionArtifact>(path.join(opinionsDir, entry.name));
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
 
-    if (artifact?.opinionId !== undefined) {
-      const normalizedRecord =
-        artifact.provenance?.normalizedRecordPath === undefined
-          ? null
-          : await readJsonFile<NormalizedCommentRecord>(artifact.provenance.normalizedRecordPath);
+      const artifact = await readJsonFile<LoadedOpinionArtifact>(path.join(opinionsDir, entry.name));
 
-      lookup[artifact.opinionId] = {
-        ...artifact,
-        ...(normalizedRecord === null
-          ? {}
-          : {
-              fullComment: normalizedRecord.contentText
-            })
-      };
+      if (artifact?.opinionId !== undefined) {
+        const normalizedRecord =
+          artifact.provenance?.normalizedRecordPath === undefined
+            ? null
+            : await readJsonFile<NormalizedCommentRecord>(artifact.provenance.normalizedRecordPath);
+
+        lookup[artifact.opinionId] = {
+          ...artifact,
+          ...(normalizedRecord === null
+            ? {}
+            : {
+                fullComment: normalizedRecord.contentText
+              })
+        };
+      }
     }
   }
 
   return lookup;
+}
+
+function collectOpinionRunIds(
+  input:
+    | {
+        opinionRunId?: string;
+        groups?: Array<{ opinionRunId?: string }>;
+      }
+    | undefined
+): string[] {
+  const ids = new Set<string>();
+
+  if (input?.opinionRunId !== undefined) {
+    ids.add(input.opinionRunId);
+  }
+
+  for (const group of input?.groups ?? []) {
+    if (group.opinionRunId !== undefined) {
+      ids.add(group.opinionRunId);
+    }
+  }
+
+  return [...ids];
 }
 
 async function loadArtifactDirectory<T>(
@@ -570,7 +601,7 @@ function renderHomePage(data: ProjectDashboardData): string {
         <article class="card feature-card">
           <p class="eyebrow">Key Questions</p>
           <h2>What this analysis should answer</h2>
-          ${renderBulletList(data.config.guidingQuestions)}
+          ${renderBulletList(data.config.questions)}
         </article>
       </section>
       <section class="panel">
@@ -717,16 +748,12 @@ function renderIngestPage(
 
 function renderOpinionsPage(data: ProjectDashboardData): string {
   const latestRun = data.opinionRuns[0];
-  const extractionModelLabel =
-    latestRun?.modelLabel ??
-    resolveRegisteredModelLabel(
-      data.config,
-      data.config.default_opinion_extraction_model ?? data.config.analysis.extractionModel
-    );
-  const embeddingModelLabel = resolveRegisteredModelLabel(
-    data.config,
-    data.config.default_embedding_model ?? data.config.analysis.embeddingModel
-  );
+  const extractionModelLabel = latestRun?.modelLabel ?? "See configured opinion extractions";
+  const embeddingModelLabel = uniqueLabels(
+    data.config.analysisViews.map((view) =>
+      resolveRegisteredModelLabel(data.config, view.embeddingModel)
+    )
+  ).join(", ");
   const opinionsStatus = describeOpinionRunStatus(data);
 
   return renderPage(
@@ -741,10 +768,10 @@ function renderOpinionsPage(data: ProjectDashboardData): string {
           ${renderKeyValueList([
             ["Opinion extraction model", extractionModelLabel],
             ["Embedding model", embeddingModelLabel],
-            ["Synthesis modes", data.config.analysis.synthesisModes.join(", ")],
-            ["Merge strategy", data.config.analysis.mergeStrategy],
-            ["Reduction methods", data.config.analysis.reductionMethods.join(", ")],
-            ["Cluster counts", data.config.analysis.clusterCounts.join(", ")]
+            ["Opinion extractions", data.config.opinionExtractions.map((item) => item.name).join(", ")],
+            ["Analysis views", data.config.analysisViews.map((item) => item.name).join(", ")],
+            ["Reduction methods", uniqueLabels(data.config.analysisViews.map((item) => item.reduction.method)).join(", ")],
+            ["Cluster counts", uniqueLabels(data.config.analysisViews.map((item) => String(item.clustering.count))).join(", ")]
           ])}
         </article>
         <article class="card">
@@ -788,12 +815,16 @@ function renderOpinionsPage(data: ProjectDashboardData): string {
 function renderAnalysisPage(data: ProjectDashboardData): string {
   const status = buildPipelineSteps(data).find((step) => step.step === "analysis")?.status ?? "pending";
   const latestRun = data.analysis.runs[0];
-  const analysisModelLabel = resolveRegisteredModelLabel(
-    data.config,
-    data.config.analysis_model ??
-      data.config.default_opinion_extraction_model ??
-      data.config.analysis.extractionModel
-  );
+  const analysisModelLabel = uniqueLabels(
+    data.config.analysisViews.map((view) =>
+      resolveRegisteredModelLabel(
+        data.config,
+        view.analysisModel ??
+          data.config.opinionExtractions.find((extraction) => extraction.name === view.sourceExtraction)?.model ??
+          "unknown"
+      )
+    )
+  ).join(", ");
 
   return renderPage(
     data,
@@ -811,14 +842,16 @@ function renderAnalysisPage(data: ProjectDashboardData): string {
           <h2>Analysis settings</h2>
           ${renderKeyValueList([
             ["Analysis model", analysisModelLabel],
-            ["Merge strategy", data.config.analysis.mergeStrategy],
+            [
+              "Merge strategy",
+              uniqueLabels(data.config.analysisViews.map((view) => view.clustering.mergeStrategy)).join(", ")
+            ],
             [
               "Reduction methods",
-              `${data.config.analysis.reductionMethods.join(", ")} (${data.config.analysis.reductionDimensions}d)`
+              `${uniqueLabels(data.config.analysisViews.map((view) => view.reduction.method)).join(", ")} (2d)`
             ],
-            ["Cluster counts", data.config.analysis.clusterCounts.join(", ")],
-            ["Synthesis modes", data.config.analysis.synthesisModes.join(", ")],
-            ["Max perspectives", String(data.config.analysis.maxPerspectives)]
+            ["Cluster counts", uniqueLabels(data.config.analysisViews.map((view) => String(view.clustering.count))).join(", ")],
+            ["Analysis views", data.config.analysisViews.map((view) => view.name).join(", ")]
           ])}
         </article>
       </section>
@@ -887,7 +920,7 @@ function renderReportPage(data: ProjectDashboardData): string {
           <h2>Report settings</h2>
           ${renderKeyValueList([
             ["Report directory", data.report.reportDir],
-            ["Primary perspective", data.report.primaryPerspective]
+            ["Primary view", data.report.primaryView]
           ])}
         </article>
       </section>
@@ -929,25 +962,24 @@ function renderPublishedReportPage(
   opinionLookup: Record<string, LoadedOpinionArtifact>
 ): string {
   const primaryPerspective =
-    report.perspectives.find((perspective) => perspective.perspectiveId === report.primaryPerspectiveId) ??
-    report.perspectives[0];
+    report.views.find((view) => view.viewId === report.primaryViewId) ?? report.views[0];
   const clusterArtifactByPath = new Map(
     analysisRun.clusters.map((cluster) => [cluster.path, cluster.artifact] as const)
   );
   const perspectiveArtifactByMode = new Map(
     analysisRun.perspectives
-      .filter((perspective) => perspective.artifact.mode !== undefined)
-      .map((perspective) => [perspective.artifact.mode as string, perspective.artifact] as const)
+      .filter((perspective) => perspective.artifact.viewName !== undefined)
+      .map((perspective) => [perspective.artifact.viewName as string, perspective.artifact] as const)
   );
-  const perspectiveConfigs = report.perspectives.map((perspective) => {
-    const perspectiveArtifact = perspectiveArtifactByMode.get(perspective.perspectiveId);
+  const perspectiveConfigs = report.views.map((perspective) => {
+    const perspectiveArtifact = perspectiveArtifactByMode.get(perspective.viewId);
     const clusterArtifact =
       perspectiveArtifact?.chosenClusterArtifactPath === undefined
         ? undefined
         : clusterArtifactByPath.get(perspectiveArtifact.chosenClusterArtifactPath);
 
     return {
-      perspectiveId: perspective.perspectiveId,
+      perspectiveId: perspective.viewId,
       reductionMethod: perspectiveArtifact?.chosenReductionMethod ?? "unknown",
       clusterCount:
         perspectiveArtifact?.chosenClusterCount === undefined
@@ -968,7 +1000,7 @@ function renderPublishedReportPage(
       <section class="panel report-hero">
         <p class="eyebrow"><a href="/pipeline/report">Back to Create Report</a></p>
         <h2>${escapeHtml(report.projectName)}</h2>
-        <p class="lede">${escapeHtml(primaryPerspective?.title ?? report.primaryPerspectiveId)}</p>
+        <p class="lede">${escapeHtml(primaryPerspective?.title ?? report.primaryViewId)}</p>
         <p class="meta">Report ${escapeHtml(runId)} · analysis run ${escapeHtml(report.analysisRunId)} · generated ${escapeHtml(report.createdAt)}</p>
       </section>
       <section class="panel">
@@ -977,15 +1009,15 @@ function renderPublishedReportPage(
           <h2>Analysis views</h2>
           <p class="meta">Switch between the different readings produced from the same opinion set. Each view keeps the same source evidence, but may use a different cluster configuration or emphasis.</p>
           <div class="perspective-switcher" data-perspective-group="${perspectiveGroupId}">
-            ${report.perspectives
+            ${report.views
               .map((perspective) => {
                 const config = perspectiveConfigs.find(
-                  (item) => item.perspectiveId === perspective.perspectiveId
+                  (item) => item.perspectiveId === perspective.viewId
                 );
-                const isPrimary = perspective.perspectiveId === report.primaryPerspectiveId;
+                const isPrimary = perspective.viewId === report.primaryViewId;
 
                 return `<button type="button" class="perspective-switcher-tab ${isPrimary ? "active" : ""}" data-perspective-target="perspective-${escapeHtmlAttribute(
-                  perspective.perspectiveId
+                  perspective.viewId
                 )}">
                     <span class="perspective-switcher-title">${escapeHtml(perspective.title)}</span>
                     <span class="perspective-switcher-meta">${escapeHtml(
@@ -997,29 +1029,29 @@ function renderPublishedReportPage(
           </div>
         </article>
       </section>
-      ${report.perspectives
+      ${report.views
         .map(
           (perspective) => {
-            const perspectiveArtifact = perspectiveArtifactByMode.get(perspective.perspectiveId);
+            const perspectiveArtifact = perspectiveArtifactByMode.get(perspective.viewId);
             const clusterArtifact =
               perspectiveArtifact?.chosenClusterArtifactPath === undefined
                 ? undefined
                 : clusterArtifactByPath.get(perspectiveArtifact.chosenClusterArtifactPath);
             const highlightedClusterIds = perspective.clusters.map((cluster) => cluster.clusterId);
-            const tabGroupId = `tabs-${escapeHtmlAttribute(perspective.perspectiveId)}`;
+            const tabGroupId = `tabs-${escapeHtmlAttribute(perspective.viewId)}`;
             const themesTabId = `${tabGroupId}-themes`;
             const highlightedTabId = `${tabGroupId}-highlighted`;
             const allTabId = `${tabGroupId}-all`;
-            const perspectiveTabId = `perspective-${escapeHtmlAttribute(perspective.perspectiveId)}`;
-            const isPrimary = perspective.perspectiveId === report.primaryPerspectiveId;
+            const perspectiveTabId = `perspective-${escapeHtmlAttribute(perspective.viewId)}`;
+            const isPrimary = perspective.viewId === report.primaryViewId;
             const config = perspectiveConfigs.find(
-              (item) => item.perspectiveId === perspective.perspectiveId
+              (item) => item.perspectiveId === perspective.viewId
             );
 
             return `<section class="panel perspective-panel ${isPrimary ? "active" : ""}" id="${perspectiveTabId}" data-cluster-scope data-perspective-panel="${perspectiveTabId}">
               <div class="section-head">
                 <div>
-                  <p class="eyebrow">${escapeHtml(perspective.perspectiveId)}</p>
+                  <p class="eyebrow">${escapeHtml(perspective.viewId)}</p>
                   <h2>${escapeHtml(perspective.title)}</h2>
                 </div>
                 ${
@@ -1049,7 +1081,7 @@ function renderPublishedReportPage(
                         clusterArtifact,
                         perspectiveArtifact?.chosenClusterArtifactPath ?? "",
                         report.analysisRunId,
-                        perspective.perspectiveId,
+                        perspective.viewId,
                         new Set(perspective.clusters.map((cluster) => cluster.clusterId))
                       )}
                       ${renderClusterScatterplot(clusterArtifact, highlightedClusterIds)}
@@ -1093,7 +1125,7 @@ function renderPublishedReportPage(
                                           .map(
                                             (cluster) =>
                                               `<li><a href="#${clusterAnchorId(
-                                                perspective.perspectiveId,
+                                                perspective.viewId,
                                                 cluster.clusterId
                                               )}" data-cluster-focus="${escapeHtmlAttribute(cluster.clusterId)}" href="${clusterDetailHref(
                                                 report.analysisRunId,
@@ -1117,7 +1149,7 @@ function renderPublishedReportPage(
                       .map((cluster, clusterIndex) => {
                         const clusterColor = clusterColorForId(cluster.clusterId);
                         return `<article class="card report-cluster-card highlighted-cluster-card" id="${clusterAnchorId(
-                          perspective.perspectiveId,
+                          perspective.viewId,
                           cluster.clusterId
                         )}" style="--cluster-accent:${clusterColor}">
                             <p class="eyebrow">Cluster ${escapeHtml(cluster.clusterId)}</p>
@@ -1134,7 +1166,7 @@ function renderPublishedReportPage(
                                 : cluster.evidenceQuotes
                                     .map((quote, quoteIndex) => {
                                       const opinion = opinionLookup[quote.sourceId];
-                                      const dialogId = `dialog-${escapeHtmlAttribute(perspective.perspectiveId)}-${clusterIndex}-${quoteIndex}`;
+                                      const dialogId = `dialog-${escapeHtmlAttribute(perspective.viewId)}-${clusterIndex}-${quoteIndex}`;
                                       return `<div class="evidence-card">
                                           <blockquote>${escapeHtml(quote.excerpt)}</blockquote>
                                           <div class="evidence-meta">
@@ -1283,7 +1315,7 @@ function renderClusterLegend(
 
 function renderFullClusterAtlas(
   clusterArtifact: AnalysisClusterArtifact,
-  perspective: ReportBundle["perspectives"][number],
+  perspective: ReportBundle["views"][number],
   opinionLookup: Record<string, LoadedOpinionArtifact>,
   projectRoot: string,
   runId?: string,
@@ -1311,7 +1343,7 @@ function renderFullClusterAtlas(
             const isHighlighted = highlightedClusterIds.has(clusterId);
 
             return `<article class="card report-cluster-card ${isHighlighted ? "highlighted-cluster-card" : "secondary-cluster-card"}" id="${clusterAnchorId(
-              perspective.perspectiveId,
+              perspective.viewId,
               clusterId
             )}" style="--cluster-accent:${clusterColor}">
                 <div class="section-head">
@@ -1344,7 +1376,7 @@ function renderFullClusterAtlas(
                         opinion.opinionId === undefined
                           ? undefined
                           : opinionLookup[opinion.opinionId];
-                      const dialogId = `atlas-dialog-${escapeHtmlAttribute(perspective.perspectiveId)}-${clusterIndex}-${opinionIndex}`;
+                      const dialogId = `atlas-dialog-${escapeHtmlAttribute(perspective.viewId)}-${clusterIndex}-${opinionIndex}`;
 
                       return `<div class="evidence-card">
                           <blockquote>${escapeHtml(opinion.excerpt ?? opinion.opinionText ?? "")}</blockquote>
@@ -2188,6 +2220,10 @@ function renderKeyValueList(items: Array<[string, string]>): string {
 
 function renderBulletList(items: string[]): string {
   return `<ul class="bullets">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+function uniqueLabels(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
 function truncateForUi(value: string, maxLength: number): string {

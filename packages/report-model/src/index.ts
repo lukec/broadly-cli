@@ -18,8 +18,8 @@ export interface ThemeSummary {
   clusterIds: string[];
 }
 
-export interface PerspectiveReport {
-  perspectiveId: string;
+export interface AnalysisViewReport {
+  viewId: string;
   title: string;
   summary: string;
   themes?: ThemeSummary[];
@@ -31,7 +31,7 @@ export interface ReportBundle {
   createdAt: string;
   analysisRunId: string;
   projectName: string;
-  guidingQuestions: string[];
-  primaryPerspectiveId: string;
-  perspectives: PerspectiveReport[];
+  questions: string[];
+  primaryViewId: string;
+  views: AnalysisViewReport[];
 }

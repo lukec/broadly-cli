@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 import {
+  getOpinionExtractionConfig,
   parseProjectConfig,
   type BroadlyProjectConfig
 } from "@broadly/config";
@@ -21,6 +22,7 @@ type RegisteredModel = BroadlyProjectConfig["models"][number];
 
 export interface OpinionsCommandOptions {
   project?: string;
+  extraction?: string;
   model?: string;
   limit?: number;
   offset?: number;
@@ -45,6 +47,10 @@ interface OpinionRunManifest {
   createdAt: string;
   updatedAt: string;
   runId: string;
+  extraction: {
+    name: string;
+    title?: string;
+  };
   model: RegisteredModel;
   fingerprint: OpinionRunFingerprint;
   prompt: {
@@ -70,6 +76,7 @@ interface OpinionRunManifest {
 }
 
 interface OpinionRunFingerprint {
+  extractionName: string;
   promptSha256: string;
   ingestManifestSha256: string | null;
 }
@@ -82,6 +89,7 @@ export async function extractOpinionsWithModel(
     projectRoot,
     command: "opinions",
     details: {
+      extraction: options.extraction ?? "(configured)",
       model: options.model ?? "(configured)",
       limit: options.limit,
       offset: options.offset,
@@ -92,22 +100,7 @@ export async function extractOpinionsWithModel(
     action: async () => {
       const projectPaths = resolveProjectPaths(projectRoot);
       const config = await loadProjectConfig(projectPaths.configPath);
-      const model = resolveConfiguredOpinionModel(config, options.model);
-      const promptPath = path.join(projectPaths.promptsDir, "opinion-extraction.md");
-      const promptTemplate = await readFile(promptPath, "utf8");
-      const promptSha256 = sha256Hex(promptTemplate);
-      const normalizedDir = path.join(projectPaths.dataDir, "normalized");
       const opinionsRootDir = path.join(projectPaths.dataDir, "opinions");
-      const normalizedRecordPaths = await listNormalizedRecordPaths(normalizedDir);
-      const fingerprint = await resolveOpinionRunFingerprint(normalizedDir, promptSha256);
-      const offset = options.offset ?? 0;
-      const selectedRecordPaths = normalizedRecordPaths.slice(
-        offset,
-        options.limit === undefined ? undefined : offset + options.limit
-      );
-      const createdAt = new Date().toISOString();
-      const concurrency = resolveConcurrency(options.concurrency);
-      const currentRunId = await readCurrentRunId(projectPaths.opinionsCurrentRunPath);
 
       if (options.archive === true && options.resume === true) {
         throw new Error("Cannot use --archive and --resume together.");
@@ -128,35 +121,95 @@ export async function extractOpinionsWithModel(
         }
       }
 
-      const currentCompatibleRun =
-        currentRunId === null
-          ? null
-          : await findCompatibleOpinionRunById(opinionsRootDir, currentRunId, model, fingerprint);
-      const latestCompatibleRun = await findLatestCompatibleOpinionRunForModel(
-        opinionsRootDir,
-        model,
-        fingerprint
-      );
+      const extractionTargets = resolveOpinionExtractionTargets(config, options);
 
-      if (options.resume === true && currentCompatibleRun === null && latestCompatibleRun === null) {
-        throw new Error(
-          `No compatible opinion run found for model '${model.name}'. The prompt or dataset fingerprint may have changed; start a fresh run without --resume or use --archive.`
-        );
+      for (const extractionTarget of extractionTargets) {
+        await extractOpinionsForTarget({
+          projectRoot,
+          projectPaths,
+          config,
+          extractionName: extractionTarget.name,
+          ...(extractionTarget.title === undefined ? {} : { extractionTitle: extractionTarget.title }),
+          model: resolveModel(config, options.model ?? extractionTarget.model),
+          promptPath: path.join(projectRoot, extractionTarget.prompt),
+          resume: options.resume === true,
+          ...(options.limit === undefined ? {} : { limit: options.limit }),
+          ...(options.offset === undefined ? {} : { offset: options.offset }),
+          ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })
+        });
       }
+    }
+  });
+}
 
-      const resumedRun = currentCompatibleRun ?? latestCompatibleRun;
-      const autoResumed = options.resume !== true && resumedRun !== null;
+async function extractOpinionsForTarget(options: {
+  projectRoot: string;
+  projectPaths: ReturnType<typeof resolveProjectPaths>;
+  config: BroadlyProjectConfig;
+  extractionName: string;
+  extractionTitle?: string;
+  model: RegisteredModel;
+  promptPath: string;
+  limit?: number;
+  offset?: number;
+  resume: boolean;
+  concurrency?: number;
+}): Promise<void> {
+  const normalizedDir = path.join(options.projectPaths.dataDir, "normalized");
+  const opinionsRootDir = path.join(options.projectPaths.dataDir, "opinions");
+  const promptTemplate = await readFile(options.promptPath, "utf8");
+  const promptSha256 = sha256Hex(promptTemplate);
+  const normalizedRecordPaths = await listNormalizedRecordPaths(normalizedDir);
+  const fingerprint = await resolveOpinionRunFingerprint(
+    normalizedDir,
+    options.extractionName,
+    promptSha256
+  );
+  const offset = options.offset ?? 0;
+  const selectedRecordPaths = normalizedRecordPaths.slice(
+    offset,
+    options.limit === undefined ? undefined : offset + options.limit
+  );
+  const createdAt = new Date().toISOString();
+  const concurrency = resolveConcurrency(options.concurrency);
+  const currentRunId = await readCurrentRunId(options.projectPaths.opinionsCurrentRunPath);
 
-      const runId = resumedRun?.runId ?? createRunId(model.name);
-      const runCreatedAt = resumedRun?.createdAt ?? createdAt;
-      const runDir = path.join(opinionsRootDir, runId);
-      const recordsDir = path.join(runDir, "records");
-      const opinionsDir = path.join(runDir, "opinions");
-      const manifestPath = path.join(runDir, "manifest.json");
+  const currentCompatibleRun =
+    currentRunId === null
+      ? null
+      : await findCompatibleOpinionRunById(
+          opinionsRootDir,
+          currentRunId,
+          options.extractionName,
+          options.model,
+          fingerprint
+        );
+  const latestCompatibleRun = await findLatestCompatibleOpinionRunForModel(
+    opinionsRootDir,
+    options.extractionName,
+    options.model,
+    fingerprint
+  );
 
-      await mkdir(recordsDir, { recursive: true });
-      await mkdir(opinionsDir, { recursive: true });
-      await writeCurrentRunId(projectPaths.opinionsCurrentRunPath, runId);
+  if (options.resume === true && currentCompatibleRun === null && latestCompatibleRun === null) {
+    throw new Error(
+      `No compatible opinion run found for extraction '${options.extractionName}'. The prompt or dataset fingerprint may have changed; start a fresh run without --resume or use --archive.`
+    );
+  }
+
+  const resumedRun = currentCompatibleRun ?? latestCompatibleRun;
+  const autoResumed = options.resume !== true && resumedRun !== null;
+
+  const runId = resumedRun?.runId ?? createRunId(options.extractionName);
+  const runCreatedAt = resumedRun?.createdAt ?? createdAt;
+  const runDir = path.join(opinionsRootDir, runId);
+  const recordsDir = path.join(runDir, "records");
+  const opinionsDir = path.join(runDir, "opinions");
+  const manifestPath = path.join(runDir, "manifest.json");
+
+  await mkdir(recordsDir, { recursive: true });
+  await mkdir(opinionsDir, { recursive: true });
+  await writeCurrentRunId(options.projectPaths.opinionsCurrentRunPath, runId);
 
   const selectedSourceIds = new Set(
     selectedRecordPaths.map((normalizedRecordPath) => path.basename(normalizedRecordPath, ".json"))
@@ -180,8 +233,10 @@ export async function extractOpinionsWithModel(
       createdAt: runCreatedAt,
       updatedAt: new Date().toISOString(),
       runId,
-      model,
-      promptPath,
+      extractionName: options.extractionName,
+      ...(options.extractionTitle === undefined ? {} : { extractionTitle: options.extractionTitle }),
+      model: options.model,
+      promptPath: options.promptPath,
       promptSha256,
       normalizedDir,
       recordsAttempted: selectedRecordPaths.length,
@@ -225,16 +280,16 @@ export async function extractOpinionsWithModel(
   };
 
       if (options.resume === true) {
-        process.stdout.write(
-          `Resume requested: continuing ${toPortableRelativePath(projectRoot, runDir)}\n`
+      process.stdout.write(
+          `Resume requested for ${options.extractionName}: continuing ${toPortableRelativePath(options.projectRoot, runDir)}\n`
         );
       } else if (autoResumed) {
         process.stdout.write(
-          `Compatible current run found: continuing ${toPortableRelativePath(projectRoot, runDir)}\n`
+          `Compatible current run found for ${options.extractionName}: continuing ${toPortableRelativePath(options.projectRoot, runDir)}\n`
         );
       }
 
-  process.stdout.write(`Opinion extraction concurrency: ${concurrency}\n`);
+  process.stdout.write(`Opinion extraction [${options.extractionName}] concurrency: ${concurrency}\n`);
 
       process.on("SIGINT", handleInterrupt);
       process.on("SIGTERM", handleInterrupt);
@@ -244,8 +299,10 @@ export async function extractOpinionsWithModel(
       createdAt: runCreatedAt,
       updatedAt: createdAt,
       runId,
-      model,
-      promptPath,
+      extractionName: options.extractionName,
+      ...(options.extractionTitle === undefined ? {} : { extractionTitle: options.extractionTitle }),
+      model: options.model,
+      promptPath: options.promptPath,
       promptSha256,
       normalizedDir,
       recordsAttempted: selectedRecordPaths.length,
@@ -277,10 +334,10 @@ export async function extractOpinionsWithModel(
 
       try {
         const result = await runTextPromptWithModel({
-          model,
+          model: options.model,
           prompt,
           maxOutputTokens: 2048,
-          projectRoot,
+          projectRoot: options.projectRoot,
           temperature: 0
         });
         const parsed = parseOpinionResponse(result.text, normalizedRecord);
@@ -289,11 +346,11 @@ export async function extractOpinionsWithModel(
         for (const opinion of parsed.opinions) {
           const opinionRecord = buildOpinionRecord({
             createdAt,
-            model,
+            model: options.model,
             normalizedRecord,
             normalizedRecordPath,
             opinion,
-            promptPath,
+            promptPath: options.promptPath,
             promptSha256,
             responseStopReason: result.stopReason
           });
@@ -308,9 +365,13 @@ export async function extractOpinionsWithModel(
           createdAt,
           sourceId: normalizedRecord.sourceId,
           normalizedRecordPath,
-          model,
+          extraction: {
+            name: options.extractionName,
+            ...(options.extractionTitle === undefined ? {} : { title: options.extractionTitle })
+          },
+          model: options.model,
           prompt: {
-            path: promptPath,
+            path: options.promptPath,
             sha256: promptSha256
           },
           response: {
@@ -335,9 +396,13 @@ export async function extractOpinionsWithModel(
           createdAt,
           sourceId: normalizedRecord.sourceId,
           normalizedRecordPath,
-          model,
+          extraction: {
+            name: options.extractionName,
+            ...(options.extractionTitle === undefined ? {} : { title: options.extractionTitle })
+          },
+          model: options.model,
           prompt: {
-            path: promptPath,
+            path: options.promptPath,
             sha256: promptSha256
           },
           error: message
@@ -396,30 +461,32 @@ export async function extractOpinionsWithModel(
     progress.finish();
 
     if (pendingRecordPaths.length === 0 && options.resume === true) {
-      process.stdout.write("Resume requested: no remaining records needed processing for this selection.\n");
+      process.stdout.write(
+        `Resume requested for ${options.extractionName}: no remaining records needed processing for this selection.\n`
+      );
     }
 
     await queueCheckpointManifest();
 
       const lines = [
-        `${interruptSignal === null ? "Extracted" : "Interrupted"} opinions for ${projectRoot}`,
+        `${interruptSignal === null ? "Extracted" : "Interrupted"} opinions for ${options.projectRoot}`,
         "",
-      ...(options.archive === true ? ["Previous opinion runs archived: yes"] : []),
       ...(options.resume === true ? ["Resumed existing run: yes"] : []),
       ...(autoResumed ? ["Resumed compatible run by default: yes"] : []),
       ...(interruptSignal === null ? [] : [`Interrupted by: ${interruptSignal}`]),
-      `Model: ${model.name} (${model.provider} · ${model.region} · ${model.modelId})`,
+      `Extraction: ${options.extractionName}${options.extractionTitle === undefined ? "" : ` (${options.extractionTitle})`}`,
+      `Model: ${options.model.name} (${options.model.provider} · ${options.model.region} · ${options.model.modelId})`,
       `Concurrency: ${concurrency}`,
       `Run: ${runId}`,
       `Offset: ${offset}`,
       `Records attempted: ${selectedRecordPaths.length}`,
-      `Records remaining at start: ${pendingRecordPaths.length}`,
-      `Records written: ${recordsWritten}`,
-      `Failed records: ${failedRecords}`,
+        `Records remaining at start: ${pendingRecordPaths.length}`,
+        `Records written: ${recordsWritten}`,
+        `Failed records: ${failedRecords}`,
         `Opinions written: ${opinionsWritten}`,
-        `Current pointer: ${toPortableRelativePath(projectRoot, projectPaths.opinionsCurrentRunPath)}`,
-        `Output: ${toPortableRelativePath(projectRoot, runDir)}`,
-        `Manifest: ${toPortableRelativePath(projectRoot, manifestPath)}`
+        `Current pointer: ${toPortableRelativePath(options.projectRoot, options.projectPaths.opinionsCurrentRunPath)}`,
+        `Output: ${toPortableRelativePath(options.projectRoot, runDir)}`,
+        `Manifest: ${toPortableRelativePath(options.projectRoot, manifestPath)}`
       ];
 
     if (interruptSignal !== null) {
@@ -431,14 +498,67 @@ export async function extractOpinionsWithModel(
         process.off("SIGINT", handleInterrupt);
         process.off("SIGTERM", handleInterrupt);
       }
+}
+
+function resolveOpinionExtractionTargets(
+  config: BroadlyProjectConfig,
+  options: OpinionsCommandOptions
+): Array<{
+  name: string;
+  title?: string;
+  model: string;
+  prompt: string;
+}> {
+  if (options.extraction !== undefined) {
+    const extraction = getOpinionExtractionConfig(config, options.extraction);
+
+    return [
+      {
+        name: extraction.name,
+        ...(extraction.title === undefined ? {} : { title: extraction.title }),
+        model: extraction.model,
+        prompt: extraction.prompt
+      }
+    ];
+  }
+
+  if (options.model !== undefined) {
+    const matchingExtraction = config.opinionExtractions.find((item) => item.model === options.model);
+
+    if (matchingExtraction !== undefined) {
+      return [
+        {
+          name: matchingExtraction.name,
+          ...(matchingExtraction.title === undefined ? {} : { title: matchingExtraction.title }),
+          model: matchingExtraction.model,
+          prompt: matchingExtraction.prompt
+        }
+      ];
     }
-  });
+
+    return [
+      {
+        name: `adhoc-${options.model}`,
+        model: options.model,
+        prompt: "prompts/opinion-extraction.md"
+      }
+    ];
+  }
+
+  return config.opinionExtractions.map((extraction) => ({
+    name: extraction.name,
+    ...(extraction.title === undefined ? {} : { title: extraction.title }),
+    model: extraction.model,
+    prompt: extraction.prompt
+  }));
 }
 
 async function writeOpinionRunManifest(options: {
   createdAt: string;
   updatedAt: string;
   runId: string;
+  extractionName: string;
+  extractionTitle?: string;
   model: RegisteredModel;
   promptPath: string;
   promptSha256: string;
@@ -460,6 +580,10 @@ async function writeOpinionRunManifest(options: {
     createdAt: options.createdAt,
     updatedAt: options.updatedAt,
     runId: options.runId,
+    extraction: {
+      name: options.extractionName,
+      ...(options.extractionTitle === undefined ? {} : { title: options.extractionTitle })
+    },
     model: options.model,
     fingerprint: options.fingerprint,
     prompt: {
@@ -489,6 +613,7 @@ async function writeOpinionRunManifest(options: {
 
 async function findLatestCompatibleOpinionRunForModel(
   opinionsRootDir: string,
+  extractionName: string,
   model: RegisteredModel,
   fingerprint: OpinionRunFingerprint
 ): Promise<{ runId: string; createdAt: string } | null> {
@@ -503,8 +628,10 @@ async function findLatestCompatibleOpinionRunForModel(
     const manifestPath = path.join(opinionsRootDir, entry.name, "manifest.json");
     const manifest = await readJsonFile<{
       createdAt?: string;
+      extraction?: { name?: string };
       model?: { name?: string; provider?: string; region?: string; modelId?: string };
       fingerprint?: {
+        extractionName?: string;
         promptSha256?: string;
         ingestManifestSha256?: string | null;
       };
@@ -518,6 +645,7 @@ async function findLatestCompatibleOpinionRunForModel(
 
     if (
       manifest?.createdAt !== undefined &&
+      (manifest.extraction?.name ?? manifest.fingerprint?.extractionName) === extractionName &&
       manifest.model?.name === model.name &&
       manifest.model?.provider === model.provider &&
       manifest.model?.region === model.region &&
@@ -543,13 +671,16 @@ async function findLatestCompatibleOpinionRunForModel(
 async function findCompatibleOpinionRunById(
   opinionsRootDir: string,
   runId: string,
+  extractionName: string,
   model: RegisteredModel,
   fingerprint: OpinionRunFingerprint
 ): Promise<{ runId: string; createdAt: string } | null> {
   const manifest = await readJsonFile<{
     createdAt?: string;
+    extraction?: { name?: string };
     model?: { name?: string; provider?: string; region?: string; modelId?: string };
     fingerprint?: {
+      extractionName?: string;
       promptSha256?: string;
       ingestManifestSha256?: string | null;
     };
@@ -563,6 +694,7 @@ async function findCompatibleOpinionRunById(
 
   if (
     manifest?.createdAt === undefined ||
+    (manifest.extraction?.name ?? manifest.fingerprint?.extractionName) !== extractionName ||
     manifest.model?.name !== model.name ||
     manifest.model?.provider !== model.provider ||
     manifest.model?.region !== model.region ||
@@ -584,12 +716,14 @@ async function findCompatibleOpinionRunById(
 
 async function resolveOpinionRunFingerprint(
   normalizedDir: string,
+  extractionName: string,
   promptSha256: string
 ): Promise<OpinionRunFingerprint> {
   const ingestManifestPath = path.join(normalizedDir, "ingest-manifest.json");
   const ingestManifestSource = await readFile(ingestManifestPath, "utf8").catch(() => null);
 
   return {
+    extractionName,
     promptSha256,
     ingestManifestSha256:
       ingestManifestSource === null ? null : sha256Hex(ingestManifestSource)
@@ -653,24 +787,6 @@ async function loadExistingRunProgress(
     successfulSourceIds,
     recordStatusBySourceId
   };
-}
-
-function resolveConfiguredOpinionModel(
-  config: BroadlyProjectConfig,
-  explicitModelAlias: string | undefined
-): RegisteredModel {
-  const configuredAlias =
-    explicitModelAlias ??
-    config.default_opinion_extraction_model ??
-    config.analysis.extractionModel;
-
-  if (configuredAlias === undefined || configuredAlias.trim().length === 0) {
-    throw new Error(
-      "No opinion extraction model is configured. Set default_opinion_extraction_model in broadly.yaml or pass --model."
-    );
-  }
-
-  return resolveModel(config, configuredAlias);
 }
 
 function resolveModel(config: BroadlyProjectConfig, modelAlias: string): RegisteredModel {

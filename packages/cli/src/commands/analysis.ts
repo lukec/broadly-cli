@@ -1,8 +1,17 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
-import { parseProjectConfig, type BroadlyProjectConfig } from "@broadly/config";
+import {
+  getOpinionExtractionConfig,
+  parseProjectConfig,
+  type AnalysisViewConfig,
+  type BroadlyProjectConfig
+} from "@broadly/config";
 import { resolveProjectPaths, sha256Hex } from "@broadly/core";
 import { UMAP } from "umap-js";
 import { kmeans } from "ml-kmeans";
@@ -17,6 +26,8 @@ import {
   writeCurrentRunId
 } from "../projectArtifacts.js";
 import { withProjectActionLog } from "../projectLog.js";
+
+const execFile = promisify(execFileCallback);
 
 export interface AnalysisCommandOptions {
   project?: string;
@@ -76,6 +87,8 @@ interface ReductionArtifact {
   points: ReductionPoint[];
 }
 
+class PacmapUnavailableError extends Error {}
+
 interface ClusterMember {
   opinionId: string;
   clusterId: number;
@@ -123,6 +136,8 @@ interface ClusterArtifact {
 
 interface PerspectivePlanArtifact {
   createdAt: string;
+  viewName?: string;
+  viewTitle?: string;
   mode: string;
   status: "ready" | "unavailable";
   chosenClusterArtifactPath?: string;
@@ -209,27 +224,47 @@ interface AnalysisRunManifest {
     opinionsSelected: number;
     offset?: number;
     limit?: number;
+    extractionModel: RegisteredModel;
+    embeddingModel: RegisteredModel;
+    analysisModel: RegisteredModel;
+    prompts: {
+      clusterLabeling: {
+        path: string;
+        sha256: string;
+      };
+      perspectiveSummary: {
+        path: string;
+        sha256: string;
+      };
+      semanticMerge: {
+        path: string;
+        sha256: string;
+      };
+    };
+    reductionMethods: string[];
+    clusterCounts: number[];
+    mergeStrategy: string;
+    synthesisModes: string[];
+    views?: Array<{
+      name: string;
+      title?: string;
+      mode: string;
+      reductionMethod: string;
+      clusterCount: number;
+      sourceExtraction: string;
+      analysisModel?: string;
+    }>;
+    groups?: Array<{
+      sourceExtraction: string;
+      opinionRunId: string;
+      opinionRunDir: string;
+      opinionsDir: string;
+      opinionsSelected: number;
       extractionModel: RegisteredModel;
       embeddingModel: RegisteredModel;
-      analysisModel: RegisteredModel;
-      prompts: {
-        clusterLabeling: {
-          path: string;
-          sha256: string;
-        };
-        perspectiveSummary: {
-          path: string;
-          sha256: string;
-        };
-        semanticMerge: {
-          path: string;
-          sha256: string;
-        };
-      };
-      reductionMethods: string[];
-      clusterCounts: number[];
-      mergeStrategy: string;
-      synthesisModes: string[];
+      embeddingsDir: string;
+      viewNames: string[];
+    }>;
   };
   output: {
     embeddingsDir: string;
@@ -254,8 +289,10 @@ interface AnalysisRunManifest {
 interface AnalysisRunFingerprint {
   opinionRunId: string;
   selectedOpinionIdsSha256: string;
+  groupsSha256?: string;
   embeddingModel: string;
   analysisModel: string;
+  viewsSha256: string;
   clusterLabelingPromptSha256: string;
   perspectiveSummaryPromptSha256: string;
   semanticMergePromptSha256: string;
@@ -286,6 +323,42 @@ interface EmbeddingRunManifest {
   };
 }
 
+interface ResolvedAnalysisView {
+  view: AnalysisViewConfig;
+  analysisModel: RegisteredModel;
+  prompts: {
+    clusterLabeling: {
+      path: string;
+      template: string;
+      sha256: string;
+    };
+    perspectiveSummary: {
+      path: string;
+      template: string;
+      sha256: string;
+    };
+    semanticMerge: {
+      path: string;
+      template: string;
+      sha256: string;
+    };
+  };
+}
+
+interface AnalysisViewGroup {
+  key: string;
+  sourceExtraction: ReturnType<typeof getOpinionExtractionConfig>;
+  extractionModel: RegisteredModel;
+  embeddingModel: RegisteredModel;
+  views: ResolvedAnalysisView[];
+  opinionRunId: string;
+  opinionsRunDir: string;
+  opinionsDir: string;
+  selectedOpinionPaths: string[];
+  embeddingsDir: string;
+  embeddingsManifestPath: string;
+}
+
 export async function runAnalysis(options: AnalysisCommandOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
   await withProjectActionLog({
@@ -299,69 +372,112 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
     action: async () => {
       const projectPaths = resolveProjectPaths(projectRoot);
       const config = await loadProjectConfig(projectPaths.configPath);
-      const embeddingModel = resolveConfiguredEmbeddingModel(config, options.embeddingModel);
-      const extractionModel = resolveConfiguredExtractionModel(config);
-      const analysisModel = resolveConfiguredAnalysisModel(config);
-      const clusterLabelingPromptPath = path.join(
-        projectPaths.promptsDir,
-        "analysis-cluster-labeling.md"
-      );
-      const perspectiveSummaryPromptPath = path.join(
-        projectPaths.promptsDir,
-        "analysis-perspective-summary.md"
-      );
-      const semanticMergePromptPath = path.join(
-        projectPaths.promptsDir,
-        "analysis-semantic-merge.md"
-      );
-      const clusterLabelingPrompt = await readFile(clusterLabelingPromptPath, "utf8");
-      const perspectiveSummaryPrompt = await readFile(perspectiveSummaryPromptPath, "utf8");
-      const semanticMergePrompt = await readFile(semanticMergePromptPath, "utf8");
-      const clusterLabelingPromptSha256 = sha256Hex(clusterLabelingPrompt);
-      const perspectiveSummaryPromptSha256 = sha256Hex(perspectiveSummaryPrompt);
-      const semanticMergePromptSha256 = sha256Hex(semanticMergePrompt);
-      const currentOpinionRunId = await readCurrentRunId(projectPaths.opinionsCurrentRunPath);
-      const latestOpinionRun =
-        (currentOpinionRunId === null
-          ? null
-          : await findOpinionRunById(
-              path.join(projectPaths.dataDir, "opinions"),
-              currentOpinionRunId,
-              extractionModel
-            )) ??
-        (await findLatestOpinionRunForModel(
-          path.join(projectPaths.dataDir, "opinions"),
-          extractionModel
-        ));
+      const analysisViews = resolveConfiguredAnalysisViews(config, options.embeddingModel);
+      const firstView = analysisViews[0];
 
-      if (latestOpinionRun === null) {
-        throw new Error(
-          `No opinion run found for extraction model '${extractionModel.name}'. Run broadly opinions first.`
-        );
+      if (firstView === undefined) {
+        throw new Error("No analysis views were selected.");
       }
 
-      const opinionsRunDir = path.join(projectPaths.dataDir, "opinions", latestOpinionRun.runId);
-      const opinionsDir = path.join(opinionsRunDir, "opinions");
-      const allOpinionPaths = await listOpinionArtifactPaths(opinionsDir);
-      const offset = options.offset ?? 0;
-      const selectedOpinionPaths = allOpinionPaths.slice(
-        offset,
-        options.limit === undefined ? undefined : offset + options.limit
+      const resolvedViews = await Promise.all(
+        analysisViews.map(async (view) => {
+          const clusterLabelingPromptPath = path.join(projectRoot, view.prompts.clusterLabeling);
+          const perspectiveSummaryPromptPath = path.join(projectRoot, view.prompts.viewSummary);
+          const semanticMergePromptPath = path.join(projectRoot, view.prompts.semanticMerge);
+          const clusterLabelingPrompt = await readFile(clusterLabelingPromptPath, "utf8");
+          const perspectiveSummaryPrompt = await readFile(perspectiveSummaryPromptPath, "utf8");
+          const semanticMergePrompt = await readFile(semanticMergePromptPath, "utf8");
+
+          return {
+            view,
+            analysisModel: resolveAnalysisModelForView(config, view),
+            prompts: {
+              clusterLabeling: {
+                path: clusterLabelingPromptPath,
+                template: clusterLabelingPrompt,
+                sha256: sha256Hex(clusterLabelingPrompt)
+              },
+              perspectiveSummary: {
+                path: perspectiveSummaryPromptPath,
+                template: perspectiveSummaryPrompt,
+                sha256: sha256Hex(perspectiveSummaryPrompt)
+              },
+              semanticMerge: {
+                path: semanticMergePromptPath,
+                template: semanticMergePrompt,
+                sha256: sha256Hex(semanticMergePrompt)
+              }
+            }
+          };
+        })
       );
-      const embeddingsDir = path.join(projectPaths.dataDir, "embeddings", embeddingModel.name);
-      const embeddingsManifestPath = path.join(embeddingsDir, "manifest.json");
+      const currentOpinionRunId = await readCurrentRunId(projectPaths.opinionsCurrentRunPath);
+      const offset = options.offset ?? 0;
+      const analysisGroups = await resolveAnalysisViewGroups({
+        config,
+        projectPaths,
+        projectRoot,
+        resolvedViews,
+        currentOpinionRunId,
+        offset,
+        ...(options.limit === undefined ? {} : { limit: options.limit })
+      });
+      const firstGroup = analysisGroups[0];
+
+      if (firstGroup === undefined) {
+        throw new Error("No analysis groups could be resolved from the configured views.");
+      }
+
+      const latestOpinionRun = { runId: firstGroup.opinionRunId };
+      const embeddingModel = firstGroup.embeddingModel;
+      const extractionModel = firstGroup.extractionModel;
+      const analysisModel = firstGroup.views[0]?.analysisModel ?? resolveConfiguredAnalysisModel(config, analysisViews);
+      const selectedOpinionPaths = firstGroup.selectedOpinionPaths;
+      const embeddingsDir = firstGroup.embeddingsDir;
+      const embeddingsManifestPath = firstGroup.embeddingsManifestPath;
       const fingerprint = buildAnalysisRunFingerprint({
-        opinionRunId: latestOpinionRun.runId,
-        selectedOpinionPaths,
+        opinionRunId: firstGroup.opinionRunId,
+        selectedOpinionPaths: analysisGroups.flatMap((group) => group.selectedOpinionPaths),
         embeddingModel,
         analysisModel,
-        clusterLabelingPromptSha256,
-        perspectiveSummaryPromptSha256,
-        semanticMergePromptSha256,
-        reductionMethods: config.analysis.reductionMethods,
-        clusterCounts: config.analysis.clusterCounts,
-        mergeStrategy: config.analysis.mergeStrategy,
-        synthesisModes: config.analysis.synthesisModes
+        clusterLabelingPromptSha256: resolvedViews[0]?.prompts.clusterLabeling.sha256 ?? "",
+        perspectiveSummaryPromptSha256: resolvedViews[0]?.prompts.perspectiveSummary.sha256 ?? "",
+        semanticMergePromptSha256: resolvedViews[0]?.prompts.semanticMerge.sha256 ?? "",
+        reductionMethods: uniqueList(analysisViews.map((view) => view.reduction.method)),
+        clusterCounts: uniqueNumberList(analysisViews.map((view) => view.clustering.count)),
+        mergeStrategy: uniqueList(analysisViews.map((view) => view.clustering.mergeStrategy)).join(","),
+        synthesisModes: analysisViews.map((view) => view.name),
+        groupsSha256: sha256Hex(
+          JSON.stringify(
+            analysisGroups.map((group) => ({
+              sourceExtraction: group.sourceExtraction.name,
+              opinionRunId: group.opinionRunId,
+              embeddingModel: group.embeddingModel.name,
+              selectedOpinionIds: group.selectedOpinionPaths
+                .map((item) => path.basename(item, ".json"))
+                .sort(),
+              views: group.views.map((view) => view.view.name).sort()
+            }))
+          )
+        ),
+        viewsSha256: sha256Hex(
+          JSON.stringify(
+            resolvedViews.map((item) => ({
+              name: item.view.name,
+              title: item.view.title,
+              sourceExtraction: item.view.sourceExtraction,
+              embeddingModel: item.view.embeddingModel,
+              analysisModel: item.analysisModel.name,
+              clusterLabelingPromptSha256: item.prompts.clusterLabeling.sha256,
+              perspectiveSummaryPromptSha256: item.prompts.perspectiveSummary.sha256,
+              semanticMergePromptSha256: item.prompts.semanticMerge.sha256,
+              reductionMethod: item.view.reduction.method,
+              clusterCount: item.view.clustering.count,
+              mergeStrategy: item.view.clustering.mergeStrategy,
+              mode: item.view.mode
+            }))
+          )
+        )
       });
       const currentAnalysisRunId = await readCurrentRunId(projectPaths.analysisCurrentRunPath);
       const compatibleRun =
@@ -416,34 +532,40 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
         extractionModel,
         embeddingModel,
         analysisModel,
-        opinionsSelected: selectedOpinionPaths.length,
+        opinionsSelected: analysisGroups.reduce(
+          (sum, group) => sum + group.selectedOpinionPaths.length,
+          0
+        ),
         offset,
         ...(options.limit === undefined ? {} : { limit: options.limit })
       }));
 
       const checkpointEmbeddingsManifest = async (): Promise<void> => {
-        const manifest: EmbeddingRunManifest = {
-          createdAt,
-          updatedAt: new Date().toISOString(),
-          opinionRunId: latestOpinionRun.runId,
-          embeddingModel,
-          input: {
-            opinionsDir,
-            opinionsSelected: selectedOpinionPaths.length,
-            ...(offset > 0 ? { offset } : {}),
-            ...(options.limit === undefined ? {} : { limit: options.limit })
-          },
-          output: {
-            embeddingsDir,
-            manifestPath: embeddingsManifestPath,
-            embeddingsReady,
-            embeddingsGenerated,
-            embeddingsReused,
-            failedOpinions
-          }
-        };
+        for (const group of analysisGroups) {
+          const manifest: EmbeddingRunManifest = {
+            createdAt,
+            updatedAt: new Date().toISOString(),
+            opinionRunId: group.opinionRunId,
+            embeddingModel: group.embeddingModel,
+            input: {
+              opinionsDir: group.opinionsDir,
+              opinionsSelected: group.selectedOpinionPaths.length,
+              ...(offset > 0 ? { offset } : {}),
+              ...(options.limit === undefined ? {} : { limit: options.limit })
+            },
+            output: {
+              embeddingsDir: group.embeddingsDir,
+              manifestPath: group.embeddingsManifestPath,
+              embeddingsReady,
+              embeddingsGenerated,
+              embeddingsReused,
+              failedOpinions
+            }
+          };
 
-        await writeJsonFile(embeddingsManifestPath, manifest);
+          await mkdir(group.embeddingsDir, { recursive: true });
+          await writeJsonFile(group.embeddingsManifestPath, manifest);
+        }
       };
 
       const checkpointAnalysisManifest = async (
@@ -457,9 +579,12 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
           fingerprint,
           input: {
             opinionRunId: latestOpinionRun.runId,
-            opinionRunDir: opinionsRunDir,
-            opinionsDir,
-            opinionsSelected: selectedOpinionPaths.length,
+            opinionRunDir: firstGroup.opinionsRunDir,
+            opinionsDir: firstGroup.opinionsDir,
+            opinionsSelected: analysisGroups.reduce(
+              (sum, group) => sum + group.selectedOpinionPaths.length,
+              0
+            ),
             ...(offset > 0 ? { offset } : {}),
             ...(options.limit === undefined ? {} : { limit: options.limit }),
             extractionModel,
@@ -467,22 +592,45 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
             analysisModel,
             prompts: {
               clusterLabeling: {
-                path: clusterLabelingPromptPath,
-                sha256: clusterLabelingPromptSha256
+                path: resolvedViews[0]?.prompts.clusterLabeling.path ?? "",
+                sha256: resolvedViews[0]?.prompts.clusterLabeling.sha256 ?? ""
               },
               perspectiveSummary: {
-                path: perspectiveSummaryPromptPath,
-                sha256: perspectiveSummaryPromptSha256
+                path: resolvedViews[0]?.prompts.perspectiveSummary.path ?? "",
+                sha256: resolvedViews[0]?.prompts.perspectiveSummary.sha256 ?? ""
               },
               semanticMerge: {
-                path: semanticMergePromptPath,
-                sha256: semanticMergePromptSha256
+                path: resolvedViews[0]?.prompts.semanticMerge.path ?? "",
+                sha256: resolvedViews[0]?.prompts.semanticMerge.sha256 ?? ""
               }
             },
-            reductionMethods: config.analysis.reductionMethods,
-            clusterCounts: config.analysis.clusterCounts,
-            mergeStrategy: config.analysis.mergeStrategy,
-            synthesisModes: config.analysis.synthesisModes
+            reductionMethods: uniqueList(analysisViews.map((view) => view.reduction.method)),
+            clusterCounts: uniqueNumberList(analysisViews.map((view) => view.clustering.count)),
+            mergeStrategy: uniqueList(
+              analysisViews.map((view) => view.clustering.mergeStrategy)
+            ).join(","),
+            synthesisModes: analysisViews.map((view) => view.name),
+            views: analysisViews.map((view) => ({
+              name: view.name,
+              ...(view.title === undefined ? {} : { title: view.title }),
+              mode: view.mode,
+              reductionMethod: view.reduction.method,
+              clusterCount: view.clustering.count,
+              sourceExtraction: view.sourceExtraction,
+              analysisModel:
+                resolvedViews.find((item) => item.view.name === view.name)?.analysisModel.name ?? "unknown"
+            })),
+            groups: analysisGroups.map((group) => ({
+              sourceExtraction: group.sourceExtraction.name,
+              opinionRunId: group.opinionRunId,
+              opinionRunDir: group.opinionsRunDir,
+              opinionsDir: group.opinionsDir,
+              opinionsSelected: group.selectedOpinionPaths.length,
+              extractionModel: group.extractionModel,
+              embeddingModel: group.embeddingModel,
+              embeddingsDir: group.embeddingsDir,
+              viewNames: group.views.map((view) => view.view.name)
+            }))
           },
           output: {
             embeddingsDir,
@@ -511,145 +659,150 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       await checkpointAnalysisManifest("running");
 
       process.stdout.write(color.section("Embeddings") + "\n");
-      const progress = createEmbeddingProgressReporter(selectedOpinionPaths.length);
-      const successfulEmbeddings: Array<{
+      const totalSelectedOpinionCount = analysisGroups.reduce(
+        (sum, group) => sum + group.selectedOpinionPaths.length,
+        0
+      );
+      const progress = createEmbeddingProgressReporter(totalSelectedOpinionCount);
+      const successfulEmbeddingsByGroup = new Map<string, Array<{
         opinion: OpinionArtifact;
         embedding: EmbeddingArtifact;
         embeddingPath: string;
-      }> = [];
+      }>>();
 
-      for (const opinionPath of selectedOpinionPaths) {
-        const opinion = await readJsonFile<OpinionArtifact>(opinionPath);
+      for (const group of analysisGroups) {
+        const successfulEmbeddings: Array<{
+          opinion: OpinionArtifact;
+          embedding: EmbeddingArtifact;
+          embeddingPath: string;
+        }> = [];
 
-        if (
-          opinion === null ||
-          typeof opinion.opinionId !== "string" ||
-          typeof opinion.opinionText !== "string" ||
-          typeof opinion.sourceId !== "string" ||
-          typeof opinion.sourceContentSha256 !== "string"
-        ) {
-          failedOpinions += 1;
-          processedOpinions += 1;
-          progress.tick({
-            processedOpinions,
-            embeddingsGenerated,
-            embeddingsReused,
-            failedOpinions
-          });
+        for (const opinionPath of group.selectedOpinionPaths) {
+          const opinion = await readJsonFile<OpinionArtifact>(opinionPath);
 
           if (
-            processedOpinions % 10 === 0 ||
-            processedOpinions === selectedOpinionPaths.length
+            opinion === null ||
+            typeof opinion.opinionId !== "string" ||
+            typeof opinion.opinionText !== "string" ||
+            typeof opinion.sourceId !== "string" ||
+            typeof opinion.sourceContentSha256 !== "string"
           ) {
-            await checkpointEmbeddingsManifest();
-            await checkpointAnalysisManifest("running");
-          }
+            failedOpinions += 1;
+            processedOpinions += 1;
+            progress.tick({
+              processedOpinions,
+              embeddingsGenerated,
+              embeddingsReused,
+              failedOpinions
+            });
 
-          process.stdout.write(
-            `${formatDetailLine(
-              "Skipped",
-              `Invalid opinion artifact ${toPortableRelativePath(projectRoot, opinionPath)}`
-            )}\n`
-          );
-          continue;
-        }
-
-        const embeddingPath = path.join(embeddingsDir, `${opinion.opinionId}.json`);
-        const existingEmbedding = await readJsonFile<EmbeddingArtifact>(embeddingPath);
-
-        if (
-          existingEmbedding !== null &&
-          isUsableEmbeddingArtifact(existingEmbedding, opinion, embeddingModel)
-        ) {
-          embeddingsReady += 1;
-          embeddingsReused += 1;
-          processedOpinions += 1;
-          successfulEmbeddings.push({
-            opinion,
-            embedding: existingEmbedding,
-            embeddingPath
-          });
-          progress.tick({
-            processedOpinions,
-            embeddingsGenerated,
-            embeddingsReused,
-            failedOpinions
-          });
-
-          if (
-            processedOpinions % 10 === 0 ||
-            processedOpinions === selectedOpinionPaths.length
-          ) {
-            await checkpointEmbeddingsManifest();
-            await checkpointAnalysisManifest("running");
-          }
-
-          continue;
-        }
-
-        try {
-          const vector = await runEmbeddingWithModel({
-            model: embeddingModel,
-            input: opinion.opinionText,
-            projectRoot
-          });
-          const artifact: EmbeddingArtifact = {
-            createdAt: new Date().toISOString(),
-            opinionId: opinion.opinionId,
-            sourceId: opinion.sourceId,
-            sourceContentSha256: opinion.sourceContentSha256,
-            opinionTextSha256: sha256Hex(opinion.opinionText),
-            model: embeddingModel,
-            dimensions: vector.length,
-            vector,
-            provenance: {
-              opinionArtifactPath: opinionPath,
-              opinionRunId: latestOpinionRun.runId,
-              ...(opinion.provenance?.normalizedRecordPath === undefined
-                ? {}
-                : { normalizedRecordPath: opinion.provenance.normalizedRecordPath }),
-              ...(opinion.provenance?.sourceImportPath === undefined
-                ? {}
-                : { sourceImportPath: opinion.provenance.sourceImportPath }),
-              ...(opinion.provenance?.sourceFileSha256 === undefined
-                ? {}
-                : { sourceFileSha256: opinion.provenance.sourceFileSha256 }),
-              ...(opinion.provenance?.sourceRowNumber === undefined
-                ? {}
-                : { sourceRowNumber: opinion.provenance.sourceRowNumber }),
-              ...(opinion.provenance?.externalId === undefined
-                ? {}
-                : { externalId: opinion.provenance.externalId })
+            if (processedOpinions % 10 === 0 || processedOpinions === totalSelectedOpinionCount) {
+              await checkpointEmbeddingsManifest();
+              await checkpointAnalysisManifest("running");
             }
-          };
 
-          await writeJsonFile(embeddingPath, artifact);
-          embeddingsReady += 1;
-          embeddingsGenerated += 1;
-          successfulEmbeddings.push({
-            opinion,
-            embedding: artifact,
-            embeddingPath
+            process.stdout.write(
+              `${formatDetailLine(
+                "Skipped",
+                `Invalid opinion artifact ${toPortableRelativePath(projectRoot, opinionPath)}`
+              )}\n`
+            );
+            continue;
+          }
+
+          const embeddingPath = path.join(group.embeddingsDir, `${opinion.opinionId}.json`);
+          const existingEmbedding = await readJsonFile<EmbeddingArtifact>(embeddingPath);
+
+          if (
+            existingEmbedding !== null &&
+            isUsableEmbeddingArtifact(existingEmbedding, opinion, group.embeddingModel)
+          ) {
+            embeddingsReady += 1;
+            embeddingsReused += 1;
+            processedOpinions += 1;
+            successfulEmbeddings.push({
+              opinion,
+              embedding: existingEmbedding,
+              embeddingPath
+            });
+            progress.tick({
+              processedOpinions,
+              embeddingsGenerated,
+              embeddingsReused,
+              failedOpinions
+            });
+
+            if (processedOpinions % 10 === 0 || processedOpinions === totalSelectedOpinionCount) {
+              await checkpointEmbeddingsManifest();
+              await checkpointAnalysisManifest("running");
+            }
+
+            continue;
+          }
+
+          try {
+            const vector = await runEmbeddingWithModel({
+              model: group.embeddingModel,
+              input: opinion.opinionText,
+              projectRoot
+            });
+            const artifact: EmbeddingArtifact = {
+              createdAt: new Date().toISOString(),
+              opinionId: opinion.opinionId,
+              sourceId: opinion.sourceId,
+              sourceContentSha256: opinion.sourceContentSha256,
+              opinionTextSha256: sha256Hex(opinion.opinionText),
+              model: group.embeddingModel,
+              dimensions: vector.length,
+              vector,
+              provenance: {
+                opinionArtifactPath: opinionPath,
+                opinionRunId: group.opinionRunId,
+                ...(opinion.provenance?.normalizedRecordPath === undefined
+                  ? {}
+                  : { normalizedRecordPath: opinion.provenance.normalizedRecordPath }),
+                ...(opinion.provenance?.sourceImportPath === undefined
+                  ? {}
+                  : { sourceImportPath: opinion.provenance.sourceImportPath }),
+                ...(opinion.provenance?.sourceFileSha256 === undefined
+                  ? {}
+                  : { sourceFileSha256: opinion.provenance.sourceFileSha256 }),
+                ...(opinion.provenance?.sourceRowNumber === undefined
+                  ? {}
+                  : { sourceRowNumber: opinion.provenance.sourceRowNumber }),
+                ...(opinion.provenance?.externalId === undefined
+                  ? {}
+                  : { externalId: opinion.provenance.externalId })
+              }
+            };
+
+            await writeJsonFile(embeddingPath, artifact);
+            embeddingsReady += 1;
+            embeddingsGenerated += 1;
+            successfulEmbeddings.push({
+              opinion,
+              embedding: artifact,
+              embeddingPath
+            });
+          } catch {
+            failedOpinions += 1;
+          }
+
+          processedOpinions += 1;
+          progress.tick({
+            processedOpinions,
+            embeddingsGenerated,
+            embeddingsReused,
+            failedOpinions
           });
-        } catch {
-          failedOpinions += 1;
+
+          if (processedOpinions % 10 === 0 || processedOpinions === totalSelectedOpinionCount) {
+            await checkpointEmbeddingsManifest();
+            await checkpointAnalysisManifest("running");
+          }
         }
 
-        processedOpinions += 1;
-        progress.tick({
-          processedOpinions,
-          embeddingsGenerated,
-          embeddingsReused,
-          failedOpinions
-        });
-
-        if (
-          processedOpinions % 10 === 0 ||
-          processedOpinions === selectedOpinionPaths.length
-        ) {
-          await checkpointEmbeddingsManifest();
-          await checkpointAnalysisManifest("running");
-        }
+        successfulEmbeddingsByGroup.set(group.key, successfulEmbeddings);
       }
 
       progress.finish();
@@ -657,42 +810,56 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       process.stdout.write(
         `${formatDetailLine("Summary", `${embeddingsReady} ready · ${embeddingsGenerated} generated · ${embeddingsReused} reused · ${failedOpinions} failed`)}\n\n`
       );
-      const opinionArtifactById = new Map<string, OpinionArtifact>(
-        successfulEmbeddings.map((item) => [item.opinion.opinionId, item.opinion])
-      );
+      const opinionArtifactById = new Map<string, OpinionArtifact>();
+
+      for (const groupEmbeddings of successfulEmbeddingsByGroup.values()) {
+        for (const item of groupEmbeddings) {
+          opinionArtifactById.set(item.opinion.opinionId, item.opinion);
+        }
+      }
 
       process.stdout.write(color.section("Reductions") + "\n");
-      const reductionArtifacts: Array<{ method: string; path: string; artifact: ReductionArtifact }> = [];
+      const reductionArtifacts: Array<{
+        groupKey: string;
+        method: string;
+        path: string;
+        artifact: ReductionArtifact;
+      }> = [];
 
-      for (const method of config.analysis.reductionMethods) {
-        const artifactPath = path.join(reductionsDir, `${method}.json`);
-        const existingArtifact = await readJsonFile<ReductionArtifact>(artifactPath);
-        const reusedExistingArtifact =
-          existingArtifact !== null && existingArtifact.method === method;
-        const artifact =
-          existingArtifact !== null && existingArtifact.method === method
-            ? existingArtifact
-            : await buildReductionArtifact(method, successfulEmbeddings, analysisRunId);
+      for (const group of analysisGroups) {
+        const successfulEmbeddings = successfulEmbeddingsByGroup.get(group.key) ?? [];
+        const reductionMethods = uniqueList(group.views.map((view) => view.view.reduction.method));
 
-        if (reusedExistingArtifact) {
-          reductionsReused += 1;
-        } else {
-          reductionsGenerated += 1;
-          await writeJsonFile(artifactPath, artifact);
+        for (const method of reductionMethods) {
+          const artifactPath = path.join(reductionsDir, `${group.sourceExtraction.name}--${group.embeddingModel.name}--${method}.json`);
+          const existingArtifact = await readJsonFile<ReductionArtifact>(artifactPath);
+          const reusedExistingArtifact =
+            existingArtifact !== null && existingArtifact.method === method;
+          const artifact =
+            existingArtifact !== null && existingArtifact.method === method
+              ? existingArtifact
+              : await buildReductionArtifact(method, successfulEmbeddings, `${analysisRunId}:${group.key}`);
+
+          if (reusedExistingArtifact) {
+            reductionsReused += 1;
+          } else {
+            reductionsGenerated += 1;
+            await writeJsonFile(artifactPath, artifact);
+          }
+          reductionArtifacts.push({ groupKey: group.key, method, path: artifactPath, artifact });
+
+          if (artifact.status === "ready") {
+            reductionsReady += 1;
+          } else if (artifact.status === "unavailable") {
+            reductionsUnavailable += 1;
+          } else {
+            reductionsFailed += 1;
+          }
+
+          process.stdout.write(
+            `${formatDetailLine(`${group.sourceExtraction.name}/${group.embeddingModel.name}/${method}`, `${reductionStatusLabel(artifact)} · ${reusedExistingArtifact ? "reused" : "generated"}`)}\n`
+          );
         }
-        reductionArtifacts.push({ method, path: artifactPath, artifact });
-
-        if (artifact.status === "ready") {
-          reductionsReady += 1;
-        } else if (artifact.status === "unavailable") {
-          reductionsUnavailable += 1;
-        } else {
-          reductionsFailed += 1;
-        }
-
-        process.stdout.write(
-          `${formatDetailLine(method, `${reductionStatusLabel(artifact)} · ${reusedExistingArtifact ? "reused" : "generated"}`)}\n`
-        );
       }
 
       process.stdout.write("\n");
@@ -700,77 +867,92 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       await checkpointAnalysisManifest("running");
 
       process.stdout.write(color.section("Clusters") + "\n");
-      const clusterArtifactPaths: string[] = [];
+      const clusterArtifactEntries: Array<{
+        groupKey: string;
+        view: AnalysisViewConfig;
+        resolvedView: ResolvedAnalysisView;
+        path: string;
+        artifact: ClusterArtifact;
+      }> = [];
 
-      for (const reduction of reductionArtifacts) {
-        if (reduction.artifact.status !== "ready") {
+      for (const resolvedView of resolvedViews) {
+        const group = analysisGroups.find(
+          (item) =>
+            item.sourceExtraction.name === resolvedView.view.sourceExtraction &&
+            item.embeddingModel.name === resolvedView.view.embeddingModel
+        );
+        if (group === undefined) {
+          continue;
+        }
+        const reduction = reductionArtifacts.find(
+          (item) =>
+            item.groupKey === group.key && item.method === resolvedView.view.reduction.method
+        );
+
+        if (reduction === undefined || reduction.artifact.status !== "ready") {
           continue;
         }
 
-        for (const requestedClusterCount of config.analysis.clusterCounts) {
-          const clusterArtifactPath = path.join(
-            clustersDir,
-            `${reduction.method}-k${requestedClusterCount}.json`
-          );
-          const existingArtifact = await readJsonFile<ClusterArtifact>(clusterArtifactPath);
-          const reusedExistingCluster =
-            existingArtifact !== null &&
-            existingArtifact.method === reduction.method &&
-            existingArtifact.requestedClusterCount === requestedClusterCount;
-          const clusterArtifact =
-            existingArtifact !== null &&
-            existingArtifact.method === reduction.method &&
-            existingArtifact.requestedClusterCount === requestedClusterCount
-              ? existingArtifact
-              : buildClusterArtifact(
-                  reduction.artifact,
-                  reduction.path,
-                  requestedClusterCount,
-                  analysisRunId,
-                  opinionArtifactById
-                );
+        const clusterArtifactPath = path.join(clustersDir, `${resolvedView.view.name}.json`);
+        const existingArtifact = await readJsonFile<ClusterArtifact>(clusterArtifactPath);
+        const reusedExistingCluster =
+          existingArtifact !== null &&
+          existingArtifact.method === reduction.method &&
+          existingArtifact.requestedClusterCount === resolvedView.view.clustering.count;
+        const clusterArtifact =
+          existingArtifact !== null &&
+          existingArtifact.method === reduction.method &&
+          existingArtifact.requestedClusterCount === resolvedView.view.clustering.count
+            ? existingArtifact
+            : buildClusterArtifact(
+                reduction.artifact,
+                reduction.path,
+                resolvedView.view.clustering.count,
+                analysisRunId,
+                opinionArtifactById
+              );
 
-          if (reusedExistingCluster) {
-            clustersReused += 1;
-          } else {
-            clustersGenerated += 1;
-            await writeJsonFile(clusterArtifactPath, clusterArtifact);
-          }
-          clusterArtifactPaths.push(clusterArtifactPath);
-
-          if (clusterArtifact.status === "ready") {
-            clusterArtifactsWritten += 1;
-          } else {
-            clusterArtifactsFailed += 1;
-          }
-
-          process.stdout.write(
-            `${formatDetailLine(`${reduction.method} k=${requestedClusterCount}`, `${clusterArtifact.status === "ready" ? `${clusterArtifact.clusters.length} clusters` : clusterArtifact.message ?? clusterArtifact.status} · ${reusedExistingCluster ? "reused" : "generated"}`)}\n`
-          );
+        if (reusedExistingCluster) {
+          clustersReused += 1;
+        } else {
+          clustersGenerated += 1;
+          await writeJsonFile(clusterArtifactPath, clusterArtifact);
         }
+
+        clusterArtifactEntries.push({
+          groupKey: group.key,
+          view: resolvedView.view,
+          resolvedView,
+          path: clusterArtifactPath,
+          artifact: clusterArtifact
+        });
+
+        if (clusterArtifact.status === "ready") {
+          clusterArtifactsWritten += 1;
+        } else {
+          clusterArtifactsFailed += 1;
+        }
+
+        process.stdout.write(
+          `${formatDetailLine(`${resolvedView.view.name}`, `${clusterArtifact.status === "ready" ? `${clusterArtifact.clusters.length} clusters` : clusterArtifact.message ?? clusterArtifact.status} · ${reusedExistingCluster ? "reused" : "generated"}`)}\n`
+        );
       }
 
       process.stdout.write("\n");
       await checkpointAnalysisManifest("running");
 
       process.stdout.write(color.section("Labeling") + "\n");
-      const labeledClusterArtifacts: Array<{ path: string; artifact: ClusterArtifact }> = [];
-      const labelableClusterArtifactPaths = await Promise.all(
-        clusterArtifactPaths.map(async (clusterArtifactPath) => ({
-          path: clusterArtifactPath,
-          artifact: await readJsonFile<ClusterArtifact>(clusterArtifactPath)
-        }))
-      );
-      const readyClusterArtifactCount = labelableClusterArtifactPaths.filter(
-        (item) => item.artifact !== null && item.artifact.status === "ready"
+      const labeledClusterArtifacts: Array<{ view: AnalysisViewConfig; resolvedView: typeof resolvedViews[number]; path: string; artifact: ClusterArtifact }> = [];
+      const readyClusterArtifactCount = clusterArtifactEntries.filter(
+        (item) => item.artifact.status === "ready"
       ).length;
       const labelingProgress = createStageProgressReporter("clusters", readyClusterArtifactCount);
       let labeledClusterArtifactsProcessed = 0;
 
-      for (const clusterArtifactPath of clusterArtifactPaths) {
-        const existingArtifact = await readJsonFile<ClusterArtifact>(clusterArtifactPath);
+      for (const clusterArtifactEntry of clusterArtifactEntries) {
+        const existingArtifact = clusterArtifactEntry.artifact;
 
-        if (existingArtifact === null || existingArtifact.status !== "ready") {
+        if (existingArtifact.status !== "ready") {
           continue;
         }
 
@@ -779,12 +961,12 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
             ? existingArtifact
             : await labelClusterArtifactWithLlm({
                 artifact: existingArtifact,
-                artifactPath: clusterArtifactPath,
-                analysisModel,
+                artifactPath: clusterArtifactEntry.path,
+                analysisModel: clusterArtifactEntry.resolvedView.analysisModel,
                 projectRoot,
-                promptPath: clusterLabelingPromptPath,
-                promptSha256: clusterLabelingPromptSha256,
-                promptTemplate: clusterLabelingPrompt
+                promptPath: clusterArtifactEntry.resolvedView.prompts.clusterLabeling.path,
+                promptSha256: clusterArtifactEntry.resolvedView.prompts.clusterLabeling.sha256,
+                promptTemplate: clusterArtifactEntry.resolvedView.prompts.clusterLabeling.template
               });
 
         const reusedExistingLabel = labeledArtifact === existingArtifact;
@@ -792,10 +974,12 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
           labelsReused += 1;
         } else {
           labelsGenerated += 1;
-          await writeJsonFile(clusterArtifactPath, labeledArtifact);
+          await writeJsonFile(clusterArtifactEntry.path, labeledArtifact);
         }
         labeledClusterArtifacts.push({
-          path: clusterArtifactPath,
+          view: clusterArtifactEntry.view,
+          resolvedView: clusterArtifactEntry.resolvedView,
+          path: clusterArtifactEntry.path,
           artifact: labeledArtifact
         });
         labeledClusterArtifactsProcessed += 1;
@@ -816,27 +1000,24 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
 
       process.stdout.write(color.section("Hierarchy") + "\n");
       process.stdout.write(
-        `${formatDetailLine("Merge strategy", config.analysis.mergeStrategy)}\n`
+        `${formatDetailLine("Merge strategy", uniqueList(analysisViews.map((view) => view.clustering.mergeStrategy)).join(", "))}\n`
       );
       const hierarchyProgress = createStageProgressReporter(
-        "cluster maps",
+        "views",
         labeledClusterArtifacts.length
       );
       let hierarchyArtifactsProcessed = 0;
-      for (const { path: clusterArtifactPath, artifact } of labeledClusterArtifacts) {
+      for (const { view, resolvedView, path: clusterArtifactPath, artifact } of labeledClusterArtifacts) {
         const hierarchyArtifact = await buildSemanticHierarchyArtifact({
           artifact,
           artifactPath: clusterArtifactPath,
-          analysisModel,
+          analysisModel: resolvedView.analysisModel,
           projectRoot,
-          promptPath: semanticMergePromptPath,
-          promptSha256: semanticMergePromptSha256,
-          promptTemplate: semanticMergePrompt
+          promptPath: resolvedView.prompts.semanticMerge.path,
+          promptSha256: resolvedView.prompts.semanticMerge.sha256,
+          promptTemplate: resolvedView.prompts.semanticMerge.template
         });
-        const hierarchyPath = path.join(
-          hierarchiesDir,
-          `semantic-${hierarchyArtifact.method}-k${hierarchyArtifact.lowerClusterCount}.json`
-        );
+        const hierarchyPath = path.join(hierarchiesDir, `${view.name}.json`);
         await writeJsonFile(hierarchyPath, hierarchyArtifact);
         hierarchyArtifactsWritten += 1;
         hierarchyArtifactsProcessed += 1;
@@ -860,30 +1041,34 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
 
       await checkpointAnalysisManifest("running");
 
-      process.stdout.write(color.section("Perspectives") + "\n");
-      for (const mode of config.analysis.synthesisModes) {
-        const perspectivePath = path.join(perspectivesDir, `${mode}.json`);
+      process.stdout.write(color.section("Views") + "\n");
+      for (const resolvedView of resolvedViews) {
+        const view = resolvedView.view;
+        const perspectivePath = path.join(perspectivesDir, `${view.name}.json`);
         const existingPerspective = await readJsonFile<PerspectivePlanArtifact>(perspectivePath);
         const reusedExistingPerspective =
           existingPerspective !== null &&
           existingPerspective.status === "ready" &&
-          existingPerspective.synthesis.method === "llm-perspective-summary";
+          existingPerspective.synthesis.method === "llm-perspective-summary" &&
+          existingPerspective.viewName === view.name;
         const perspectiveArtifact =
           existingPerspective !== null &&
           existingPerspective.status === "ready" &&
-          existingPerspective.synthesis.method === "llm-perspective-summary"
+          existingPerspective.synthesis.method === "llm-perspective-summary" &&
+          existingPerspective.viewName === view.name
             ? existingPerspective
             : await buildPerspectivePlanArtifact(
-                mode,
-                config.analysis.clusterCounts,
-                clusterArtifactPaths,
+                view,
+                clusterArtifactEntries
+                  .filter((entry) => entry.view.name === view.name)
+                  .map((entry) => entry.path),
                 {
-                  analysisModel,
+                  analysisModel: resolvedView.analysisModel,
                   projectRoot,
-                  promptPath: perspectiveSummaryPromptPath,
-                  promptSha256: perspectiveSummaryPromptSha256,
-                  promptTemplate: perspectiveSummaryPrompt,
-                  guidingQuestions: config.guidingQuestions
+                  promptPath: resolvedView.prompts.perspectiveSummary.path,
+                  promptSha256: resolvedView.prompts.perspectiveSummary.sha256,
+                  promptTemplate: resolvedView.prompts.perspectiveSummary.template,
+                  guidingQuestions: config.questions
                 }
               );
         if (reusedExistingPerspective) {
@@ -894,7 +1079,7 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
         }
         perspectiveArtifactsWritten += 1;
         process.stdout.write(
-          `${formatDetailLine(mode, `${perspectiveArtifact.summary === undefined ? perspectiveArtifact.status : perspectiveArtifact.title ?? "ready"} · ${reusedExistingPerspective ? "reused" : "generated"}`)}\n`
+          `${formatDetailLine(view.name, `${perspectiveArtifact.summary === undefined ? perspectiveArtifact.status : perspectiveArtifact.title ?? "ready"} · ${reusedExistingPerspective ? "reused" : "generated"}`)}\n`
         );
       }
 
@@ -939,45 +1124,51 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
 
 function resolveConfiguredEmbeddingModel(
   config: BroadlyProjectConfig,
-  explicitModelAlias: string | undefined
+  explicitModelAlias: string | undefined,
+  analysisViews: AnalysisViewConfig[]
 ): RegisteredModel {
-  const configuredAlias =
-    explicitModelAlias ??
-    config.default_embedding_model ??
-    config.analysis.embeddingModel;
+  const configuredAlias = explicitModelAlias ?? analysisViews[0]?.embeddingModel;
 
   if (configuredAlias === undefined || configuredAlias.trim().length === 0) {
     throw new Error(
-      "No embedding model is configured. Set default_embedding_model in broadly.yaml or pass --embedding-model."
+      "No embedding model is configured. Set embeddingModel on the configured analysis views or pass --embedding-model."
     );
   }
 
   return resolveModel(config, configuredAlias);
 }
 
-function resolveConfiguredExtractionModel(config: BroadlyProjectConfig): RegisteredModel {
-  const configuredAlias =
-    config.default_opinion_extraction_model ??
-    config.analysis.extractionModel;
+function resolveConfiguredExtractionModel(
+  config: BroadlyProjectConfig,
+  analysisViews: AnalysisViewConfig[]
+): RegisteredModel {
+  const firstView = analysisViews[0];
+
+  if (firstView === undefined) {
+    throw new Error("No analysis views are configured in broadly.yaml.");
+  }
+
+  const extraction = getOpinionExtractionConfig(config, firstView.sourceExtraction);
+  const configuredAlias = extraction.model;
 
   if (configuredAlias === undefined || configuredAlias.trim().length === 0) {
     throw new Error(
-      "No opinion extraction model is configured. Set default_opinion_extraction_model in broadly.yaml before running broadly analysis."
+      "No opinion extraction model is configured for the selected analysis views."
     );
   }
 
   return resolveModel(config, configuredAlias);
 }
 
-function resolveConfiguredAnalysisModel(config: BroadlyProjectConfig): RegisteredModel {
-  const configuredAlias =
-    config.analysis_model ??
-    config.default_opinion_extraction_model ??
-    config.analysis.extractionModel;
+function resolveConfiguredAnalysisModel(
+  config: BroadlyProjectConfig,
+  analysisViews: AnalysisViewConfig[]
+): RegisteredModel {
+  const configuredAlias = analysisViews[0]?.analysisModel ?? resolveConfiguredExtractionModel(config, analysisViews).name;
 
   if (configuredAlias === undefined || configuredAlias.trim().length === 0) {
     throw new Error(
-      "No analysis model is configured. Set analysis_model in broadly.yaml or configure a default opinion extraction model."
+      "No analysis model is configured for the selected analysis views."
     );
   }
 
@@ -994,8 +1185,139 @@ function resolveModel(config: BroadlyProjectConfig, alias: string): RegisteredMo
   return model;
 }
 
+function resolveConfiguredAnalysisViews(
+  config: BroadlyProjectConfig,
+  explicitEmbeddingModelAlias: string | undefined
+): AnalysisViewConfig[] {
+  if (config.analysisViews.length === 0) {
+    throw new Error("No analysis views are configured in broadly.yaml.");
+  }
+
+  const views =
+    explicitEmbeddingModelAlias === undefined
+      ? config.analysisViews
+      : config.analysisViews.filter((view) => view.embeddingModel === explicitEmbeddingModelAlias);
+
+  if (views.length === 0) {
+    throw new Error(
+      `No configured analysis views use embedding model '${explicitEmbeddingModelAlias}'.`
+    );
+  }
+
+  return views;
+}
+
+function resolveAnalysisModelForView(
+  config: BroadlyProjectConfig,
+  view: AnalysisViewConfig
+): RegisteredModel {
+  return resolveModel(
+    config,
+    view.analysisModel ?? getOpinionExtractionConfig(config, view.sourceExtraction).model
+  );
+}
+
+async function resolveAnalysisViewGroups(options: {
+  config: BroadlyProjectConfig;
+  projectPaths: ReturnType<typeof resolveProjectPaths>;
+  projectRoot: string;
+  resolvedViews: ResolvedAnalysisView[];
+  currentOpinionRunId: string | null;
+  offset: number;
+  limit?: number;
+}): Promise<AnalysisViewGroup[]> {
+  const groupedViews = new Map<string, ResolvedAnalysisView[]>();
+
+  for (const resolvedView of options.resolvedViews) {
+    const key = `${resolvedView.view.sourceExtraction}::${resolvedView.view.embeddingModel}`;
+    const existing = groupedViews.get(key) ?? [];
+    existing.push(resolvedView);
+    groupedViews.set(key, existing);
+  }
+
+  const groups: AnalysisViewGroup[] = [];
+
+  for (const [key, views] of groupedViews.entries()) {
+    const firstView = views[0];
+
+    if (firstView === undefined) {
+      continue;
+    }
+
+    const sourceExtraction = getOpinionExtractionConfig(options.config, firstView.view.sourceExtraction);
+    const extractionModel = resolveModel(options.config, sourceExtraction.model);
+    const embeddingModel = resolveModel(options.config, firstView.view.embeddingModel);
+    const latestOpinionRun =
+      (options.currentOpinionRunId === null
+        ? null
+        : await findOpinionRunById(
+            path.join(options.projectPaths.dataDir, "opinions"),
+            options.currentOpinionRunId,
+            sourceExtraction.name,
+            extractionModel
+          )) ??
+      (await findLatestOpinionRunForModel(
+        path.join(options.projectPaths.dataDir, "opinions"),
+        sourceExtraction.name,
+        extractionModel
+      ));
+
+    if (latestOpinionRun === null) {
+      throw new Error(
+        `No opinion run found for extraction '${sourceExtraction.name}' using model '${extractionModel.name}'. Run broadly opinions first.`
+      );
+    }
+
+    const opinionsRunDir = path.join(options.projectPaths.dataDir, "opinions", latestOpinionRun.runId);
+    const opinionsDir = path.join(opinionsRunDir, "opinions");
+    const allOpinionPaths = await listOpinionArtifactPaths(opinionsDir);
+    const selectedOpinionPaths = allOpinionPaths.slice(
+      options.offset,
+      options.limit === undefined ? undefined : options.offset + options.limit
+    );
+    const embeddingsDir = path.join(
+      options.projectPaths.dataDir,
+      "embeddings",
+      sourceExtraction.name,
+      embeddingModel.name
+    );
+
+    groups.push({
+      key,
+      sourceExtraction,
+      extractionModel,
+      embeddingModel,
+      views,
+      opinionRunId: latestOpinionRun.runId,
+      opinionsRunDir,
+      opinionsDir,
+      selectedOpinionPaths,
+      embeddingsDir,
+      embeddingsManifestPath: path.join(embeddingsDir, "manifest.json")
+    });
+  }
+
+  return groups.sort((left, right) => left.key.localeCompare(right.key));
+}
+
 function createAnalysisRunId(embeddingModelName: string): string {
   return `${formatRunTimestamp(new Date())}-${embeddingModelName}`;
+}
+
+function buildDefaultViewTitle(view: AnalysisViewConfig): string {
+  if (view.reduction.method === "pacmap") {
+    return view.mode === "dissent" ? "Dissenting PaCMAP View" : "PaCMAP Comparison View";
+  }
+
+  return view.mode === "dissent" ? "Dissenting Viewpoints" : "Balanced Overview";
+}
+
+function uniqueList(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function uniqueNumberList(values: number[]): number[] {
+  return [...new Set(values)].sort((left, right) => left - right);
 }
 
 function formatRunTimestamp(value: Date): string {
@@ -1028,19 +1350,7 @@ async function buildReductionArtifact(
     };
   }
 
-  if (method === "pacmap") {
-    return {
-      createdAt,
-      method,
-      dimensions: 2,
-      status: "unavailable",
-      message: "PaCMAP is planned in the analysis search space but is not implemented in this Node runtime yet.",
-      pointCount: 0,
-      points: []
-    };
-  }
-
-  if (method !== "umap") {
+  if (method !== "umap" && method !== "pacmap") {
     return {
       createdAt,
       method,
@@ -1056,7 +1366,15 @@ async function buildReductionArtifact(
 
   try {
     const coordinates =
-      items.length <= 2 ? buildTrivialReductionPoints(items.length) : reduceWithUmap(embeddingVectors, runId);
+      items.length <= 2
+        ? buildTrivialReductionPoints(items.length)
+        : method === "umap"
+          ? reduceWithUmap(embeddingVectors, runId)
+          : await reduceWithPacmap(
+              items.map((item) => item.opinion.opinionId),
+              embeddingVectors,
+              runId
+            );
 
     return {
       createdAt,
@@ -1083,7 +1401,7 @@ async function buildReductionArtifact(
       createdAt,
       method,
       dimensions: 2,
-      status: "failed",
+      status: error instanceof PacmapUnavailableError ? "unavailable" : "failed",
       message: error instanceof Error ? error.message : String(error),
       pointCount: 0,
       points: []
@@ -1101,6 +1419,156 @@ function reduceWithUmap(vectors: number[][], runId: string): number[][] {
   });
 
   return reducer.fit(vectors);
+}
+
+async function reduceWithPacmap(
+  opinionIds: string[],
+  vectors: number[][],
+  runId: string
+): Promise<number[][]> {
+  const workDir = await mkdirTemporaryPacmapDir();
+  const inputPath = path.join(workDir, "input.json");
+  const outputPath = path.join(workDir, "output.json");
+  const scriptPath = resolvePacmapWrapperScriptPath();
+  const nNeighbors = Math.max(2, Math.min(15, vectors.length - 1));
+  const randomState = positiveIntegerSeed(`pacmap:${runId}`);
+
+  try {
+    await writeFile(
+      inputPath,
+      `${JSON.stringify(
+        {
+          opinionIds,
+          vectors,
+          nNeighbors,
+          mnRatio: 0.5,
+          fpRatio: 2.0,
+          distance: "angular",
+          randomState,
+          applyPca: true
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    await execPacmapWrapper(scriptPath, inputPath, outputPath);
+
+    const output = JSON.parse(await readFile(outputPath, "utf8")) as {
+      points?: Array<{ opinionId?: string; x?: number; y?: number }>;
+    };
+    const pointByOpinionId = new Map(
+      (output.points ?? [])
+        .filter(
+          (point): point is { opinionId: string; x: number; y: number } =>
+            typeof point.opinionId === "string" &&
+            typeof point.x === "number" &&
+            typeof point.y === "number"
+        )
+        .map((point) => [point.opinionId, [point.x, point.y] as [number, number]])
+    );
+
+    return opinionIds.map((opinionId) => {
+      const point = pointByOpinionId.get(opinionId);
+
+      if (point === undefined) {
+        throw new Error(`PaCMAP output did not include coordinates for opinion '${opinionId}'.`);
+      }
+
+      return point;
+    });
+  } finally {
+    await removeDirectory(workDir);
+  }
+}
+
+async function execPacmapWrapper(
+  scriptPath: string,
+  inputPath: string,
+  outputPath: string
+): Promise<void> {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+  const pythonCandidates = [
+    path.join(repoRoot, ".venv-pacmap", "bin", "python"),
+    "python3",
+    "python"
+  ];
+  let lastError: Error | null = null;
+
+  for (const executable of pythonCandidates) {
+    try {
+      await execFile(executable, [scriptPath, inputPath, outputPath], {
+        maxBuffer: 10 * 1024 * 1024
+      });
+      return;
+    } catch (error) {
+      if (isMissingExecutableError(error)) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        continue;
+      }
+
+      const stderr = readExecStderr(error);
+      if (
+        stderr.includes("MISSING_MODULE:pacmap") ||
+        stderr.includes("MISSING_MODULE:numpy")
+      ) {
+        throw new PacmapUnavailableError(
+          "PaCMAP requires Python with the `pacmap` and `numpy` packages installed. Try `python3 -m pip install pacmap numpy`."
+        );
+      }
+
+      throw new Error(
+        `PaCMAP wrapper failed: ${stderr.length === 0 ? error instanceof Error ? error.message : String(error) : stderr}`
+      );
+    }
+  }
+
+  throw new PacmapUnavailableError(
+    `Could not find a usable Python interpreter. Tried ${pythonCandidates.join(", ")}.`
+  );
+}
+
+async function mkdirTemporaryPacmapDir(): Promise<string> {
+  const { mkdtemp } = await import("node:fs/promises");
+  return mkdtemp(path.join(os.tmpdir(), "broadly-pacmap-"));
+}
+
+async function removeDirectory(directoryPath: string): Promise<void> {
+  const { rm } = await import("node:fs/promises");
+  await rm(directoryPath, { recursive: true, force: true });
+}
+
+function resolvePacmapWrapperScriptPath(): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../scripts/pacmap_reduce.py"
+  );
+}
+
+function isMissingExecutableError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "ENOENT"
+  );
+}
+
+function readExecStderr(error: unknown): string {
+  if (typeof error !== "object" || error === null || !("stderr" in error)) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  const stderr = (error as { stderr?: string | Buffer }).stderr;
+  if (typeof stderr === "string") {
+    return stderr.trim();
+  }
+  if (stderr instanceof Buffer) {
+    return stderr.toString("utf8").trim();
+  }
+
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildTrivialReductionPoints(count: number): number[][] {
@@ -1290,8 +1758,7 @@ function buildClusterArtifact(
 }
 
 async function buildPerspectivePlanArtifact(
-  mode: string,
-  clusterCounts: number[],
+  view: AnalysisViewConfig,
   clusterArtifactPaths: string[],
   options: {
     analysisModel: RegisteredModel;
@@ -1326,47 +1793,50 @@ async function buildPerspectivePlanArtifact(
   if (clusterArtifacts.length === 0) {
     return {
       createdAt,
-      mode,
+      viewName: view.name,
+      ...(view.title === undefined ? {} : { viewTitle: view.title }),
+      mode: view.mode,
       status: "unavailable",
       synthesis: {
         method: "heuristic-fallback",
         createdAt
       },
-      title: mode === "dissent" ? "Dissenting Viewpoints" : "Balanced Overview",
-      summary: "No cluster highlights were available for this perspective.",
+      title: view.title ?? buildDefaultViewTitle(view),
+      summary: "No cluster highlights were available for this view.",
       highlights: [],
-      rationale: "No ready cluster artifacts were available to plan this perspective."
+      rationale: "No ready cluster artifacts were available to plan this view."
     };
   }
 
-  const preferredRequestedCount =
-    mode === "dissent"
-      ? Math.max(...clusterCounts)
-      : Math.min(...clusterCounts);
   const chosen =
     clusterArtifacts.find(
-      (item) => item.artifact.requestedClusterCount === preferredRequestedCount
-    ) ?? clusterArtifacts[0];
+      (item) =>
+        item.artifact.method === view.reduction.method &&
+        item.artifact.requestedClusterCount === view.clustering.count
+    ) ??
+    clusterArtifacts[0];
 
   if (chosen === undefined) {
     return {
       createdAt,
-      mode,
+      viewName: view.name,
+      ...(view.title === undefined ? {} : { viewTitle: view.title }),
+      mode: view.mode,
       status: "unavailable",
       synthesis: {
         method: "heuristic-fallback",
         createdAt
       },
-      title: mode === "dissent" ? "Dissenting Viewpoints" : "Balanced Overview",
-      summary: "No cluster highlights were available for this perspective.",
+      title: view.title ?? buildDefaultViewTitle(view),
+      summary: "No cluster highlights were available for this view.",
       highlights: [],
-      rationale: "No ready cluster artifacts were available to plan this perspective."
+      rationale: "No ready cluster artifacts were available to plan this view."
     };
   }
 
   const highlights = [...chosen.artifact.clusters]
     .sort((left, right) =>
-      mode === "dissent"
+      view.mode === "dissent"
         ? left.size - right.size || left.clusterId - right.clusterId
         : right.size - left.size || left.clusterId - right.clusterId
     )
@@ -1378,16 +1848,20 @@ async function buildPerspectivePlanArtifact(
       summary: cluster.summary,
       representativeOpinions: cluster.representativeOpinions
     }));
-  const title =
-    mode === "dissent" ? "Dissenting Viewpoints" : "Balanced Overview";
+  const title = view.title ?? buildDefaultViewTitle(view);
   const summary =
     highlights.length === 0
-      ? "No cluster highlights were available for this perspective."
-      : mode === "dissent"
+      ? "No cluster highlights were available for this view."
+      : view.mode === "dissent"
         ? `This perspective looks for narrower or minority clusters that could be drowned out in a broad summary. It foregrounds ${highlights
             .slice(0, 3)
             .map((item) => item.label)
             .join(", ")}.`
+        : view.reduction.method === "pacmap"
+          ? `This perspective uses the PaCMAP reduction to provide an alternate map of the same opinion set. It foregrounds ${highlights
+              .slice(0, 3)
+              .map((item) => item.label)
+              .join(", ")}.`
         : `This perspective favors the larger clusters in the map and uses them as the primary reading of the corpus. It foregrounds ${highlights
             .slice(0, 3)
             .map((item) => item.label)
@@ -1395,7 +1869,9 @@ async function buildPerspectivePlanArtifact(
 
   const heuristicPerspective: PerspectivePlanArtifact = {
     createdAt,
-    mode,
+    viewName: view.name,
+    ...(view.title === undefined ? {} : { viewTitle: view.title }),
+    mode: view.mode,
     status: "ready",
     synthesis: {
       method: "heuristic-fallback",
@@ -1408,8 +1884,10 @@ async function buildPerspectivePlanArtifact(
     summary,
     highlights,
     rationale:
-      mode === "dissent"
+      view.mode === "dissent"
         ? "Prefer the higher cluster count to preserve narrower pockets of disagreement and minority viewpoints."
+        : view.reduction.method === "pacmap"
+          ? "Prefer the PaCMAP reduction with the broader cluster count so the report can compare a second map geometry against the primary UMAP view."
         : "Prefer the lower cluster count to produce a broader reading that should still surface strong consensus where it exists."
   };
 
@@ -2295,6 +2773,8 @@ function buildAnalysisRunFingerprint(options: {
   selectedOpinionPaths: string[];
   embeddingModel: RegisteredModel;
   analysisModel: RegisteredModel;
+  groupsSha256?: string;
+  viewsSha256: string;
   clusterLabelingPromptSha256: string;
   perspectiveSummaryPromptSha256: string;
   semanticMergePromptSha256: string;
@@ -2315,6 +2795,7 @@ function buildAnalysisRunFingerprint(options: {
     selectedOpinionIdsSha256,
     embeddingModel: modelFingerprintValue(options.embeddingModel),
     analysisModel: modelFingerprintValue(options.analysisModel),
+    viewsSha256: options.viewsSha256,
     clusterLabelingPromptSha256: options.clusterLabelingPromptSha256,
     perspectiveSummaryPromptSha256: options.perspectiveSummaryPromptSha256,
     semanticMergePromptSha256: options.semanticMergePromptSha256,
@@ -2611,6 +3092,7 @@ function createStageProgressReporter(
 
 async function findLatestOpinionRunForModel(
   opinionsRootDir: string,
+  extractionName: string,
   model: RegisteredModel
 ): Promise<{ runId: string; createdAt: string } | null> {
   const entries = await readdir(opinionsRootDir, { withFileTypes: true }).catch(() => []);
@@ -2624,11 +3106,13 @@ async function findLatestOpinionRunForModel(
     const manifestPath = path.join(opinionsRootDir, entry.name, "manifest.json");
     const manifest = await readJsonFile<{
       createdAt?: string;
+      extraction?: { name?: string };
       model?: { name?: string; provider?: string; region?: string; modelId?: string };
     }>(manifestPath);
 
     if (
       manifest?.createdAt !== undefined &&
+      manifest.extraction?.name === extractionName &&
       manifest.model?.name === model.name &&
       manifest.model?.provider === model.provider &&
       manifest.model?.region === model.region &&
@@ -2648,15 +3132,18 @@ async function findLatestOpinionRunForModel(
 async function findOpinionRunById(
   opinionsRootDir: string,
   runId: string,
+  extractionName: string,
   model: RegisteredModel
 ): Promise<{ runId: string; createdAt: string } | null> {
   const manifest = await readJsonFile<{
     createdAt?: string;
+    extraction?: { name?: string };
     model?: { name?: string; provider?: string; region?: string; modelId?: string };
   }>(path.join(opinionsRootDir, runId, "manifest.json"));
 
   if (
     manifest?.createdAt === undefined ||
+    manifest.extraction?.name !== extractionName ||
     manifest.model?.name !== model.name ||
     manifest.model?.provider !== model.provider ||
     manifest.model?.region !== model.region ||

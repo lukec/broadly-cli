@@ -32,6 +32,8 @@ type RepresentativeOpinion = NonNullable<
 >;
 
 interface PerspectiveArtifact {
+  viewName?: string;
+  viewTitle?: string;
   mode?: string;
   title?: string;
   summary?: string;
@@ -90,7 +92,7 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
   const hierarchiesDir = path.join(runDir, "hierarchies");
   const perspectiveFiles = await readdir(perspectivesDir, { withFileTypes: true }).catch(() => []);
   const hierarchyArtifacts = await loadSemanticMergeArtifacts(hierarchiesDir);
-  const perspectives = [];
+  const views = [];
 
   for (const entry of perspectiveFiles
     .filter((item) => item.isFile() && item.name.endsWith(".json"))
@@ -131,9 +133,15 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
               clusterIds: (theme.clusterIds ?? []).map((clusterId) => String(clusterId))
             }));
 
-    perspectives.push({
-      perspectiveId: perspective.mode,
-      title: perspective.title ?? perspective.mode,
+    const viewId = perspective.viewName ?? perspective.mode;
+
+    if (viewId === undefined) {
+      continue;
+    }
+
+    views.push({
+      viewId,
+      title: perspective.viewTitle ?? perspective.title ?? viewId,
       summary: perspective.summary ?? "",
       ...(themes === undefined ? {} : { themes }),
       clusters: (perspective.highlights ?? []).map((highlight) => {
@@ -158,9 +166,9 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
     });
   }
 
-  if (perspectives.length === 0) {
+  if (views.length === 0) {
     throw new Error(
-      `Analysis run '${runId}' does not contain any perspective artifacts to report.`
+      `Analysis run '${runId}' does not contain any view artifacts to report.`
     );
   }
 
@@ -171,9 +179,9 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
     createdAt: new Date().toISOString(),
     analysisRunId: runId,
     projectName: config.project.name,
-    guidingQuestions: config.guidingQuestions,
-    primaryPerspectiveId: config.output.primaryPerspective,
-    perspectives
+    questions: config.questions,
+    primaryViewId: config.report.primaryView,
+    views
   };
 
   await mkdir(reportDir, { recursive: true });
@@ -183,8 +191,8 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
     `Generated report for ${projectRoot}`,
     "",
     `Analysis run: ${runId}`,
-    `Primary perspective: ${config.output.primaryPerspective}`,
-    `Perspectives included: ${perspectives.length}`,
+    `Primary view: ${config.report.primaryView}`,
+    `Views included: ${views.length}`,
     `Bundle: ${toPortableRelativePath(projectRoot, bundlePath)}`
   ];
 

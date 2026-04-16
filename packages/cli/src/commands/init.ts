@@ -134,7 +134,7 @@ function printNextSteps(rootDir: string, configPath: string): void {
     "2. broadly ingest ./path/to/source.csv",
     "3. broadly models add",
     "4. Review and edit prompts/opinion-extraction.md and the analysis prompt files for your domain.",
-    "5. Edit broadly.yaml with guiding questions and model aliases."
+    "5. Edit broadly.yaml with questions, opinion extractions, and analysis views."
   ];
 
   process.stdout.write(`${lines.join("\n")}\n`);

@@ -84,25 +84,25 @@ export function renderPlaceholderReportHtml(report: ReportBundle): string {
       <section class="hero">
         <p class="eyebrow">Broadly Report</p>
         <h1>${escapeHtml(report.projectName)}</h1>
-        <p class="lede">Primary perspective: ${escapeHtml(report.primaryPerspectiveId)}</p>
+        <p class="lede">Primary view: ${escapeHtml(report.primaryViewId)}</p>
         <p class="meta">Analysis run ${escapeHtml(report.analysisRunId)} · generated ${escapeHtml(report.createdAt)}</p>
       </section>
       <section class="card" style="margin-bottom: 24px;">
-        <p class="eyebrow">Guiding Questions</p>
+        <p class="eyebrow">Questions</p>
         <h2>What this report is answering</h2>
         <ul class="question-list">
-          ${report.guidingQuestions.map((question) => `<li>${escapeHtml(question)}</li>`).join("")}
+          ${report.questions.map((question) => `<li>${escapeHtml(question)}</li>`).join("")}
         </ul>
       </section>
       <section class="grid perspectives">
-        ${report.perspectives
+        ${report.views
           .map(
-            (perspective) => `<article class="card">
-                <p class="eyebrow">${escapeHtml(perspective.perspectiveId)}</p>
-                <h2>${escapeHtml(perspective.title)}</h2>
-                <p class="lede">${escapeHtml(perspective.summary)}</p>
+            (view) => `<article class="card">
+                <p class="eyebrow">${escapeHtml(view.viewId)}</p>
+                <h2>${escapeHtml(view.title)}</h2>
+                <p class="lede">${escapeHtml(view.summary)}</p>
                 <div style="margin-top: 18px;">
-                  ${perspective.clusters
+                  ${view.clusters
                     .map(
                       (cluster) => `<section class="cluster">
                           <h3>${escapeHtml(cluster.label)}</h3>

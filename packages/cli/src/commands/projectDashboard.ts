@@ -46,7 +46,7 @@ export interface AnalysisRunSummary {
   embeddingModelLabel: string;
   reductionMethods: string[];
   clusterCounts: number[];
-  synthesisModes: string[];
+  viewNames: string[];
   embeddingsReady: number;
   failedOpinions: number;
   reductionsReady: number;
@@ -64,7 +64,7 @@ export interface AnalysisSummary {
 
 export interface ReportSummary {
   reportDir: string;
-  primaryPerspective: string;
+  primaryView: string;
   fileCount: number;
   files: string[];
 }
@@ -195,7 +195,7 @@ export function buildPipelineSteps(data: ProjectDashboardData): PipelineStepSumm
           ? "Analysis artifacts exist; report output has not been published yet."
           : "Publish an inspectable report bundle from the analysis outputs.",
       detail: reportReady
-        ? `Primary perspective ${data.report.primaryPerspective}`
+        ? `Primary view ${data.report.primaryView}`
         : reportStarted
           ? `Ready to publish from ${data.analysis.runCount} analysis run(s)`
           : "No report output yet"
@@ -373,6 +373,7 @@ async function loadAnalysisRuns(runsDir: string): Promise<AnalysisRunSummary[]> 
         reductionMethods?: string[];
         clusterCounts?: number[];
         synthesisModes?: string[];
+        views?: Array<{ name?: string }>;
       };
       output?: {
         embeddingsReady?: number;
@@ -406,7 +407,10 @@ async function loadAnalysisRuns(runsDir: string): Promise<AnalysisRunSummary[]> 
       embeddingModelLabel,
       reductionMethods: manifest.input?.reductionMethods ?? [],
       clusterCounts: manifest.input?.clusterCounts ?? [],
-      synthesisModes: manifest.input?.synthesisModes ?? [],
+      viewNames:
+        manifest.input?.views?.map((view) => view?.name).filter((value): value is string => typeof value === "string") ??
+        manifest.input?.synthesisModes ??
+        [],
       embeddingsReady: manifest.output?.embeddingsReady ?? 0,
       failedOpinions: manifest.output?.failedOpinions ?? 0,
       reductionsReady: manifest.output?.reductionsReady ?? 0,
@@ -450,7 +454,7 @@ function expectedClusterArtifactCount(run: AnalysisRunSummary): number {
 }
 
 function expectedPerspectiveArtifactCount(run: AnalysisRunSummary): number {
-  return run.synthesisModes.length;
+  return run.viewNames.length;
 }
 
 function isAnalysisRunComplete(run: AnalysisRunSummary): boolean {
@@ -496,8 +500,8 @@ async function loadReportSummary(
   const files = await listEntries(projectPaths.reportsDir);
 
   return {
-    reportDir: config.output.reportDir,
-    primaryPerspective: config.output.primaryPerspective,
+    reportDir: config.report.reportDir,
+    primaryView: config.report.primaryView,
     fileCount: files.length,
     files: files.slice(0, 24)
   };
