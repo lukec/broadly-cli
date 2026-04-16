@@ -96,6 +96,8 @@ That creates:
 - `data/raw`
 - `data/normalized`
 - `data/opinions`
+- `archive`
+- `llm-cache`
 - `prompts`
 - `runs`
 - `reports`
@@ -133,20 +135,57 @@ It also prompts for the model region, which is stored in the project config and 
 node ../../packages/cli/dist/index.js models check
 ```
 
+Run a simple prompt against one model alias:
+
+```bash
+node ../../packages/cli/dist/index.js llm --model text-main "Tell me a joke"
+```
+
+Or run the same prompt against all registered models in parallel:
+
+```bash
+node ../../packages/cli/dist/index.js llm --all-models "Tell me a joke"
+```
+
 Extract opinion artifacts from the normalized records:
 
 ```bash
 node ../../packages/cli/dist/index.js extract-opinions
 ```
 
-The first extraction stage currently uses a deterministic `whole-record-pass-through` method:
+By default, Broadly reuses a compatible opinion-extraction run if the model, prompt, and ingest fingerprint still match.
+If you want to move older opinion runs out of the way before starting fresh:
+
+```bash
+node ../../packages/cli/dist/index.js extract-opinions --archive
+```
+
+Opinion extraction:
 
 - reads each normalized JSON record from `data/normalized`
-- writes one opinion JSON file per normalized record under `data/opinions`
-- writes `data/opinions/extraction-manifest.json` describing the extraction method and counts
+- writes one run under `data/opinions/<run-id>/`
+- keeps a `data/opinions/current-run.txt` pointer for downstream commands
+- archives older runs into `archive/opinions/` when you use `--archive`
+- caches model responses under `llm-cache/` so compatible reruns do not spend tokens again
 
 Projects also include `prompts/`, which is intended to hold reusable prompt files for stages such as opinion extraction.
-New projects start with `prompts/opinion-extraction.md` as a prompt template you can adapt to your domain.
+New projects start with:
+
+- `prompts/opinion-extraction.md`
+- `prompts/analysis-cluster-labeling.md`
+- `prompts/analysis-perspective-summary.md`
+
+Check the current project state from the terminal:
+
+```bash
+node ../../packages/cli/dist/index.js status
+```
+
+Or open the local web overview:
+
+```bash
+node ../../packages/cli/dist/index.js web
+```
 
 ## Open Source Intent
 

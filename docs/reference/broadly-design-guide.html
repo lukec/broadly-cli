@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Broad Listener — Visual Design Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   DESIGN TOKENS
+   ============================================================ */
+:root {
+  /* ---- Primary: deep blue-teal ---- */
+  --bl-primary-900: #082640;
+  --bl-primary-800: #0E3D66;
+  --bl-primary-700: #145688;
+  --bl-primary-600: #1B72B0;
+  --bl-primary-500: #2A8DC8;
+  --bl-primary-400: #52A8DA;
+  --bl-primary-300: #85C3E8;
+  --bl-primary-200: #B8DEF3;
+  --bl-primary-100: #E0F1FB;
+  --bl-primary-50:  #F2F9FD;
+
+  /* ---- Accent: warm amber ---- */
+  --bl-accent-700: #A85E12;
+  --bl-accent-600: #CC7418;
+  --bl-accent-500: #E8913A;
+  --bl-accent-400: #F0AA62;
+  --bl-accent-300: #F5C48E;
+  --bl-accent-200: #FADDB8;
+  --bl-accent-100: #FDF2E3;
+
+  /* ---- Semantic ---- */
+  --bl-success-600: #15794F;
+  --bl-success-500: #1EA672;
+  --bl-success-100: #E6F7EF;
+  --bl-warning-600: #A67B0A;
+  --bl-warning-500: #D49E20;
+  --bl-warning-100: #FEF7E0;
+  --bl-error-600: #B5312B;
+  --bl-error-500: #E04B3D;
+  --bl-error-100: #FDECEB;
+  --bl-info-600: #20679B;
+  --bl-info-500: #3498DB;
+  --bl-info-100: #EAF4FC;
+
+  /* ---- Neutral ---- */
+  --bl-gray-950: #0F1117;
+  --bl-gray-900: #1A1D25;
+  --bl-gray-800: #2B3041;
+  --bl-gray-700: #444A5E;
+  --bl-gray-600: #5D6378;
+  --bl-gray-500: #7A8197;
+  --bl-gray-400: #9CA3B4;
+  --bl-gray-300: #BFC4D0;
+  --bl-gray-200: #DCDFE7;
+  --bl-gray-100: #ECEEF3;
+  --bl-gray-50:  #F7F8FA;
+  --bl-white:    #FFFFFF;
+
+  /* ---- Typography ---- */
+  --bl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --bl-fs-xs:   .75rem;   /* 12 */
+  --bl-fs-sm:   .875rem;  /* 14 */
+  --bl-fs-base: 1rem;     /* 16 */
+  --bl-fs-lg:   1.125rem; /* 18 */
+  --bl-fs-xl:   1.25rem;  /* 20 */
+  --bl-fs-2xl:  1.5rem;   /* 24 */
+  --bl-fs-3xl:  1.875rem; /* 30 */
+  --bl-fs-4xl:  2.25rem;  /* 36 */
+  --bl-fs-5xl:  3rem;     /* 48 */
+
+  /* ---- Spacing (4px base) ---- */
+  --sp-1: .25rem; --sp-2: .5rem; --sp-3: .75rem; --sp-4: 1rem;
+  --sp-5: 1.25rem; --sp-6: 1.5rem; --sp-8: 2rem; --sp-10: 2.5rem;
+  --sp-12: 3rem; --sp-16: 4rem; --sp-20: 5rem; --sp-24: 6rem;
+
+  /* ---- Radii ---- */
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-full: 9999px;
+
+  /* ---- Shadows ---- */
+  --sh-xs: 0 1px 2px rgba(0,0,0,.04);
+  --sh-sm: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+  --sh-md: 0 4px 8px rgba(0,0,0,.06), 0 2px 4px rgba(0,0,0,.03);
+  --sh-lg: 0 10px 24px rgba(0,0,0,.08), 0 4px 8px rgba(0,0,0,.04);
+  --sh-xl: 0 20px 40px rgba(0,0,0,.10);
+
+  /* ---- Transitions ---- */
+  --tr-fast: 120ms ease; --tr-base: 200ms ease; --tr-slow: 300ms ease;
+
+  /* ---- Chart palette ---- */
+  --ch-1:#2A8DC8; --ch-2:#E8913A; --ch-3:#1EA672; --ch-4:#9B59B6;
+  --ch-5:#E04B3D; --ch-6:#D49E20; --ch-7:#1ABC9C; --ch-8:#5469D4;
+  --ch-9:#E67E22; --ch-10:#2ECC71;
+}
+
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{font-family:var(--bl-font);font-size:var(--bl-fs-base);line-height:1.6;
+  color:var(--bl-gray-800);background:var(--bl-gray-50);-webkit-font-smoothing:antialiased}
+img{max-width:100%;display:block}
+a{color:var(--bl-primary-600);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:'SF Mono',Menlo,Consolas,monospace;font-size:.9em;
+  background:var(--bl-gray-100);padding:2px 6px;border-radius:4px}
+
+/* ============================================================
+   LAYOUT HELPERS
+   ============================================================ */
+.container{max-width:1120px;margin:0 auto;padding:0 var(--sp-6)}
+.section{padding:var(--sp-16) 0;border-bottom:1px solid var(--bl-gray-200)}
+.section:last-child{border-bottom:none}
+.sec-title{font-size:var(--bl-fs-3xl);font-weight:700;color:var(--bl-primary-800);
+  letter-spacing:-.02em;margin-bottom:var(--sp-2)}
+.sec-sub{font-size:var(--bl-fs-lg);color:var(--bl-gray-600);margin-bottom:var(--sp-10);max-width:680px}
+.sub-title{font-size:var(--bl-fs-xl);font-weight:600;color:var(--bl-gray-900);
+  margin-bottom:var(--sp-4);padding-bottom:var(--sp-2);border-bottom:2px solid var(--bl-primary-200)}
+.note{font-size:var(--bl-fs-sm);color:var(--bl-gray-500);font-style:italic;margin-top:var(--sp-2)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-8)}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-6)}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--sp-4)}
+@media(max-width:768px){.grid2,.grid3,.grid4{grid-template-columns:1fr}}
+.mb-2{margin-bottom:var(--sp-2)}.mb-3{margin-bottom:var(--sp-3)}.mb-4{margin-bottom:var(--sp-4)}
+.mb-6{margin-bottom:var(--sp-6)}.mb-8{margin-bottom:var(--sp-8)}.mb-12{margin-bottom:var(--sp-12)}
+.mt-2{margin-top:var(--sp-2)}.mt-4{margin-top:var(--sp-4)}.mt-6{margin-top:var(--sp-6)}
+.flex{display:flex}.flex-wrap{flex-wrap:wrap}.items-center{align-items:center}
+.gap-2{gap:var(--sp-2)}.gap-3{gap:var(--sp-3)}.gap-4{gap:var(--sp-4)}.gap-6{gap:var(--sp-6)}
+.text-sm{font-size:var(--bl-fs-sm)}.text-xs{font-size:var(--bl-fs-xs)}
+.text-muted{color:var(--bl-gray-500)}.text-center{text-align:center}
+.overline{font-size:var(--bl-fs-xs);font-weight:600;text-transform:uppercase;
+  letter-spacing:.1em;color:var(--bl-primary-600)}
+
+/* ============================================================
+   HERO
+   ============================================================ */
+.hero{
+  background:linear-gradient(135deg,var(--bl-primary-900) 0%,var(--bl-primary-700) 50%,var(--bl-primary-500) 100%);
+  color:#fff;padding:var(--sp-24) 0 var(--sp-20);text-align:center;
+}
+.hero h1{font-size:var(--bl-fs-5xl);font-weight:800;letter-spacing:-.03em;margin-bottom:var(--sp-4)}
+.hero .tagline{font-size:var(--bl-fs-xl);opacity:.85;max-width:660px;margin:0 auto var(--sp-8);font-weight:300}
+.hero .pill{display:inline-block;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);
+  padding:var(--sp-2) var(--sp-5);border-radius:var(--r-full);font-size:var(--bl-fs-sm);font-weight:500;
+  letter-spacing:.04em;text-transform:uppercase}
+
+/* ============================================================
+   SWATCHES & PALETTE STRIPS
+   ============================================================ */
+.pal-strip{display:flex;border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-md);margin-bottom:var(--sp-6)}
+.pal-cell{flex:1;height:68px;display:flex;align-items:flex-end;padding:var(--sp-2)}
+.pal-cell span{font-size:10px;font-weight:600;font-family:monospace;opacity:.92}
+.swatch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:var(--sp-3)}
+.sw{border-radius:var(--r-md);overflow:hidden;box-shadow:var(--sh-sm);background:var(--bl-white);
+  border:1px solid var(--bl-gray-200)}
+.sw-color{height:60px}
+.sw-info{padding:var(--sp-2) var(--sp-3)}
+.sw-name{font-size:var(--bl-fs-xs);font-weight:600;color:var(--bl-gray-800)}
+.sw-hex{font-size:var(--bl-fs-xs);color:var(--bl-gray-500);font-family:monospace}
+
+/* ============================================================
+   TYPE SAMPLES
+   ============================================================ */
+.ty{margin-bottom:var(--sp-6);padding:var(--sp-4);background:var(--bl-white);
+  border-radius:var(--r-md);border:1px solid var(--bl-gray-200)}
+.ty-label{font-size:var(--bl-fs-xs);color:var(--bl-gray-500);font-weight:500;
+  text-transform:uppercase;letter-spacing:.08em;margin-bottom:var(--sp-1)}
+.d-h1{font-size:var(--bl-fs-5xl);font-weight:800;letter-spacing:-.03em;color:var(--bl-gray-900);line-height:1.1}
+.d-h2{font-size:var(--bl-fs-4xl);font-weight:700;letter-spacing:-.02em;color:var(--bl-gray-900);line-height:1.2}
+.d-h3{font-size:var(--bl-fs-3xl);font-weight:700;color:var(--bl-gray-900);line-height:1.3}
+.d-h4{font-size:var(--bl-fs-2xl);font-weight:600;color:var(--bl-gray-800);line-height:1.35}
+.d-h5{font-size:var(--bl-fs-xl);font-weight:600;color:var(--bl-gray-800);line-height:1.4}
+.d-h6{font-size:var(--bl-fs-lg);font-weight:600;color:var(--bl-gray-700);line-height:1.45}
+.d-body{font-size:var(--bl-fs-base);color:var(--bl-gray-700);line-height:1.65}
+.d-sm{font-size:var(--bl-fs-sm);color:var(--bl-gray-600);line-height:1.55}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.btn{display:inline-flex;align-items:center;gap:var(--sp-2);border:none;cursor:pointer;
+  font-family:var(--bl-font);font-weight:600;border-radius:var(--r-md);
+  transition:all var(--tr-fast);text-decoration:none;padding:10px 20px;font-size:var(--bl-fs-sm)}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--bl-primary-700);color:#fff}
+.btn-primary:hover{background:var(--bl-primary-800);box-shadow:var(--sh-md)}
+.btn-accent{background:var(--bl-accent-500);color:#fff}
+.btn-accent:hover{background:var(--bl-accent-600);box-shadow:var(--sh-md)}
+.btn-secondary{background:var(--bl-gray-100);color:var(--bl-gray-800)}
+.btn-secondary:hover{background:var(--bl-gray-200)}
+.btn-outline{background:transparent;color:var(--bl-primary-700);border:1.5px solid var(--bl-primary-300)}
+.btn-outline:hover{background:var(--bl-primary-50);border-color:var(--bl-primary-500)}
+.btn-ghost{background:transparent;color:var(--bl-gray-700)}
+.btn-ghost:hover{background:var(--bl-gray-100)}
+.btn-danger{background:var(--bl-error-500);color:#fff}
+.btn-danger:hover{background:var(--bl-error-600)}
+.btn-sm{padding:6px 14px;font-size:var(--bl-fs-xs);border-radius:var(--r-sm)}
+.btn-lg{padding:14px 28px;font-size:var(--bl-fs-base);border-radius:var(--r-lg)}
+.btn-icon{width:36px;height:36px;padding:0;justify-content:center;border-radius:var(--r-md)}
+
+/* ============================================================
+   BADGE
+   ============================================================ */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;
+  font-size:var(--bl-fs-xs);font-weight:600;border-radius:var(--r-full);line-height:1.4}
+.badge-primary{background:var(--bl-primary-100);color:var(--bl-primary-800)}
+.badge-success{background:var(--bl-success-100);color:var(--bl-success-600)}
+.badge-warning{background:var(--bl-warning-100);color:var(--bl-warning-600)}
+.badge-error{background:var(--bl-error-100);color:var(--bl-error-600)}
+.badge-info{background:var(--bl-info-100);color:var(--bl-info-600)}
+.badge-neutral{background:var(--bl-gray-100);color:var(--bl-gray-700)}
+.badge-accent{background:var(--bl-accent-100);color:var(--bl-accent-700)}
+.badge-dot::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+
+/* ============================================================
+   CARD
+   ============================================================ */
+.card{background:var(--bl-white);border-radius:var(--r-lg);box-shadow:var(--sh-sm);
+  border:1px solid var(--bl-gray-200);padding:var(--sp-6);transition:all var(--tr-base)}
+.card:hover{box-shadow:var(--sh-md);border-color:var(--bl-gray-300)}
+.card-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--sp-4)}
+.card-title{font-size:var(--bl-fs-lg);font-weight:600;color:var(--bl-gray-900)}
+.card-desc{font-size:var(--bl-fs-sm);color:var(--bl-gray-600);line-height:1.55}
+.card-meta{font-size:var(--bl-fs-xs);color:var(--bl-gray-500);margin-top:var(--sp-4);display:flex;gap:var(--sp-4)}
+.stat-card{text-align:center;padding:var(--sp-8) var(--sp-6)}
+.stat-val{font-size:var(--bl-fs-4xl);font-weight:800;color:var(--bl-primary-800);letter-spacing:-.02em}
+.stat-lbl{font-size:var(--bl-fs-sm);color:var(--bl-gray-600);margin-top:var(--sp-1)}
+.stat-chg{font-size:var(--bl-fs-xs);font-weight:600;margin-top:var(--sp-2)}
+.stat-up{color:var(--bl-success-600)}.stat-dn{color:var(--bl-error-600)}
+
+/* ============================================================
+   FORMS
+   ============================================================ */
+.fg{margin-bottom:var(--sp-5)}
+.fl{display:block;font-size:var(--bl-fs-sm);font-weight:600;color:var(--bl-gray-800);margin-bottom:var(--sp-2)}
+.fi{width:100%;padding:10px 14px;font-size:var(--bl-fs-sm);font-family:var(--bl-font);
+  border:1.5px solid var(--bl-gray-300);border-radius:var(--r-md);background:var(--bl-white);
+  color:var(--bl-gray-900);transition:border-color var(--tr-fast),box-shadow var(--tr-fast)}
+.fi:focus{outline:none;border-color:var(--bl-primary-500);box-shadow:0 0 0 3px var(--bl-primary-100)}
+.fi::placeholder{color:var(--bl-gray-400)}
+textarea.fi{resize:vertical;min-height:100px}
+select.fi{appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%237A8197' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center;padding-right:36px}
+.fhint{font-size:var(--bl-fs-xs);color:var(--bl-gray-500);margin-top:var(--sp-1)}
+.frow{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4)}
+@media(max-width:600px){.frow{grid-template-columns:1fr}}
+.chk-label,.rad-label{display:inline-flex;align-items:center;gap:var(--sp-2);cursor:pointer;
+  font-size:var(--bl-fs-sm);color:var(--bl-gray-800)}
+.chk-label input,.rad-label input{accent-color:var(--bl-primary-600);width:16px;height:16px}
+.toggle{position:relative;display:inline-block;width:44px;height:24px}
+.toggle input{opacity:0;width:0;height:0}
+.tsl{position:absolute;cursor:pointer;inset:0;background:var(--bl-gray-300);
+  border-radius:var(--r-full);transition:var(--tr-fast)}
+.tsl::before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;
+  background:#fff;border-radius:50%;transition:var(--tr-fast);box-shadow:var(--sh-xs)}
+.toggle input:checked+.tsl{background:var(--bl-primary-600)}
+.toggle input:checked+.tsl::before{transform:translateX(20px)}
+
+/* ============================================================
+   ALERT
+   ============================================================ */
+.alert{display:flex;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5);border-radius:var(--r-md);
+  font-size:var(--bl-fs-sm);margin-bottom:var(--sp-3);border:1px solid transparent}
+.al-icon{font-size:var(--bl-fs-lg);flex-shrink:0;line-height:1}
+.al-s{background:var(--bl-success-100);color:var(--bl-success-600);border-color:#c2e6d2}
+.al-w{background:var(--bl-warning-100);color:var(--bl-warning-600);border-color:#f5e6b3}
+.al-e{background:var(--bl-error-100);color:var(--bl-error-600);border-color:#f5c5c2}
+.al-i{background:var(--bl-info-100);color:var(--bl-info-600);border-color:#bde0f0}
+
+/* ============================================================
+   TABLE
+   ============================================================ */
+.tw{overflow-x:auto;border-radius:var(--r-lg);border:1px solid var(--bl-gray-200);background:var(--bl-white)}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:var(--sp-3) var(--sp-4);font-size:var(--bl-fs-xs);font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em;color:var(--bl-gray-600);background:var(--bl-gray-50);
+  border-bottom:1px solid var(--bl-gray-200)}
+td{padding:var(--sp-3) var(--sp-4);font-size:var(--bl-fs-sm);color:var(--bl-gray-800);
+  border-bottom:1px solid var(--bl-gray-100)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--bl-primary-50)}
+
+/* ============================================================
+   NAV
+   ============================================================ */
+.topnav{display:flex;align-items:center;justify-content:space-between;padding:var(--sp-3) var(--sp-6);
+  background:var(--bl-white);border:1px solid var(--bl-gray-200);border-radius:var(--r-lg);
+  margin-bottom:var(--sp-6);box-shadow:var(--sh-xs)}
+.topnav-brand{font-size:var(--bl-fs-lg);font-weight:700;color:var(--bl-primary-800);
+  display:flex;align-items:center;gap:var(--sp-2)}
+.topnav-links{display:flex;gap:var(--sp-1)}
+.topnav-link{padding:var(--sp-2) var(--sp-3);font-size:var(--bl-fs-sm);font-weight:500;
+  color:var(--bl-gray-600);border-radius:var(--r-md);transition:all var(--tr-fast)}
+.topnav-link:hover{background:var(--bl-gray-100);color:var(--bl-gray-900);text-decoration:none}
+.topnav-link.active{background:var(--bl-primary-50);color:var(--bl-primary-700)}
+.crumbs{display:flex;gap:var(--sp-2);font-size:var(--bl-fs-sm);color:var(--bl-gray-500);margin-bottom:var(--sp-4)}
+.crumbs a{color:var(--bl-primary-600)}
+.crumbs .sep{color:var(--bl-gray-400)}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+.sidebar{width:260px;background:var(--bl-white);border-radius:var(--r-lg);
+  border:1px solid var(--bl-gray-200);padding:var(--sp-4);box-shadow:var(--sh-sm)}
+.sb-hd{font-size:var(--bl-fs-xs);font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--bl-gray-500);margin-bottom:var(--sp-2);padding:0 var(--sp-2)}
+.sb-item{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);
+  font-size:var(--bl-fs-sm);color:var(--bl-gray-700);border-radius:var(--r-md);cursor:pointer;
+  transition:all var(--tr-fast)}
+.sb-item:hover{background:var(--bl-gray-100)}
+.sb-item.active{background:var(--bl-primary-50);color:var(--bl-primary-700);font-weight:600}
+.sb-indent{padding-left:var(--sp-8)}
+.sb-sec{margin-bottom:var(--sp-4)}
+
+/* ============================================================
+   PROGRESS BAR
+   ============================================================ */
+.pbar{height:8px;background:var(--bl-gray-200);border-radius:var(--r-full);overflow:hidden}
+.pfill{height:100%;border-radius:var(--r-full);transition:width var(--tr-slow)}
+.pfill-p{background:linear-gradient(90deg,var(--bl-primary-600),var(--bl-primary-400))}
+.pfill-s{background:var(--bl-success-500)}
+
+/* ============================================================
+   VOTING CARD
+   ============================================================ */
+.vcard{background:var(--bl-white);border-radius:var(--r-lg);border:1px solid var(--bl-gray-200);
+  padding:var(--sp-6);box-shadow:var(--sh-sm);max-width:480px}
+.vstmt{font-size:var(--bl-fs-lg);font-weight:500;color:var(--bl-gray-900);margin-bottom:var(--sp-6);line-height:1.5}
+.vacts{display:flex;gap:var(--sp-3)}
+.vbtn{flex:1;padding:var(--sp-3);border:2px solid var(--bl-gray-200);border-radius:var(--r-md);
+  background:var(--bl-white);cursor:pointer;font-family:var(--bl-font);font-weight:600;
+  font-size:var(--bl-fs-sm);transition:all var(--tr-fast);text-align:center}
+.vbtn:hover{transform:translateY(-1px);box-shadow:var(--sh-md)}
+.vbtn-a{color:var(--bl-success-600)}
+.vbtn-a:hover,.vbtn-a.sel{background:var(--bl-success-100);border-color:var(--bl-success-500)}
+.vbtn-d{color:var(--bl-error-600)}
+.vbtn-d:hover,.vbtn-d.sel{background:var(--bl-error-100);border-color:var(--bl-error-500)}
+.vbtn-p{color:var(--bl-gray-600)}
+.vbtn-p:hover,.vbtn-p.sel{background:var(--bl-gray-100);border-color:var(--bl-gray-400)}
+.vbtn .vi{font-size:var(--bl-fs-xl);margin-bottom:2px}
+
+/* ============================================================
+   CONSENSUS BAR
+   ============================================================ */
+.cbar{display:flex;height:12px;border-radius:var(--r-full);overflow:hidden;background:var(--bl-gray-100)}
+.cb-a{background:var(--bl-success-500)}.cb-d{background:var(--bl-error-500)}.cb-p{background:var(--bl-gray-300)}
+.clegend{display:flex;gap:var(--sp-6);margin-top:var(--sp-2);font-size:var(--bl-fs-xs);color:var(--bl-gray-600)}
+.clegend span{display:flex;align-items:center;gap:4px}
+.cdot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+/* ============================================================
+   EVIDENCE CARD
+   ============================================================ */
+.ecard{background:var(--bl-white);border-left:3px solid var(--bl-primary-400);
+  border-radius:0 var(--r-md) var(--r-md) 0;padding:var(--sp-4) var(--sp-5);
+  box-shadow:var(--sh-xs);margin-bottom:var(--sp-3)}
+.equote{font-size:var(--bl-fs-base);color:var(--bl-gray-800);font-style:italic;line-height:1.6;margin-bottom:var(--sp-3)}
+.esrc{font-size:var(--bl-fs-xs);color:var(--bl-gray-500);display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+
+/* ============================================================
+   MODERATION ITEM
+   ============================================================ */
+.mod-item{display:flex;gap:var(--sp-4);padding:var(--sp-4);background:var(--bl-white);
+  border-radius:var(--r-md);border:1px solid var(--bl-gray-200);margin-bottom:var(--sp-3);align-items:flex-start}
+.mod-body{flex:1}
+.mod-text{font-size:var(--bl-fs-sm);color:var(--bl-gray-800);margin-bottom:var(--sp-2)}
+.mod-meta{font-size:var(--bl-fs-xs);color:var(--bl-gray-500)}
+.mod-acts{display:flex;gap:var(--sp-2);flex-shrink:0}
+
+/* ============================================================
+   CONTRIBUTION FORM
+   ============================================================ */
+.contrib{background:var(--bl-white);border-radius:var(--r-lg);border:1px solid var(--bl-gray-200);
+  padding:var(--sp-8);box-shadow:var(--sh-sm);max-width:540px}
+.ctabs{display:flex;gap:var(--sp-1);margin-bottom:var(--sp-6);background:var(--bl-gray-100);
+  border-radius:var(--r-md);padding:3px}
+.ctab{flex:1;padding:var(--sp-2);text-align:center;font-size:var(--bl-fs-sm);font-weight:600;
+  border-radius:var(--r-sm);cursor:pointer;color:var(--bl-gray-600);transition:all var(--tr-fast)}
+.ctab.active{background:var(--bl-white);color:var(--bl-primary-700);box-shadow:var(--sh-xs)}
+
+/* ============================================================
+   ANALYSIS SNAPSHOT CARD
+   ============================================================ */
+.snap{background:var(--bl-white);border-radius:var(--r-lg);border:1px solid var(--bl-gray-200);
+  padding:var(--sp-5);box-shadow:var(--sh-sm)}
+.snap-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--sp-4)}
+.snap-s{text-align:center}
+.snap-sv{font-size:var(--bl-fs-2xl);font-weight:700;color:var(--bl-primary-800)}
+.snap-sl{font-size:var(--bl-fs-xs);color:var(--bl-gray-500)}
+
+/* ============================================================
+   CHART SWATCHES
+   ============================================================ */
+.ch-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:var(--sp-3)}
+.ch-sw{height:48px;border-radius:var(--r-md);display:flex;align-items:flex-end;padding:var(--sp-2)}
+.ch-sw span{font-size:10px;font-weight:600;color:#fff;font-family:monospace;text-shadow:0 1px 2px rgba(0,0,0,.3)}
+
+/* ============================================================
+   PUBLIC RESULTS MOCK
+   ============================================================ */
+.results{background:var(--bl-white);border-radius:var(--r-xl);border:1px solid var(--bl-gray-200);
+  overflow:hidden;box-shadow:var(--sh-lg)}
+.results-ban{background:linear-gradient(135deg,var(--bl-primary-800),var(--bl-primary-500));
+  padding:var(--sp-8) var(--sp-8) var(--sp-6);color:#fff}
+.results-ban h3{font-size:var(--bl-fs-2xl);font-weight:700;margin-bottom:var(--sp-2)}
+.results-ban p{opacity:.8;font-size:var(--bl-fs-sm)}
+.results-body{padding:var(--sp-8)}
+.cluster-tag{display:inline-flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);
+  background:var(--bl-primary-50);border:1px solid var(--bl-primary-200);border-radius:var(--r-full);
+  font-size:var(--bl-fs-xs);font-weight:600;color:var(--bl-primary-700);margin:0 var(--sp-2) var(--sp-2) 0}
+
+/* ============================================================
+   DARK MODE PREVIEW
+   ============================================================ */
+.dark{background:var(--bl-gray-900);border-radius:var(--r-xl);padding:var(--sp-8);color:#dfe2ea}
+.dk-card{background:#24272f;border-radius:var(--r-lg);border:1px solid #393d4a;padding:var(--sp-5);margin-bottom:var(--sp-4)}
+.dark h3{color:#f0f2f5}
+.dk-text{color:#9da3b4;font-size:var(--bl-fs-sm)}
+.dk-btn{background:var(--bl-primary-600);color:#fff;border:none;padding:10px 20px;
+  font-family:var(--bl-font);font-weight:600;font-size:var(--bl-fs-sm);border-radius:var(--r-md);cursor:pointer}
+.dk-btn-g{background:transparent;border:1.5px solid #393d4a;color:#9da3b4;padding:10px 20px;
+  font-family:var(--bl-font);font-weight:600;font-size:var(--bl-fs-sm);border-radius:var(--r-md);cursor:pointer}
+.dk-input{background:#181b22;border:1.5px solid #393d4a;color:#dfe2ea;padding:10px 14px;
+  font-size:var(--bl-fs-sm);border-radius:var(--r-md);font-family:var(--bl-font);width:100%}
+.dk-badge{background:rgba(42,141,200,.2);color:var(--bl-primary-300);padding:3px 10px;
+  border-radius:var(--r-full);font-size:var(--bl-fs-xs);font-weight:600;display:inline-block}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     HERO
+     ============================================================ -->
+<section class="hero">
+  <div class="container">
+    <div class="pill" style="margin-bottom:var(--sp-6)">Visual Design Guide · v0.5</div>
+    <h1>Broad Listener</h1>
+    <p class="tagline">A design system for a hosted listening platform that helps organizations hear people in their own words, then turn that input into transparent, auditable public understanding.</p>
+    <div class="flex gap-3" style="justify-content:center;flex-wrap:wrap">
+      <span class="badge badge-primary" style="font-size:var(--bl-fs-sm);padding:6px 16px;background:rgba(255,255,255,.15);color:#fff">Trustworthy</span>
+      <span class="badge badge-success" style="font-size:var(--bl-fs-sm);padding:6px 16px;background:rgba(255,255,255,.15);color:#fff">Auditable</span>
+      <span class="badge" style="font-size:var(--bl-fs-sm);padding:6px 16px;background:rgba(255,255,255,.15);color:#fff">Multi-modal</span>
+    </div>
+  </div>
+</section>
+
+<div class="container">
+
+<!-- ============================================================
+     1 · DESIGN PHILOSOPHY
+     ============================================================ -->
+<section class="section" id="philosophy">
+  <h2 class="sec-title">1. Design Philosophy</h2>
+  <p class="sec-sub">Visual principles that make Broad Listener feel trustworthy, modern, and useful for government teams and the public alike.</p>
+  <div class="grid2">
+    <div>
+      <h5 class="d-h5 mb-4">Core Principles</h5>
+      <ul style="list-style:none;display:flex;flex-direction:column;gap:var(--sp-4)">
+        <li class="flex gap-3" style="align-items:flex-start"><span style="font-size:1.3rem">🏛️</span><div><strong>Institutional trust</strong><br><span class="text-sm text-muted">Colours, type, and layout convey the seriousness of public decision-making. Clarity and evidence over gimmicks.</span></div></li>
+        <li class="flex gap-3" style="align-items:flex-start"><span style="font-size:1.3rem">🌊</span><div><strong>Calm confidence</strong><br><span class="text-sm text-muted">Generous whitespace, subtle shadows, muted backgrounds—even when handling emotionally charged public input.</span></div></li>
+        <li class="flex gap-3" style="align-items:flex-start"><span style="font-size:1.3rem">🔍</span><div><strong>Evidence-first</strong><br><span class="text-sm text-muted">Every visual pattern emphasises traceability. Quotes link to sources. Summaries link to evidence. Clusters link to statements.</span></div></li>
+        <li class="flex gap-3" style="align-items:flex-start"><span style="font-size:1.3rem">👥</span><div><strong>Approachable for participants</strong><br><span class="text-sm text-muted">Public-facing surfaces use warm accents and inviting language. The interface feels like a conversation, not a government form.</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <h5 class="d-h5 mb-4">Why These Choices</h5>
+      <p class="d-body mb-4">Broad Listener serves two very different audiences: <strong>government administrators</strong> who need data density, audit trails, and defensible outputs—and <strong>members of the public</strong> who need clarity, warmth, and low cognitive load.</p>
+      <p class="d-body mb-4">The deep blue-teal primary palette signals authority and reliability—essential for procurement conversations and council presentations. The warm amber accent adds approachability to calls-to-action and public participation surfaces.</p>
+      <p class="d-sm">The typography (Inter) balances humanist warmth with excellent readability at small sizes, ideal for both data-heavy dashboards and long-form public results pages.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     2 · COLOUR PALETTE
+     ============================================================ -->
+<section class="section" id="colours">
+  <h2 class="sec-title">2. Colour Palette</h2>
+  <p class="sec-sub">A palette built for trust, readability, and civic purpose. Deep blue-teal primary with warm amber accents.</p>
+
+  <div class="mb-12">
+    <h3 class="sub-title">Primary — Blue-Teal</h3>
+    <p class="note mb-4">Use for navigation, headers, primary actions, trust-facing surfaces. 700-800 range is the workhorse.</p>
+    <div class="pal-strip">
+      <div class="pal-cell" style="background:var(--bl-primary-900)"><span style="color:#fff">900</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-800)"><span style="color:#fff">800</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-700)"><span style="color:#fff">700</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-600)"><span style="color:#fff">600</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-500)"><span style="color:#fff">500</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-400)"><span style="color:#082640">400</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-300)"><span style="color:#082640">300</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-200)"><span style="color:#082640">200</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-100)"><span style="color:#082640">100</span></div>
+      <div class="pal-cell" style="background:var(--bl-primary-50)"><span style="color:#082640">50</span></div>
+    </div>
+  </div>
+
+  <div class="mb-12">
+    <h3 class="sub-title">Accent — Warm Amber</h3>
+    <p class="note mb-4">Use for calls-to-action, highlights, active states on public surfaces, engagement points.</p>
+    <div class="pal-strip">
+      <div class="pal-cell" style="background:var(--bl-accent-700)"><span style="color:#fff">700</span></div>
+      <div class="pal-cell" style="background:var(--bl-accent-600)"><span style="color:#fff">600</span></div>
+      <div class="pal-cell" style="background:var(--bl-accent-500)"><span style="color:#fff">500</span></div>
+      <div class="pal-cell" style="background:var(--bl-accent-400)"><span style="color:#5a3510">400</span></div>
+      <div class="pal-cell" style="background:var(--bl-accent-300)"><span style="color:#5a3510">300</span></div>
+      <div class="pal-cell" style="background:var(--bl-accent-200)"><span style="color:#5a3510">200</span></div>
+      <div class="pal-cell" style="background:var(--bl-accent-100)"><span style="color:#5a3510">100</span></div>
+    </div>
+  </div>
+
+  <div class="mb-12">
+    <h3 class="sub-title">Semantic Colours</h3>
+    <div class="swatch-grid">
+      <div class="sw"><div class="sw-color" style="background:var(--bl-success-500)"></div><div class="sw-info"><div class="sw-name">Success</div><div class="sw-hex">#1EA672</div></div></div>
+      <div class="sw"><div class="sw-color" style="background:var(--bl-warning-500)"></div><div class="sw-info"><div class="sw-name">Warning</div><div class="sw-hex">#D49E20</div></div></div>
+      <div class="sw"><div class="sw-color" style="background:var(--bl-error-500)"></div><div class="sw-info"><div class="sw-name">Error</div><div class="sw-hex">#E04B3D</div></div></div>
+      <div class="sw"><div class="sw-color" style="background:var(--bl-info-500)"></div><div class="sw-info"><div class="sw-name">Info</div><div class="sw-hex">#3498DB</div></div></div>
+    </div>
+  </div>
+
+  <div>
+    <h3 class="sub-title">Neutral Scale</h3>
+    <p class="note mb-4">Text, backgrounds, borders, disabled states. A warm undertone prevents a cold, sterile feel.</p>
+    <div class="pal-strip">
+      <div class="pal-cell" style="background:var(--bl-gray-950)"><span style="color:#fff">950</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-900)"><span style="color:#fff">900</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-800)"><span style="color:#fff">800</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-700)"><span style="color:#fff">700</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-600)"><span style="color:#fff">600</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-500)"><span style="color:#fff">500</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-400)"><span style="color:#1a1d25">400</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-300)"><span style="color:#1a1d25">300</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-200)"><span style="color:#1a1d25">200</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-100)"><span style="color:#1a1d25">100</span></div>
+      <div class="pal-cell" style="background:var(--bl-gray-50)"><span style="color:#1a1d25">50</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     3 · TYPOGRAPHY
+     ============================================================ -->
+<section class="section" id="typography">
+  <h2 class="sec-title">3. Typography</h2>
+  <p class="sec-sub">Inter — a modern humanist sans-serif optimised for screens. Excellent at small sizes for data, warm enough for public-facing text.</p>
+
+  <div class="ty"><div class="ty-label">Display / H1 — 3rem / 800</div><div class="d-h1">Housing Strategy 2027</div></div>
+  <div class="ty"><div class="ty-label">H2 — 2.25rem / 700</div><div class="d-h2">Public Results Summary</div></div>
+  <div class="ty"><div class="ty-label">H3 — 1.875rem / 700</div><div class="d-h3">Consensus Points</div></div>
+  <div class="ty"><div class="ty-label">H4 — 1.5rem / 600</div><div class="d-h4">Tenant Protections Topic</div></div>
+  <div class="ty"><div class="ty-label">H5 — 1.25rem / 600</div><div class="d-h5">Analysis Snapshot #14</div></div>
+  <div class="ty"><div class="ty-label">H6 — 1.125rem / 600</div><div class="d-h6">Moderation Queue</div></div>
+  <div class="ty"><div class="ty-label">Body — 1rem / 400 / 1.65 line-height</div><p class="d-body">Broad Listener helps organizations collect, structure, visualize, and respond to public voice. It accepts text, audio, and selfie video contributions, converts them into traceable opinion records, and organizes them into themes, consensus points, disagreements, and open questions.</p></div>
+  <div class="ty"><div class="ty-label">Small — 0.875rem / 400</div><p class="d-sm">Last updated 3 hours ago · 1,247 submissions · 89% moderated</p></div>
+  <div class="ty"><div class="ty-label">Overline — 0.75rem / 600 / uppercase / tracked</div><div class="overline">Room Overview</div></div>
+</section>
+
+<!-- ============================================================
+     4 · SPACING & LAYOUT
+     ============================================================ -->
+<section class="section" id="spacing">
+  <h2 class="sec-title">4. Spacing &amp; Layout</h2>
+  <p class="sec-sub">A 4 px base unit with a consistent scale. Generous whitespace signals professionalism and lets data-dense screens breathe.</p>
+
+  <div class="mb-12">
+    <h3 class="sub-title">Spacing Scale</h3>
+    <div style="display:flex;flex-direction:column;gap:var(--sp-3)">
+      <div class="flex items-center gap-4 text-sm"><code style="width:80px">--sp-1</code><div style="width:4px;height:20px;background:var(--bl-primary-400);border-radius:2px"></div><span class="text-muted">4 px — tight inline</span></div>
+      <div class="flex items-center gap-4 text-sm"><code style="width:80px">--sp-2</code><div style="width:8px;height:20px;background:var(--bl-primary-400);border-radius:2px"></div><span class="text-muted">8 px — icon gaps, badge padding</span></div>
+      <div class="flex items-center gap-4 text-sm"><code style="width:80px">--sp-4</code><div style="width:16px;height:20px;background:var(--bl-primary-400);border-radius:2px"></div><span class="text-muted">16 px — form fields, card internals</span></div>
+      <div class="flex items-center gap-4 text-sm"><code style="width:80px">--sp-6</code><div style="width:24px;height:20px;background:var(--bl-primary-400);border-radius:2px"></div><span class="text-muted">24 px — card padding, section gaps</span></div>
+      <div class="flex items-center gap-4 text-sm"><code style="width:80px">--sp-8</code><div style="width:32px;height:20px;background:var(--bl-primary-400);border-radius:2px"></div><span class="text-muted">32 px — section padding</span></div>
+      <div class="flex items-center gap-4 text-sm"><code style="width:80px">--sp-16</code><div style="width:64px;height:20px;background:var(--bl-primary-400);border-radius:2px"></div><span class="text-muted">64 px — major section breaks</span></div>
+    </div>
+  </div>
+
+  <div class="mb-12">
+    <h3 class="sub-title">Border Radius</h3>
+    <div class="flex gap-6 flex-wrap">
+      <div class="text-center"><div style="width:64px;height:64px;background:var(--bl-primary-200);border-radius:var(--r-sm)"></div><div class="text-xs text-muted mt-2">sm 6px</div></div>
+      <div class="text-center"><div style="width:64px;height:64px;background:var(--bl-primary-200);border-radius:var(--r-md)"></div><div class="text-xs text-muted mt-2">md 8px</div></div>
+      <div class="text-center"><div style="width:64px;height:64px;background:var(--bl-primary-200);border-radius:var(--r-lg)"></div><div class="text-xs text-muted mt-2">lg 12px</div></div>
+      <div class="text-center"><div style="width:64px;height:64px;background:var(--bl-primary-200);border-radius:var(--r-xl)"></div><div class="text-xs text-muted mt-2">xl 16px</div></div>
+      <div class="text-center"><div style="width:64px;height:64px;background:var(--bl-primary-200);border-radius:var(--r-full)"></div><div class="text-xs text-muted mt-2">full (pill)</div></div>
+    </div>
+  </div>
+
+  <div>
+    <h3 class="sub-title">Shadow Elevation</h3>
+    <div class="flex gap-6 flex-wrap">
+      <div class="text-center"><div style="width:96px;height:64px;background:#fff;border-radius:var(--r-md);box-shadow:var(--sh-xs)"></div><div class="text-xs text-muted mt-2">xs</div></div>
+      <div class="text-center"><div style="width:96px;height:64px;background:#fff;border-radius:var(--r-md);box-shadow:var(--sh-sm)"></div><div class="text-xs text-muted mt-2">sm</div></div>
+      <div class="text-center"><div style="width:96px;height:64px;background:#fff;border-radius:var(--r-md);box-shadow:var(--sh-md)"></div><div class="text-xs text-muted mt-2">md</div></div>
+      <div class="text-center"><div style="width:96px;height:64px;background:#fff;border-radius:var(--r-md);box-shadow:var(--sh-lg)"></div><div class="text-xs text-muted mt-2">lg</div></div>
+      <div class="text-center"><div style="width:96px;height:64px;background:#fff;border-radius:var(--r-md);box-shadow:var(--sh-xl)"></div><div class="text-xs text-muted mt-2">xl</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     5 · COMPONENT LIBRARY
+     ============================================================ -->
+<section class="section" id="components">
+  <h2 class="sec-title">5. Component Library</h2>
+  <p class="sec-sub">Reusable components designed for both admin workspaces and public-facing surfaces.</p>
+
+  <!-- Buttons -->
+  <div class="mb-12">
+    <h3 class="sub-title">Buttons</h3>
+    <div class="flex flex-wrap gap-3 mb-4">
+      <button class="btn btn-primary">Primary</button>
+      <button class="btn btn-accent">Accent CTA</button>
+      <button class="btn btn-secondary">Secondary</button>
+      <button class="btn btn-outline">Outline</button>
+      <button class="btn btn-ghost">Ghost</button>
+      <button class="btn btn-danger">Destructive</button>
+    </div>
+    <div class="flex flex-wrap gap-3 mb-3">
+      <button class="btn btn-primary btn-sm">Small</button>
+      <button class="btn btn-primary">Default</button>
+      <button class="btn btn-primary btn-lg">Large</button>
+      <button class="btn btn-icon btn-secondary">✕</button>
+    </div>
+    <p class="note">Primary for main actions. Accent for public participation CTAs. Outline for secondary navigation. Ghost for toolbar actions.</p>
+  </div>
+
+  <!-- Badges -->
+  <div class="mb-12">
+    <h3 class="sub-title">Badges &amp; Tags</h3>
+    <div class="flex flex-wrap gap-3 mb-4">
+      <span class="badge badge-primary badge-dot">Published</span>
+      <span class="badge badge-warning badge-dot">Draft</span>
+      <span class="badge badge-neutral badge-dot">Archived</span>
+      <span class="badge badge-success badge-dot">Accepted</span>
+      <span class="badge badge-error badge-dot">Rejected</span>
+      <span class="badge badge-info badge-dot">Pending Review</span>
+    </div>
+    <div class="flex flex-wrap gap-3">
+      <span class="badge badge-neutral">📝 Text</span>
+      <span class="badge badge-accent">🎤 Audio</span>
+      <span class="badge badge-primary">🎥 Video</span>
+      <span class="badge badge-neutral">📊 Import</span>
+      <span class="badge badge-success">✓ Seed</span>
+      <span class="badge badge-info">🔗 External</span>
+    </div>
+  </div>
+
+  <!-- Cards -->
+  <div class="mb-12">
+    <h3 class="sub-title">Cards</h3>
+    <div class="grid3 mb-6">
+      <div class="card">
+        <div class="card-hd"><div class="card-title">🏠 Housing Strategy</div><span class="badge badge-success badge-dot">Live</span></div>
+        <div class="card-desc">Ongoing engagement collecting public input on rental protections, new housing starts, and density policy.</div>
+        <div class="card-meta"><span>3 topics</span><span>1,247 submissions</span><span>2 h ago</span></div>
+      </div>
+      <div class="card">
+        <div class="card-hd"><div class="card-title">📚 Broad Listening Book</div><span class="badge badge-primary badge-dot">Published</span></div>
+        <div class="card-desc">Readers react to chapters, vote on statements, and submit voice reflections on broad listening.</div>
+        <div class="card-meta"><span>7 topics</span><span>892 submissions</span><span>1 d ago</span></div>
+      </div>
+      <div class="card">
+        <div class="card-hd"><div class="card-title">🚌 Transit Feedback</div><span class="badge badge-warning badge-dot">Draft</span></div>
+        <div class="card-desc">Private upload analysis of 3,400 survey responses from last quarter's transit satisfaction survey.</div>
+        <div class="card-meta"><span>1 topic</span><span>3,400 imported</span><span>Pending</span></div>
+      </div>
+    </div>
+    <h4 class="d-h6 mb-4">Stat Cards</h4>
+    <div class="grid4">
+      <div class="card stat-card"><div class="stat-val">1,247</div><div class="stat-lbl">Total Submissions</div><div class="stat-chg stat-up">↑ 23% this week</div></div>
+      <div class="card stat-card"><div class="stat-val">89%</div><div class="stat-lbl">Moderated</div><div class="stat-chg stat-up">↑ 5% today</div></div>
+      <div class="card stat-card"><div class="stat-val">14</div><div class="stat-lbl">Clusters</div><div class="stat-chg text-muted">— stable</div></div>
+      <div class="card stat-card"><div class="stat-val">3</div><div class="stat-lbl">Publications</div><div class="stat-chg stat-up">+1 new</div></div>
+    </div>
+  </div>
+
+  <!-- Forms -->
+  <div class="mb-12">
+    <h3 class="sub-title">Form Elements</h3>
+    <div class="grid2">
+      <div>
+        <div class="fg"><label class="fl">Room Name</label><input class="fi" type="text" placeholder="e.g., Housing Strategy 2027"></div>
+        <div class="fg"><label class="fl">Description</label><textarea class="fi" placeholder="Describe the purpose and scope of this listening room…"></textarea></div>
+        <div class="frow">
+          <div class="fg"><label class="fl">Visibility</label><select class="fi"><option>Public</option><option>Unlisted</option><option>Private</option></select></div>
+          <div class="fg"><label class="fl">Language</label><select class="fi"><option>English</option><option>Français</option><option>Both</option></select></div>
+        </div>
+      </div>
+      <div>
+        <div class="fg"><label class="fl">Options</label>
+          <div style="display:flex;flex-direction:column;gap:var(--sp-3)">
+            <label class="chk-label"><input type="checkbox" checked> Enable statement voting</label>
+            <label class="chk-label"><input type="checkbox" checked> Allow audio submissions</label>
+            <label class="chk-label"><input type="checkbox"> Allow video submissions</label>
+            <label class="chk-label"><input type="checkbox" checked> Require moderation before publishing</label>
+          </div>
+        </div>
+        <div class="fg"><label class="fl">Analysis Mode</label>
+          <div style="display:flex;flex-direction:column;gap:var(--sp-3)">
+            <label class="rad-label"><input type="radio" name="mode" checked> Scheduled snapshots</label>
+            <label class="rad-label"><input type="radio" name="mode"> Continuous analysis</label>
+            <label class="rad-label"><input type="radio" name="mode"> Manual trigger only</label>
+          </div>
+        </div>
+        <div class="fg"><label class="fl mb-3">Participant follow-up</label>
+          <div class="flex items-center gap-3"><label class="toggle"><input type="checkbox" checked><span class="tsl"></span></label><span class="text-sm">Enable opt-in contact collection</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Navigation -->
+  <div class="mb-12">
+    <h3 class="sub-title">Navigation</h3>
+    <nav class="topnav">
+      <div class="topnav-brand">🎧 Broad Listener</div>
+      <div class="topnav-links">
+        <a class="topnav-link active">Dashboard</a>
+        <a class="topnav-link">Rooms</a>
+        <a class="topnav-link">Analysis</a>
+        <a class="topnav-link">Publications</a>
+        <a class="topnav-link">Settings</a>
+      </div>
+      <div class="flex gap-2 items-center">
+        <span class="badge badge-primary">City of Vancouver</span>
+        <button class="btn btn-icon btn-ghost">👤</button>
+      </div>
+    </nav>
+    <div class="crumbs"><a>City of Vancouver</a><span class="sep">/</span><a>Housing Strategy 2027</a><span class="sep">/</span><span>Tenant Protections</span></div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="mb-12">
+    <h3 class="sub-title">Sidebar — Studio / Room / Topic Hierarchy</h3>
+    <div class="sidebar">
+      <div class="sb-sec"><div class="sb-hd">Studio</div><div class="sb-item" style="font-weight:600;color:var(--bl-primary-800)"><span>🏛️</span> City of Vancouver</div></div>
+      <div class="sb-sec">
+        <div class="sb-hd">Rooms</div>
+        <div class="sb-item active"><span>🏠</span> Housing Strategy 2027</div>
+        <div class="sb-item sb-indent"><span>📌</span> Tenant Protections</div>
+        <div class="sb-item sb-indent"><span>📌</span> New Housing Starts</div>
+        <div class="sb-item sb-indent"><span>📌</span> Density Policy</div>
+        <div class="sb-item"><span>🚌</span> Transit Feedback</div>
+        <div class="sb-item"><span>💰</span> Budget 2027</div>
+        <div class="sb-item sb-indent"><span>📌</span> Before Draft</div>
+        <div class="sb-item sb-indent"><span>📌</span> After Draft</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="mb-12">
+    <h3 class="sub-title">Data Table</h3>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Statement</th><th>Agree</th><th>Disagree</th><th>Pass</th><th>Consensus</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>More protected bike lanes would make transit safer</td><td>847</td><td>156</td><td>89</td><td><span class="badge badge-success">High</span></td><td><span class="badge badge-primary badge-dot">Published</span></td></tr>
+          <tr><td>Rent control should apply to all pre-2020 units</td><td>612</td><td>498</td><td>201</td><td><span class="badge badge-warning">Contested</span></td><td><span class="badge badge-primary badge-dot">Published</span></td></tr>
+          <tr><td>Prioritise density over green space</td><td>234</td><td>789</td><td>145</td><td><span class="badge badge-error">Disagreement</span></td><td><span class="badge badge-info badge-dot">Under Review</span></td></tr>
+          <tr><td>Public transit should be free for seniors</td><td>921</td><td>87</td><td>112</td><td><span class="badge badge-success">High</span></td><td><span class="badge badge-success badge-dot">Accepted</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="mb-12">
+    <h3 class="sub-title">Alerts</h3>
+    <div class="alert al-s"><span class="al-icon">✅</span><div><strong>Publication complete.</strong> Housing Strategy results are now live.</div></div>
+    <div class="alert al-w"><span class="al-icon">⚠️</span><div><strong>12 submissions pending moderation.</strong> Review before the next snapshot.</div></div>
+    <div class="alert al-e"><span class="al-icon">❌</span><div><strong>Analysis snapshot failed.</strong> Clustering step timed out. Check audit log.</div></div>
+    <div class="alert al-i"><span class="al-icon">ℹ️</span><div><strong>New cluster detected.</strong> A theme about "childcare costs" emerged in the latest snapshot.</div></div>
+  </div>
+
+  <!-- Progress -->
+  <div>
+    <h3 class="sub-title">Analysis Job Progress</h3>
+    <div class="card" style="max-width:480px">
+      <div class="flex" style="justify-content:space-between;margin-bottom:var(--sp-3)"><span class="text-sm" style="font-weight:600">Snapshot #15 — Processing</span><span class="badge badge-info badge-dot">Clustering</span></div>
+      <div class="pbar mb-3"><div class="pfill pfill-p" style="width:65%"></div></div>
+      <div class="text-xs text-muted">Extraction ✓ → Dedup ✓ → Clustering ● → Labelling ○ → Summary ○ → Done ○</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     6 · PRODUCT-SPECIFIC PATTERNS
+     ============================================================ -->
+<section class="section" id="patterns">
+  <h2 class="sec-title">6. Product-Specific Patterns</h2>
+  <p class="sec-sub">Mockups of key Broad Listener interfaces showing how components compose into real product surfaces.</p>
+
+  <!-- Snapshot Card -->
+  <div class="mb-12">
+    <h3 class="sub-title">Analysis Snapshot Card</h3>
+    <div class="snap" style="max-width:560px">
+      <div class="flex items-center" style="justify-content:space-between;margin-bottom:var(--sp-4)">
+        <div><div class="overline">Analysis Snapshot</div><div style="font-size:var(--bl-fs-xl);font-weight:700;color:var(--bl-gray-900)">#14 — Housing Strategy</div></div>
+        <span class="badge badge-success badge-dot">Complete</span>
+      </div>
+      <div class="snap-stats mb-4">
+        <div class="snap-s"><div class="snap-sv">1,247</div><div class="snap-sl">Submissions</div></div>
+        <div class="snap-s"><div class="snap-sv">14</div><div class="snap-sl">Clusters</div></div>
+        <div class="snap-s"><div class="snap-sv">3</div><div class="snap-sl">Consensus</div></div>
+        <div class="snap-s"><div class="snap-sv">2</div><div class="snap-sl">Contentions</div></div>
+      </div>
+      <div class="text-xs text-muted flex" style="justify-content:space-between"><span>Model: Claude 3.5 Sonnet · ca-central-1</span><span>Apr 8, 2026 14:32 UTC</span></div>
+    </div>
+  </div>
+
+  <!-- Voting Card -->
+  <div class="mb-12">
+    <h3 class="sub-title">Statement Voting Card</h3>
+    <div class="vcard">
+      <div class="overline mb-3">Statement 47 of 128</div>
+      <div class="vstmt">"The city should invest in protected cycling infrastructure even if it means reducing on-street parking in commercial areas."</div>
+      <div class="vacts">
+        <button class="vbtn vbtn-a" onclick="this.classList.toggle('sel')"><div class="vi">👍</div>Agree</button>
+        <button class="vbtn vbtn-d" onclick="this.classList.toggle('sel')"><div class="vi">👎</div>Disagree</button>
+        <button class="vbtn vbtn-p" onclick="this.classList.toggle('sel')"><div class="vi">⏭️</div>Pass</button>
+      </div>
+      <div class="text-xs text-muted mt-4 text-center">Your vote is anonymous · 1,092 people have voted on this statement</div>
+    </div>
+  </div>
+
+  <!-- Consensus Bars -->
+  <div class="mb-12">
+    <h3 class="sub-title">Consensus / Contention Indicators</h3>
+    <div style="max-width:480px">
+      <div class="mb-6">
+        <div class="text-sm mb-2" style="font-weight:600">"Public transit should be free for seniors" <span class="badge badge-success">Strong Consensus</span></div>
+        <div class="cbar"><div class="cb-a" style="width:82%"></div><div class="cb-d" style="width:8%"></div><div class="cb-p" style="width:10%"></div></div>
+        <div class="clegend"><span><span class="cdot" style="background:var(--bl-success-500)"></span>82% agree</span><span><span class="cdot" style="background:var(--bl-error-500)"></span>8% disagree</span><span><span class="cdot" style="background:var(--bl-gray-300)"></span>10% pass</span></div>
+      </div>
+      <div class="mb-6">
+        <div class="text-sm mb-2" style="font-weight:600">"Rent control for all pre-2020 units" <span class="badge badge-warning">Contested</span></div>
+        <div class="cbar"><div class="cb-a" style="width:47%"></div><div class="cb-d" style="width:38%"></div><div class="cb-p" style="width:15%"></div></div>
+        <div class="clegend"><span><span class="cdot" style="background:var(--bl-success-500)"></span>47% agree</span><span><span class="cdot" style="background:var(--bl-error-500)"></span>38% disagree</span><span><span class="cdot" style="background:var(--bl-gray-300)"></span>15% pass</span></div>
+      </div>
+      <div>
+        <div class="text-sm mb-2" style="font-weight:600">"Prioritise density over green space" <span class="badge badge-error">Disagreement</span></div>
+        <div class="cbar"><div class="cb-a" style="width:20%"></div><div class="cb-d" style="width:68%"></div><div class="cb-p" style="width:12%"></div></div>
+        <div class="clegend"><span><span class="cdot" style="background:var(--bl-success-500)"></span>20% agree</span><span><span class="cdot" style="background:var(--bl-error-500)"></span>68% disagree</span><span><span class="cdot" style="background:var(--bl-gray-300)"></span>12% pass</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Evidence Cards -->
+  <div class="mb-12">
+    <h3 class="sub-title">Evidence Cards</h3>
+    <div style="max-width:560px">
+      <div class="ecard">
+        <div class="equote">"I've been waiting for a bus that comes every 45 minutes. If we had proper bike infrastructure I wouldn't need to drive to the grocery store."</div>
+        <div class="esrc"><span class="badge badge-neutral">📝 Text</span><span>Submission #892</span><span>·</span><span>Transit → Route Coverage</span><span>·</span><a href="#">View original</a></div>
+      </div>
+      <div class="ecard" style="border-left-color:var(--bl-accent-400)">
+        <div class="equote">"My biggest concern is that we're building so many condos but nobody can afford them, and we're losing the neighbourhood parks where my kids play."</div>
+        <div class="esrc"><span class="badge badge-accent">🎤 Audio</span><span>Submission #1,103</span><span>·</span><span>Housing → Density Policy</span><span>·</span><a href="#">Play recording</a></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Public Results Mock -->
+  <div class="mb-12">
+    <h3 class="sub-title">Public Results Summary</h3>
+    <div class="results">
+      <div class="results-ban">
+        <div class="overline" style="color:rgba(255,255,255,.7);margin-bottom:var(--sp-2)">City of Vancouver · Housing Strategy 2027</div>
+        <h3>What We Heard: Public Results</h3>
+        <p>1,247 contributions from 834 participants · 14 themes · Published April 8, 2026</p>
+      </div>
+      <div class="results-body">
+        <h4 class="d-h4 mb-4">Key Themes</h4>
+        <div class="flex flex-wrap mb-6">
+          <span class="cluster-tag">🏗️ New Housing Supply (312)</span>
+          <span class="cluster-tag">💰 Affordability Concerns (287)</span>
+          <span class="cluster-tag">🌳 Green Space (198)</span>
+          <span class="cluster-tag">🚌 Transit Connection (156)</span>
+          <span class="cluster-tag">👶 Childcare Access (134)</span>
+          <span class="cluster-tag">🏘️ Neighbourhood Character (89)</span>
+        </div>
+        <h4 class="d-h4 mb-4">Strongest Consensus</h4>
+        <div class="ecard">
+          <div style="font-size:var(--bl-fs-sm);font-weight:600;color:var(--bl-gray-900);margin-bottom:var(--sp-2)">"Public transit should be free for seniors"</div>
+          <div class="cbar mb-2"><div class="cb-a" style="width:82%"></div><div class="cb-d" style="width:8%"></div><div class="cb-p" style="width:10%"></div></div>
+          <div class="text-xs text-muted">82% agreement across 1,120 votes · 47 supporting submissions · <a>View all evidence →</a></div>
+        </div>
+        <div class="text-center mt-6">
+          <div class="text-xs text-muted">Analysis powered by Broad Listener · <a>View methodology</a> · <a>Download report</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Moderation Queue -->
+  <div class="mb-12">
+    <h3 class="sub-title">Moderation Queue</h3>
+    <div style="max-width:640px">
+      <div class="mod-item">
+        <span class="badge badge-neutral" style="margin-top:2px">📝</span>
+        <div class="mod-body">
+          <div class="mod-text">"We need more community gardens in the east side. The wait list is over two years."</div>
+          <div class="mod-meta">Submission #1,248 · Housing → Green Space · 14 min ago</div>
+        </div>
+        <div class="mod-acts">
+          <button class="btn btn-sm btn-outline" style="color:var(--bl-success-600);border-color:var(--bl-success-500)">✓ Accept</button>
+          <button class="btn btn-sm btn-outline" style="color:var(--bl-error-600);border-color:var(--bl-error-500)">✕ Reject</button>
+          <button class="btn btn-sm btn-ghost">⋯</button>
+        </div>
+      </div>
+      <div class="mod-item" style="border-color:var(--bl-warning-500)">
+        <span class="badge badge-accent" style="margin-top:2px">🎤</span>
+        <div class="mod-body">
+          <div class="mod-text" style="color:var(--bl-warning-600)"><em>[Audio transcript]</em> "I think the whole [expletive] council should resign…"</div>
+          <div class="mod-meta">⚠️ Flagged by auto-moderation · #1,249 · Budget 2027 · 8 min ago</div>
+        </div>
+        <div class="mod-acts">
+          <button class="btn btn-sm btn-outline">🔇 Mask</button>
+          <button class="btn btn-sm btn-outline" style="color:var(--bl-error-600);border-color:var(--bl-error-500)">✕ Hide</button>
+          <button class="btn btn-sm btn-ghost">⋯</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Contribution Form -->
+  <div>
+    <h3 class="sub-title">Participant Contribution Form</h3>
+    <div class="contrib">
+      <div class="text-center mb-4"><h4 class="d-h4">Share Your Thoughts</h4><p class="text-sm text-muted">Housing Strategy 2027 → Tenant Protections</p></div>
+      <div class="ctabs">
+        <div class="ctab active">📝 Write</div>
+        <div class="ctab">🎤 Record Audio</div>
+        <div class="ctab">🎥 Record Video</div>
+      </div>
+      <div class="fg"><textarea class="fi" placeholder="What do you think about tenant protections in our city? Share your experience or ideas…" style="min-height:120px"></textarea><div class="fhint">Your submission will be reviewed by a moderator before appearing publicly.</div></div>
+      <div class="flex items-center" style="justify-content:space-between">
+        <label class="chk-label"><input type="checkbox"> Notify me when results are published</label>
+        <button class="btn btn-accent">Submit →</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     7 · DATA VISUALISATION PALETTE
+     ============================================================ -->
+<section class="section" id="dataviz">
+  <h2 class="sec-title">7. Data Visualisation Palette</h2>
+  <p class="sec-sub">Ten harmonious chart colours for opinion clusters, group segments, and categorical analysis.</p>
+
+  <div class="ch-grid mb-6">
+    <div class="ch-sw" style="background:var(--ch-1)"><span>#2A8DC8</span></div>
+    <div class="ch-sw" style="background:var(--ch-2)"><span>#E8913A</span></div>
+    <div class="ch-sw" style="background:var(--ch-3)"><span>#1EA672</span></div>
+    <div class="ch-sw" style="background:var(--ch-4)"><span>#9B59B6</span></div>
+    <div class="ch-sw" style="background:var(--ch-5)"><span>#E04B3D</span></div>
+    <div class="ch-sw" style="background:var(--ch-6)"><span>#D49E20</span></div>
+    <div class="ch-sw" style="background:var(--ch-7)"><span>#1ABC9C</span></div>
+    <div class="ch-sw" style="background:var(--ch-8)"><span>#5469D4</span></div>
+    <div class="ch-sw" style="background:var(--ch-9)"><span>#E67E22</span></div>
+    <div class="ch-sw" style="background:var(--ch-10)"><span>#2ECC71</span></div>
+  </div>
+
+  <div class="mb-12">
+    <h3 class="sub-title">Opinion Distribution Example</h3>
+    <div class="card" style="max-width:560px">
+      <div class="text-sm mb-4" style="font-weight:600">Cluster Size Distribution</div>
+      <div style="display:flex;gap:2px;height:40px;border-radius:var(--r-md);overflow:hidden;margin-bottom:var(--sp-3)">
+        <div style="flex:25;background:var(--ch-1)" title="Housing Supply: 25%"></div>
+        <div style="flex:22;background:var(--ch-2)" title="Affordability: 22%"></div>
+        <div style="flex:16;background:var(--ch-3)" title="Green Space: 16%"></div>
+        <div style="flex:13;background:var(--ch-4)" title="Transit: 13%"></div>
+        <div style="flex:11;background:var(--ch-5)" title="Childcare: 11%"></div>
+        <div style="flex:7;background:var(--ch-6)" title="Character: 7%"></div>
+        <div style="flex:6;background:var(--ch-7)" title="Other: 6%"></div>
+      </div>
+      <div class="flex flex-wrap gap-3 text-xs">
+        <span class="flex items-center gap-2"><span style="width:10px;height:10px;border-radius:2px;background:var(--ch-1)"></span>Housing Supply 25%</span>
+        <span class="flex items-center gap-2"><span style="width:10px;height:10px;border-radius:2px;background:var(--ch-2)"></span>Affordability 22%</span>
+        <span class="flex items-center gap-2"><span style="width:10px;height:10px;border-radius:2px;background:var(--ch-3)"></span>Green Space 16%</span>
+        <span class="flex items-center gap-2"><span style="width:10px;height:10px;border-radius:2px;background:var(--ch-4)"></span>Transit 13%</span>
+        <span class="flex items-center gap-2"><span style="width:10px;height:10px;border-radius:2px;background:var(--ch-5)"></span>Childcare 11%</span>
+        <span class="flex items-center gap-2"><span style="width:10px;height:10px;border-radius:2px;background:var(--ch-6)"></span>Character 7%</span>
+        <span class="flex items-center gap-2"><span style="width:10px;height:10px;border-radius:2px;background:var(--ch-7)"></span>Other 6%</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     8 · DARK MODE PREVIEW
+     ============================================================ -->
+<section class="section" id="dark-mode">
+  <h2 class="sec-title">8. Dark Mode Preview</h2>
+  <p class="sec-sub">A dark variant for admin workspaces. Reduces eye strain during long moderation and analysis sessions.</p>
+
+  <div class="dark">
+    <div class="flex items-center" style="justify-content:space-between;margin-bottom:var(--sp-6)">
+      <div style="font-size:var(--bl-fs-lg);font-weight:700;color:#f0f2f5">🎧 Broad Listener</div>
+      <div class="flex gap-2">
+        <span class="dk-badge">Dark Mode</span>
+        <span class="dk-badge" style="background:rgba(30,166,114,.2);color:#5dd9a8">3 rooms active</span>
+      </div>
+    </div>
+    <div class="dk-card">
+      <div class="flex items-center" style="justify-content:space-between;margin-bottom:var(--sp-3)">
+        <h3 style="font-size:var(--bl-fs-lg)">Housing Strategy 2027</h3>
+        <span class="dk-badge">Live</span>
+      </div>
+      <p class="dk-text mb-4">1,247 submissions · 14 clusters · Last snapshot 2 h ago</p>
+      <div class="flex gap-3"><button class="dk-btn">View Analysis</button><button class="dk-btn-g">Moderation Queue</button></div>
+    </div>
+    <div class="dk-card">
+      <div class="fl" style="color:#9da3b4;margin-bottom:var(--sp-2)">Quick search</div>
+      <input class="dk-input" type="text" placeholder="Search submissions, statements, clusters…">
+    </div>
+    <div class="dk-card" style="margin-bottom:0">
+      <div class="text-sm mb-3" style="font-weight:600;color:#f0f2f5">Snapshot #15 Progress</div>
+      <div class="pbar mb-3" style="background:#393d4a"><div class="pfill pfill-p" style="width:65%"></div></div>
+      <div class="dk-text">Extraction ✓ → Dedup ✓ → Clustering ● → Labelling ○ → Summary ○</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     FOOTER
+     ============================================================ -->
+<section style="padding:var(--sp-12) 0;text-align:center">
+  <div class="overline mb-3">Broad Listener Design System v0.5</div>
+  <p class="text-sm text-muted">Built for trust. Designed for clarity. Ready for civic-scale listening.</p>
+  <p class="text-xs text-muted mt-4">All design tokens are defined as CSS custom properties in <code>:root</code> for easy adoption into any frontend framework.</p>
+</section>
+
+</div><!-- /.container -->
+</body>
+</html>

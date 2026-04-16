@@ -103,6 +103,29 @@ Prefer designs that keep:
 - prompt/model/version metadata explicit
 - run timing explicit
 
+### 3a. Treat LLM Outputs As Durable Assets
+
+Paid-for LLM outputs are not scratch data.
+
+Agents working in this repo should assume:
+
+- LLM-generated artifacts should be durable and reusable by default
+- destructive deletion of generated artifacts is exceptional, not normal workflow
+- runs should be append-only or archived, not casually replaced
+- if a workflow needs a "fresh" start, prefer archiving old outputs over deleting them
+- if a response can be reused safely by fingerprint, it should be cached and reused
+
+Do not archive or replace generated runs in an active project unless the user explicitly asks for that exact action.
+
+When testing, avoid spending user money unnecessarily:
+
+- prefer compatibility checks and resume paths over rerunning paid steps
+- prefer a dedicated throwaway test project for CLI smoke tests
+- do not use the main working project as a test sandbox when LLM calls are involved
+
+Shared cacheable LLM outputs should live outside project-specific data when that improves reuse.
+The expected direction for this repo is a separate `llm-cache/` area for fingerprinted reusable responses.
+
 ### 4. Default To Narrow, Real Implementations
 
 Do not add large placeholder frameworks just to look complete.
@@ -153,5 +176,8 @@ When in doubt:
 
 - keep source records immutable
 - keep derived records explicit
+- keep LLM-generated artifacts durable
+- prefer archive-over-delete for generated runs
+- test in a throwaway project, not the user's active corpus
 - keep package boundaries clean
 - keep product reasoning in the wiki

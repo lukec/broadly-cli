@@ -18,7 +18,7 @@ Build a local-first TypeScript CLI that can:
 2. ingest a real consultation dataset
 3. preprocess comments into extracted opinion units
 4. run map-oriented analysis with a small perspective-search loop
-5. generate a local static report site with evidence drill-down
+5. generate a local report bundle and view it in `broadly web` with evidence drill-down
 
 The first proof target is narrow:
 
@@ -36,7 +36,7 @@ Included:
 - Bedrock-backed inference
 - map-first analysis pipeline
 - a small alternate-perspective search space
-- local static report output
+- local JSON report output rendered through `broadly web`
 - timing and provenance capture
 
 Deferred:
@@ -123,7 +123,7 @@ Exit:
 
 Current status:
 
-- scaffolded
+- complete for `v0`
 
 ### Phase 1: Ingest And Opinion Extraction
 
@@ -144,6 +144,12 @@ Exit:
 
 - one benchmark corpus can be ingested into inspectable opinion-unit artifacts
 
+Current status:
+
+- working on a real benchmark corpus
+- ingest, normalization, opinion extraction, resume, archive, and cache boundaries are in place
+- model/provider registry is in place for Bedrock, Google Cloud, and OpenAI
+
 ### Phase 2: Map Pipeline And Evidence Report
 
 Goal:
@@ -153,16 +159,29 @@ Goal:
 Deliverables:
 
 - embedding generation
-- dimensionality reduction
-- clustering
+- dimensionality reduction with a narrow first search space:
+  - `umap`
+  - `pacmap`
+- clustering with a narrow first search space:
+  - two cluster counts per run
 - basic cluster labels
 - brief narrative summary
-- local static report site
+- report bundle rendered through `broadly web`
 - evidence drill-down from summary to source
 
 Exit:
 
 - one dataset produces a locally viewable report that is genuinely useful
+
+Current status:
+
+- embeddings are implemented and cached
+- `umap` is implemented
+- `pacmap` is still planned, not yet implemented
+- two cluster counts per run are implemented
+- LLM-based cluster labeling, perspective summaries, and semantic higher-level theme merging are implemented
+- report viewing in `broadly web` is implemented with scatterplots, cluster/theme exploration, and source-opinion drill-down
+- remaining work is mainly report clarity, perspective switching, and overall usefulness
 
 ### Phase 3: Perspective Search
 
@@ -172,9 +191,19 @@ Goal:
 
 Initial search axes:
 
-- cluster count
-- dimensionality reduction variant or settings
-- synthesis stance: balanced, consensus, dissent
+- dimensionality reduction method:
+  - `umap`
+  - `pacmap`
+- cluster count:
+  - two configured values per project
+- synthesis stance:
+  - `balanced`
+  - `dissent`
+
+Notes:
+
+- keep the first search space intentionally small so runs remain legible and comparable
+- do not add a separate `consensus` synthesis mode in `v0`; the balanced pass should already surface clear areas of agreement where they exist
 
 Deliverables:
 
@@ -186,6 +215,14 @@ Deliverables:
 Exit:
 
 - one run produces meaningful alternate perspectives with visible tradeoffs
+
+Current status:
+
+- `balanced` and `dissent` perspectives are implemented
+- report output can render multiple perspectives
+- explicit per-perspective scoring is still missing
+- comparison between alternative analyses or runs is still thin
+- this phase is only partially complete
 
 ### Phase 4: Evaluation Harness
 
@@ -204,6 +241,13 @@ Deliverables:
 Exit:
 
 - runs can be compared on usefulness, relevance, and legibility
+
+Current status:
+
+- run manifests, timing capture, and project logging are implemented
+- evaluation against official findings is not yet implemented
+- lightweight human review tooling is not yet implemented
+- cross-run benchmark comparison is not yet implemented
 
 ### Phase 5: Hosted Extraction
 
@@ -241,15 +285,19 @@ project/
     raw/
     normalized/
     opinions/
+    embeddings/
+  llm-cache/
   runs/
     <run-id>/
       manifest.json
-      timings.json
+      reductions/
+      clusters/
+      hierarchies/
       perspectives/
-      report-bundle.json
   reports/
     <run-id>/
-      site/
+      report-bundle.json
+  archive/
 ```
 
 This structure should remain the source of truth for local runs.
@@ -352,11 +400,17 @@ Near-term commands:
 
 1. `broadly init`
 2. `broadly ingest`
-3. `broadly run`
+3. `broadly opinions`
 4. `broadly report`
-5. `broadly compare`
+5. `broadly analysis`
+6. `broadly web`
+7. `broadly compare` later
 
-Only `init` exists today. The next implementation priority is `ingest`.
+Current working surface is broader than the initial bootstrap plan. The immediate implementation focus is now on:
+
+1. improving report clarity and perspective switching
+2. improving analysis quality and evaluation
+3. adding cross-run comparison and benchmark review
 
 ## Acceptance Criteria
 
@@ -371,13 +425,20 @@ Only `init` exists today. The next implementation priority is `ingest`.
 
 ## Immediate Next Steps
 
-1. Implement `broadly ingest`.
-2. Implement CSV decoding with explicit encoding support, starting with `cp1252`.
-3. Persist `rawRow` JSON blobs and normalized source-record JSON blobs separately.
-4. Define the extracted opinion-unit format.
-5. Add a Bedrock client boundary for extraction tasks.
-6. Create a real project config for `data/opengov-2017/engagement-compilation.csv`.
-7. Persist ingest outputs into `data/raw`, `data/normalized`, and later `data/opinions`.
+1. Finish Phase 2 by tightening report usability:
+   - clearer perspective switching at the top of the report
+   - stronger explanation of what differs between perspectives
+   - more legible cluster and theme navigation
+2. Improve Phase 2 analysis quality:
+   - implement `pacmap`
+   - improve semantic theme merging reliability
+   - avoid low-quality fallback artifacts
+3. Start Phase 3 comparison tooling:
+   - per-perspective scoring
+   - run comparison view/output
+4. Start Phase 4 benchmark work:
+   - compare Broadly outputs with official summaries for benchmark corpora
+   - add lightweight review checklists and evaluation notes
 
 ## Session Notes Worth Preserving
 
@@ -388,6 +449,8 @@ Recent implementation decisions that future sessions should assume unless explic
 - author and timestamp are important fields when available, but must remain optional
 - imported labels from a source dataset should remain annotations, not be upgraded automatically into Broadly analysis truth
 - `engagement-compilation.csv` should be treated as a benchmark corpus for the first importer
+- paid-for LLM outputs are durable assets and should be archived, not casually deleted
+- semantic theme merging should use real LLM output or fail cleanly, not heuristic fake themes
 
 ## Change Discipline
 
