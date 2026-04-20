@@ -132,13 +132,20 @@ export async function runOpenAiTextPrompt(options: {
 
   const responseJson = (await response.json()) as {
     output_text?: unknown;
+    output?: Array<{
+      type?: unknown;
+      content?: Array<{
+        type?: unknown;
+        text?: unknown;
+      }>;
+    }>;
     incomplete_details?: {
       reason?: unknown;
     } | null;
     status?: unknown;
   };
   const text =
-    typeof responseJson.output_text === "string" ? responseJson.output_text.trim() : "";
+    extractOpenAiResponseText(responseJson).trim();
 
   if (text.length === 0) {
     throw new Error("The OpenAI model returned an empty response.");
@@ -153,6 +160,29 @@ export async function runOpenAiTextPrompt(options: {
           ? responseJson.status
           : null
   };
+}
+
+function extractOpenAiResponseText(responseJson: {
+  output_text?: unknown;
+  output?: Array<{
+    type?: unknown;
+    content?: Array<{
+      type?: unknown;
+      text?: unknown;
+    }>;
+  }>;
+}): string {
+  if (typeof responseJson.output_text === "string" && responseJson.output_text.trim().length > 0) {
+    return responseJson.output_text;
+  }
+
+  const outputText = (responseJson.output ?? [])
+    .flatMap((item) => item.content ?? [])
+    .filter((item) => item.type === "output_text" && typeof item.text === "string")
+    .map((item) => item.text as string)
+    .join("");
+
+  return outputText;
 }
 
 export async function runOpenAiEmbedding(options: {

@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { createInterface } from "node:readline/promises";
 
 import { parseProjectConfig, type BroadlyProjectConfig } from "@broadly/config";
 import { resolveProjectPaths, sha256Hex } from "@broadly/core";
@@ -376,15 +377,21 @@ interface ClusterSelectionTarget {
 
 export async function runQa(options: QaCommandOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
+  const phases = await resolveSelectedQaPhases(options.phase);
+
+  if (phases.length === 0) {
+    process.stdout.write("No QA phases selected. Nothing to do.\n");
+    return;
+  }
+
   await withProjectActionLog({
     projectRoot,
     command: "qa",
     details: {
       run: options.run ?? "(current-or-latest)",
-      phases: resolveQaPhases(options.phase).join(", ")
+      phases: phases.join(", ")
     },
     action: async () => {
-      const phases = resolveQaPhases(options.phase);
       const sampling = resolveSamplingConfig(options);
       const projectPaths = resolveProjectPaths(projectRoot);
       const config = parseProjectConfig(await readFile(projectPaths.configPath, "utf8"));
@@ -2245,7 +2252,7 @@ Rationale: One or two sentences explaining the judgment
 
 function resolveQaPhases(values: string[] | undefined): QaPhase[] {
   if (values === undefined || values.length === 0) {
-    return ["phase1-structural"];
+    return ["phase1-structural", "phase2-cluster-membership", "phase3-theme-support"];
   }
 
   const phases = new Set<QaPhase>();
@@ -2284,6 +2291,51 @@ function resolveQaPhases(values: string[] | undefined): QaPhase[] {
   }
 
   return [...phases];
+}
+
+async function resolveSelectedQaPhases(values: string[] | undefined): Promise<QaPhase[]> {
+  const phases = resolveQaPhases(values);
+
+  if (values !== undefined && values.length > 0) {
+    return phases;
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(
+      "No QA phases were specified and interactive confirmation is unavailable. Pass --phase explicitly when not running interactively."
+    );
+  }
+
+  const selected: QaPhase[] = [];
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  try {
+    for (const phase of phases) {
+      const answer = await readline.question(`${describeQaPhasePrompt(phase)} [y/N]: `);
+
+      if (answer === "y" || answer === "Y") {
+        selected.push(phase);
+      }
+    }
+  } finally {
+    readline.close();
+  }
+
+  return selected;
+}
+
+function describeQaPhasePrompt(phase: QaPhase): string {
+  switch (phase) {
+    case "phase1-structural":
+      return "Run Phase 1 structural QA";
+    case "phase2-cluster-membership":
+      return "Run Phase 2 cluster membership QA (uses model calls)";
+    case "phase3-theme-support":
+      return "Run Phase 3 theme and merge QA (uses model calls)";
+  }
 }
 
 function resolveSamplingConfig(options: QaCommandOptions): QaSamplingConfig {

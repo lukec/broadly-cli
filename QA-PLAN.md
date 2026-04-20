@@ -27,6 +27,9 @@ Recommended defaults:
 - `--run` defaults to `runs/current-run.txt`, then latest analysis run
 - report bundle is read from `reports/<run-id>/report-bundle.json` when present
 - judge model for later phases defaults to `qa_model`, with `--model <alias>` as an override
+- when no `--phase` flags are provided, Broadly should treat all currently implemented phases as enabled candidates
+- when no `--phase` flags are provided, Broadly should prompt before each phase and require `y` or `Y` to proceed
+- this prompt-first behavior is important because later phases spend tokens and should default to saving cost
 
 Recommended later options:
 
@@ -42,6 +45,7 @@ Sampling resolution for model-assisted phases:
 1. `--qa-all` overrides all sampling limits
 2. otherwise use explicit CLI sampling options when present
 3. otherwise use configured defaults
+4. if no explicit sampling options are present and `--qa-all` is not set, semantic QA should sample by default rather than reviewing every eligible item
 
 `--qa-all` is intended for gold-standard benchmark passes where cost is acceptable and we want the most complete possible criticism artifact set.
 
@@ -450,6 +454,13 @@ Why this phase matters:
 - write larger artifact sets rather than collapsing results into only sampled summaries
 - print a clear cost warning before running if model calls are required
 
+Default non-`--qa-all` behavior in this phase:
+
+- sample cluster members by default
+- use explicit `--sample-size` / `--sample-percent` when provided
+- otherwise prefer a bounded default sample so broad QA passes do not silently explode in cost
+- show progress as clusters are reviewed so long-running judge passes do not look hung
+
 ### Phase 3: Cluster Theme Support And Merge Review
 
 Add review of what the clusters claim to be about.
@@ -476,6 +487,13 @@ Why this phase matters:
 - review all eligible source comments for theme-support checks where feasible
 - review all theme merges in the run, not only a sampled subset
 - allow cluster-level exhaustive review even if report-level review remains summarized
+
+Default non-`--qa-all` behavior in this phase:
+
+- sample source opinions per cluster for theme-support review
+- keep theme-merge review bounded by the selected themes in scope
+- show explicit progress output or progress bars for both cluster theme-support review and theme merge review
+- do not leave the CLI looking idle while model-assisted review is running
 
 ### Phase 4: Perspective And Report QA
 
@@ -558,6 +576,17 @@ This order keeps the system honest:
 ## Recommendation
 
 `broadly qa` should begin as a structural gate plus durable scorecard writer, not as a giant all-at-once frontier-model workflow.
+
+## Current Status
+
+As of the current implementation:
+
+- Phase 1 structural gate is implemented
+- Phase 2 cluster membership review is implemented
+- Phase 3 cluster theme-support and merge review is implemented
+- default no-flag QA should be a prompted, opt-in walk through all currently implemented phases
+- semantic QA should stay sampled-by-default unless `--qa-all` is explicitly requested
+- long-running semantic phases should show progress clearly so users can tell the tool is still working
 
 Phase 1 is the right first slice because it creates:
 
