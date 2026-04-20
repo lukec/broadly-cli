@@ -134,6 +134,38 @@ interface ClusterArtifact {
   clusters: ClusterSummary[];
 }
 
+const ANALYSIS_META_TOKENS = new Set([
+  "cluster",
+  "clusters",
+  "comment",
+  "comments",
+  "concern",
+  "concerns",
+  "feedback",
+  "group",
+  "grouped",
+  "grouping",
+  "groups",
+  "include",
+  "includes",
+  "including",
+  "issue",
+  "issues",
+  "opinion",
+  "opinions",
+  "perspective",
+  "perspectives",
+  "shared",
+  "theme",
+  "themes",
+  "topic",
+  "topics",
+  "view",
+  "views",
+  "viewpoint",
+  "viewpoints"
+]);
+
 interface PerspectivePlanArtifact {
   createdAt: string;
   viewName?: string;
@@ -269,9 +301,9 @@ interface AnalysisRunManifest {
   output: {
     embeddingsDir: string;
     reductionsDir: string;
-      clustersDir: string;
-      hierarchiesDir: string;
-      perspectivesDir: string;
+    clustersDir: string;
+    hierarchiesDir: string;
+    perspectivesDir: string;
     embeddingsReady: number;
     embeddingsGenerated: number;
     embeddingsReused: number;
@@ -281,7 +313,9 @@ interface AnalysisRunManifest {
     reductionsFailed: number;
     clusterArtifactsWritten: number;
     clusterArtifactsFailed: number;
+    labelArtifactsFailed: number;
     hierarchyArtifactsWritten: number;
+    hierarchyArtifactsFailed: number;
     perspectiveArtifactsWritten: number;
   };
 }
@@ -512,7 +546,9 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       let reductionsFailed = 0;
       let clusterArtifactsWritten = 0;
       let clusterArtifactsFailed = 0;
+      let labelArtifactsFailed = 0;
       let hierarchyArtifactsWritten = 0;
+      let hierarchyArtifactsFailed = 0;
       let perspectiveArtifactsWritten = 0;
       let reductionsGenerated = 0;
       let reductionsReused = 0;
@@ -647,7 +683,9 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
             reductionsFailed,
             clusterArtifactsWritten,
             clusterArtifactsFailed,
+            labelArtifactsFailed,
             hierarchyArtifactsWritten,
+            hierarchyArtifactsFailed,
             perspectiveArtifactsWritten
           }
         };
@@ -948,6 +986,7 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       ).length;
       const labelingProgress = createStageProgressReporter("clusters", readyClusterArtifactCount);
       let labeledClusterArtifactsProcessed = 0;
+      let labeledClusterArtifactsFailed = 0;
 
       for (const clusterArtifactEntry of clusterArtifactEntries) {
         const existingArtifact = clusterArtifactEntry.artifact;
@@ -976,24 +1015,29 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
           labelsGenerated += 1;
           await writeJsonFile(clusterArtifactEntry.path, labeledArtifact);
         }
-        labeledClusterArtifacts.push({
-          view: clusterArtifactEntry.view,
-          resolvedView: clusterArtifactEntry.resolvedView,
-          path: clusterArtifactEntry.path,
-          artifact: labeledArtifact
-        });
+        if (labeledArtifact.labeling.method === "llm-cluster-labeling") {
+          labeledClusterArtifacts.push({
+            view: clusterArtifactEntry.view,
+            resolvedView: clusterArtifactEntry.resolvedView,
+            path: clusterArtifactEntry.path,
+            artifact: labeledArtifact
+          });
+        } else {
+          labeledClusterArtifactsFailed += 1;
+          labelArtifactsFailed += 1;
+        }
         labeledClusterArtifactsProcessed += 1;
         labelingProgress.tick({
           processed: labeledClusterArtifactsProcessed,
           generated: labelsGenerated,
           reused: labelsReused,
-          failed: 0
+          failed: labeledClusterArtifactsFailed
         });
       }
 
       labelingProgress.finish();
       process.stdout.write(
-        `${formatDetailLine("Summary", `${labeledClusterArtifactsProcessed} labeled · ${labelsGenerated} generated · ${labelsReused} reused`)}\n`
+        `${formatDetailLine("Summary", `${labeledClusterArtifacts.length} ready · ${labelsGenerated} generated · ${labelsReused} reused${labeledClusterArtifactsFailed === 0 ? "" : ` · ${labeledClusterArtifactsFailed} failed`}`)}\n`
       );
       process.stdout.write("\n");
       await checkpointAnalysisManifest("running");
@@ -1020,12 +1064,15 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
         const hierarchyPath = path.join(hierarchiesDir, `${view.name}.json`);
         await writeJsonFile(hierarchyPath, hierarchyArtifact);
         hierarchyArtifactsWritten += 1;
+        if (hierarchyArtifact.status === "failed") {
+          hierarchyArtifactsFailed += 1;
+        }
         hierarchyArtifactsProcessed += 1;
         hierarchyProgress.tick({
           processed: hierarchyArtifactsProcessed,
           generated: hierarchyArtifactsWritten,
           reused: 0,
-          failed: hierarchyArtifact.status === "failed" ? 1 : 0
+          failed: hierarchyArtifactsFailed
         });
       }
 
@@ -1084,7 +1131,11 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       }
 
       const finalStatus =
-        failedOpinions > 0 || reductionsFailed > 0 || clusterArtifactsFailed > 0
+        failedOpinions > 0 ||
+        reductionsFailed > 0 ||
+        clusterArtifactsFailed > 0 ||
+        labelArtifactsFailed > 0 ||
+        hierarchyArtifactsFailed > 0
           ? "completed-with-failures"
           : "completed";
 
@@ -1110,9 +1161,9 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
         formatDetailLine("Resume", autoResumed ? "Compatible existing run reused" : "Fresh analysis run"),
         formatDetailLine("Embeddings", `${embeddingsReady} ready · ${embeddingsGenerated} generated · ${embeddingsReused} reused · ${failedOpinions} failed`),
         formatDetailLine("Reductions", reductionSummary === "" ? "none" : `${reductionSummary} · ${reductionsGenerated} generated · ${reductionsReused} reused`),
-        formatDetailLine("Clusters", `${clusterArtifactsWritten} total · ${clustersGenerated} generated · ${clustersReused} reused`),
-        formatDetailLine("Labels", `${labelsGenerated} generated · ${labelsReused} reused`),
-        formatDetailLine("Hierarchies", String(hierarchyArtifactsWritten)),
+        formatDetailLine("Clusters", `${clusterArtifactsWritten} total · ${clustersGenerated} generated · ${clustersReused} reused${clusterArtifactsFailed === 0 ? "" : ` · ${clusterArtifactsFailed} failed`}`),
+        formatDetailLine("Labels", `${labelsGenerated} generated · ${labelsReused} reused${labelArtifactsFailed === 0 ? "" : ` · ${labelArtifactsFailed} failed`}`),
+        formatDetailLine("Hierarchies", `${hierarchyArtifactsWritten} total${hierarchyArtifactsFailed === 0 ? "" : ` · ${hierarchyArtifactsFailed} failed`}`),
         formatDetailLine("Perspectives", `${perspectiveArtifactsWritten} total · ${perspectivesGenerated} generated · ${perspectivesReused} reused`),
         formatDetailLine("Manifest", toPortableRelativePath(projectRoot, analysisManifestPath))
       ];
@@ -1780,7 +1831,9 @@ async function buildPerspectivePlanArtifact(
   )
     .filter(
       (item): item is { artifactPath: string; artifact: ClusterArtifact } =>
-        item.artifact !== null && item.artifact.status === "ready"
+        item.artifact !== null &&
+        item.artifact.status === "ready" &&
+        item.artifact.labeling.method === "llm-cluster-labeling"
     )
     .sort((a, b) => {
       if (a.artifact.method !== b.artifact.method) {
@@ -1904,61 +1957,75 @@ async function labelClusterArtifactWithLlm(options: {
   promptTemplate: string;
 }): Promise<ClusterArtifact> {
   const prompt = buildClusterLabelingPrompt(options.promptTemplate, options.artifact);
+  const attemptCount = 3;
+  let latestRawText = "";
+  let latestStopReason: string | null = null;
+  let latestError = "Cluster labeling did not produce a valid response.";
 
-  try {
-    const result = await runTextPromptWithModel({
-      model: options.analysisModel,
-      prompt,
-      maxOutputTokens: 4096,
-      projectRoot: options.projectRoot,
-      temperature: 0
-    });
-    const parsed = parseClusterLabelingResponse(result.text);
-    const updatedClusters = options.artifact.clusters.map((cluster) => {
-      const llmCluster = parsed.get(cluster.clusterId);
+  for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
+    try {
+      const result = await runTextPromptWithModel({
+        model: options.analysisModel,
+        prompt:
+          attempt === 1
+            ? prompt
+            : buildClusterLabelingRetryPrompt(prompt, latestRawText, latestError),
+        maxOutputTokens: 8192,
+        projectRoot: options.projectRoot,
+        temperature: 0
+      });
+      latestRawText = result.text;
+      latestStopReason = result.stopReason;
+      const parsed = parseClusterLabelingResponse(result.text, options.artifact);
+      const updatedClusters = options.artifact.clusters.map((cluster) => {
+        const llmCluster = parsed.get(cluster.clusterId);
 
-      if (llmCluster === undefined) {
-        return cluster;
-      }
+        if (llmCluster === undefined) {
+          return cluster;
+        }
+
+        return {
+          ...cluster,
+          label: llmCluster.nameplate,
+          summary: llmCluster.description
+        };
+      });
 
       return {
-        ...cluster,
-        label: llmCluster.nameplate,
-        summary: llmCluster.description
+        ...options.artifact,
+        labeling: {
+          method: "llm-cluster-labeling",
+          model: options.analysisModel,
+          stopReason: result.stopReason,
+          prompt: {
+            path: options.promptPath,
+            sha256: options.promptSha256
+          },
+          rawText: result.text,
+          createdAt: new Date().toISOString()
+        },
+        clusters: updatedClusters
       };
-    });
-
-    return {
-      ...options.artifact,
-      labeling: {
-        method: "llm-cluster-labeling",
-        model: options.analysisModel,
-        stopReason: result.stopReason,
-        prompt: {
-          path: options.promptPath,
-          sha256: options.promptSha256
-        },
-        rawText: result.text,
-        createdAt: new Date().toISOString()
-      },
-      clusters: updatedClusters
-    };
-  } catch (error) {
-    return {
-      ...options.artifact,
-      labeling: {
-        method: "heuristic-fallback",
-        model: options.analysisModel,
-        stopReason: null,
-        prompt: {
-          path: options.promptPath,
-          sha256: options.promptSha256
-        },
-        error: error instanceof Error ? error.message : String(error),
-        createdAt: new Date().toISOString()
-      }
-    };
+    } catch (error) {
+      latestError = error instanceof Error ? error.message : String(error);
+    }
   }
+
+  return {
+    ...options.artifact,
+    labeling: {
+      method: "heuristic-fallback",
+      model: options.analysisModel,
+      stopReason: latestStopReason,
+      prompt: {
+        path: options.promptPath,
+        sha256: options.promptSha256
+      },
+      ...(latestRawText === "" ? {} : { rawText: latestRawText }),
+      error: `Cluster labeling failed after ${attemptCount} attempts. ${latestError}`,
+      createdAt: new Date().toISOString()
+    }
+  };
 }
 
 async function summarizePerspectiveWithLlm(
@@ -2092,10 +2159,16 @@ ${highlights}`.trim();
 }
 
 function parseClusterLabelingResponse(
-  responseText: string
+  responseText: string,
+  artifact: ClusterArtifact
 ): Map<number, { nameplate: string; description: string }> {
   const blocks = splitHeaderBlocks(responseText);
   const labeledClusters = new Map<number, { nameplate: string; description: string }>();
+  const expectedClusterIds = new Set(artifact.clusters.map((cluster) => cluster.clusterId));
+  const seenClusterIds = new Set<number>();
+  const clusterById = new Map(
+    artifact.clusters.map((cluster) => [cluster.clusterId, cluster] as const)
+  );
 
   for (const block of blocks) {
     const clusterId = parseIntegerHeader(block, "Cluster-ID");
@@ -2106,15 +2179,46 @@ function parseClusterLabelingResponse(
       continue;
     }
 
+    const cluster = clusterById.get(clusterId);
+
+    if (cluster === undefined) {
+      throw new Error(`Model response referenced unexpected Cluster-ID ${clusterId}.`);
+    }
+
+    if (seenClusterIds.has(clusterId)) {
+      throw new Error(`Model response labeled Cluster-ID ${clusterId} more than once.`);
+    }
+
+    const evidenceTokens = collectClusterEvidenceTokens(cluster);
+
+    validateShortGroundedLabel({
+      label: nameplate,
+      evidenceTokens,
+      contextLabel: `Cluster-ID ${clusterId} nameplate`
+    });
+    validateGroundedSummaryText({
+      text: description,
+      evidenceTokens,
+      contextLabel: `Cluster-ID ${clusterId} description`,
+      allowMetaLeadIn: true
+    });
+
+    seenClusterIds.add(clusterId);
     labeledClusters.set(clusterId, {
-      nameplate,
-      description
+      nameplate: normalizeWhitespace(nameplate),
+      description: normalizeWhitespace(description)
     });
   }
 
   if (labeledClusters.size === 0) {
     throw new Error(
       "Model response did not match the required analysis cluster labeling format."
+    );
+  }
+
+  if (seenClusterIds.size !== expectedClusterIds.size) {
+    throw new Error(
+      `Model response labeled ${seenClusterIds.size} of ${expectedClusterIds.size} clusters.`
     );
   }
 
@@ -2179,7 +2283,7 @@ async function buildSemanticHierarchyArtifact(options: {
           attempt === 1
             ? prompt
             : buildSemanticMergeRetryPrompt(prompt, latestRawText, latestError),
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192,
         projectRoot: options.projectRoot,
         temperature: 0
       });
@@ -2334,6 +2438,9 @@ function parseSemanticMergeResponse(
   }> = [];
   const seenClusterIds = new Set<number>();
   const expectedClusterIds = new Set(artifact.clusters.map((cluster) => cluster.clusterId));
+  const clusterById = new Map(
+    artifact.clusters.map((cluster) => [cluster.clusterId, cluster] as const)
+  );
 
   for (const block of blocks) {
     const themeId = parseIntegerHeader(block, "Theme-ID");
@@ -2359,12 +2466,43 @@ function parseSemanticMergeResponse(
       seenClusterIds.add(clusterId);
     }
 
+    const evidenceTokens = new Set<string>();
+    for (const clusterId of clusterIds) {
+      const cluster = clusterById.get(clusterId);
+
+      if (cluster === undefined) {
+        continue;
+      }
+
+      for (const token of collectClusterEvidenceTokens(cluster)) {
+        evidenceTokens.add(token);
+      }
+    }
+
+    validateShortGroundedLabel({
+      label: themeLabel,
+      evidenceTokens,
+      contextLabel: `Theme-ID ${themeId} label`
+    });
+    validateGroundedSummaryText({
+      text: themeSummary,
+      evidenceTokens,
+      contextLabel: `Theme-ID ${themeId} summary`,
+      allowMetaLeadIn: true
+    });
+    validateGroundedSummaryText({
+      text: mergeRationale,
+      evidenceTokens,
+      contextLabel: `Theme-ID ${themeId} merge rationale`,
+      allowMetaLeadIn: false
+    });
+
     themes.push({
       themeId,
-      themeLabel,
-      themeSummary,
+      themeLabel: normalizeWhitespace(themeLabel),
+      themeSummary: normalizeWhitespace(themeSummary),
       clusterIds,
-      mergeRationale
+      mergeRationale: normalizeWhitespace(mergeRationale)
     });
   }
 
@@ -2391,6 +2529,8 @@ Validation error: ${parseError}
 Return the full answer again from scratch.
 - Use only the required headers.
 - Assign every cluster exactly once.
+- Favor leaving clusters separate over forcing a weak merge.
+- Use natural-language labels, not bags of keywords.
 - Do not add commentary before or after the theme blocks.
 
 ## Previous invalid response
@@ -2409,6 +2549,166 @@ function parseIntegerListHeader(lines: string[], headerName: string): number[] {
     .split(/[|,]/)
     .map((value) => Number.parseInt(value.trim(), 10))
     .filter((value) => Number.isFinite(value));
+}
+
+function buildClusterLabelingRetryPrompt(
+  originalPrompt: string,
+  previousResponseText: string,
+  parseError: string
+): string {
+  return `${originalPrompt}
+
+## Retry instructions
+
+Your previous response did not satisfy the required output contract.
+
+Validation error: ${parseError}
+
+Return the full answer again from scratch.
+- Label every cluster exactly once.
+- Use natural-language noun phrases, not keyword lists.
+- Do not use commas, pipes, or semicolons inside Nameplate values.
+- Ground the label and description in the provided evidence.
+- Do not add commentary before or after the cluster blocks.
+
+## Previous invalid response
+
+${previousResponseText}`.trim();
+}
+
+function collectClusterEvidenceTokens(cluster: ClusterSummary): Set<string> {
+  const tokens = new Set<string>();
+  const addText = (value: string | undefined): void => {
+    if (value === undefined) {
+      return;
+    }
+
+    for (const token of tokenize(value)) {
+      if (!ANALYSIS_META_TOKENS.has(token)) {
+        tokens.add(token);
+      }
+    }
+  };
+
+  for (const term of cluster.topTerms) {
+    addText(term);
+  }
+
+  addText(cluster.label);
+  addText(cluster.summary);
+
+  for (const opinion of cluster.representativeOpinions) {
+    addText(opinion.opinionText);
+    addText(opinion.excerpt);
+  }
+
+  return tokens;
+}
+
+function validateShortGroundedLabel(options: {
+  label: string;
+  evidenceTokens: Set<string>;
+  contextLabel: string;
+}): void {
+  const normalized = normalizeWhitespace(options.label);
+
+  if (normalized.length < 4) {
+    throw new Error(`${options.contextLabel} was too short.`);
+  }
+
+  if (normalized.length > 80) {
+    throw new Error(`${options.contextLabel} was too long.`);
+  }
+
+  if (/[,;|]/.test(normalized)) {
+    throw new Error(`${options.contextLabel} must be a natural label, not a token list.`);
+  }
+
+  if (normalized.split(/\s+/).length > 8) {
+    throw new Error(`${options.contextLabel} should stay concise.`);
+  }
+
+  if (/^(other|misc(?:ellaneous)?|general|various|mixed|several|different)\b/i.test(normalized)) {
+    throw new Error(`${options.contextLabel} was too generic.`);
+  }
+
+  const informativeTokens = extractInformativeTokens(normalized);
+  if (informativeTokens.length === 0) {
+    throw new Error(`${options.contextLabel} did not contain informative terms.`);
+  }
+
+  if (informativeTokens.every((token) => token.length <= 3)) {
+    throw new Error(`${options.contextLabel} was not grounded in meaningful words.`);
+  }
+
+  if (informativeTokens.every((token) => ANALYSIS_META_TOKENS.has(token))) {
+    throw new Error(`${options.contextLabel} was generic metadata rather than a topic label.`);
+  }
+
+  const overlap = countTokenOverlap(informativeTokens, options.evidenceTokens);
+  if (overlap === 0 && informativeTokens.length === 1 && (informativeTokens[0]?.length ?? 0) <= 4) {
+    throw new Error(`${options.contextLabel} was too thin to stand as a defensible label.`);
+  }
+}
+
+function validateGroundedSummaryText(options: {
+  text: string;
+  evidenceTokens: Set<string>;
+  contextLabel: string;
+  allowMetaLeadIn: boolean;
+}): void {
+  const normalized = normalizeWhitespace(options.text);
+
+  if (normalized.length < 24) {
+    throw new Error(`${options.contextLabel} was too short.`);
+  }
+
+  if (normalized.length > 280) {
+    throw new Error(`${options.contextLabel} was too long.`);
+  }
+
+  const informativeTokens = extractInformativeTokens(normalized);
+  if (informativeTokens.length < 2) {
+    throw new Error(`${options.contextLabel} did not contain enough informative language.`);
+  }
+
+  if (
+    /^this (cluster|theme) groups\b/i.test(normalized) &&
+    options.allowMetaLeadIn === false
+  ) {
+    throw new Error(`${options.contextLabel} should explain the shared issue directly.`);
+  }
+
+  if (
+    /(?:cluster|theme) (?:groups|includes?) (?:clusters|opinions?)/i.test(normalized) &&
+    countTokenOverlap(informativeTokens, options.evidenceTokens) < 2
+  ) {
+    throw new Error(`${options.contextLabel} was generic boilerplate.`);
+  }
+
+  if (countTokenOverlap(informativeTokens, options.evidenceTokens) === 0) {
+    throw new Error(`${options.contextLabel} was not grounded in the supplied evidence.`);
+  }
+}
+
+function extractInformativeTokens(text: string): string[] {
+  return tokenize(text).filter((token) => !ANALYSIS_META_TOKENS.has(token));
+}
+
+function countTokenOverlap(tokens: Iterable<string>, evidenceTokens: Set<string>): number {
+  let overlap = 0;
+
+  for (const token of tokens) {
+    if (evidenceTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  return overlap;
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function tokenOverlapScore(left: string, right: string): number {

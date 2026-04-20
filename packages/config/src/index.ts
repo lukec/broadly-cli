@@ -216,8 +216,8 @@ export function createStarterProjectConfig(
     ],
     analysisViews: [
       {
-        name: "balanced-pacmap-cheap",
-        title: "Balanced PaCMAP Cheap View",
+        name: "balanced-umap-cheap",
+        title: "Balanced UMAP Cheap View",
         sourceExtraction: "cheap-opinions",
         embeddingModel: "my-embedding-model",
         analysisModel: "my-cheap-text-model",
@@ -227,7 +227,28 @@ export function createStarterProjectConfig(
           viewSummary: "prompts/analysis-perspective-summary.md"
         },
         reduction: {
-          method: "pacmap",
+          method: "umap",
+          dimensions: 2
+        },
+        clustering: {
+          count: 12,
+          mergeStrategy: "semantic"
+        },
+        mode: "balanced"
+      },
+      {
+        name: "balanced-umap-frontier",
+        title: "Balanced UMAP Frontier View",
+        sourceExtraction: "frontier-opinions",
+        embeddingModel: "my-embedding-model",
+        analysisModel: "my-frontier-text-model",
+        prompts: {
+          clusterLabeling: "prompts/analysis-cluster-labeling.md",
+          semanticMerge: "prompts/analysis-semantic-merge.md",
+          viewSummary: "prompts/analysis-perspective-summary.md"
+        },
+        reduction: {
+          method: "umap",
           dimensions: 2
         },
         clustering: {
@@ -238,7 +259,7 @@ export function createStarterProjectConfig(
       },
       {
         name: "balanced-pacmap-frontier",
-        title: "Balanced PaCMAP Frontier View",
+        title: "Balanced PaCMAP Frontier Comparison",
         sourceExtraction: "frontier-opinions",
         embeddingModel: "my-embedding-model",
         analysisModel: "my-frontier-text-model",
@@ -260,7 +281,7 @@ export function createStarterProjectConfig(
     ],
     report: {
       reportDir: "reports",
-      primaryView: "balanced-pacmap-frontier"
+      primaryView: "balanced-umap-frontier"
     }
   };
 }

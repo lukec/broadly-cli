@@ -304,8 +304,13 @@ Your task is to assign a concise, specific nameplate (label) and a one-sentence 
 - Prefer concrete, specific labels over abstract ones.
 - Avoid generic labels such as "other concerns", "general feedback", or "public opinion".
 - Keep each label short and scannable.
+- Write the label as a natural noun phrase, not a bag of keywords.
+- Do not return comma-separated or pipe-separated token lists.
+- Ground the label in words and concepts that are actually visible in the sample opinions.
+- If the samples are mixed, choose the narrowest defensible shared concept instead of a vague umbrella.
 - Use domain-specific terms when they clearly fit the sample opinions.
 - Write one sentence of description that explains what the cluster is really about.
+- The description should explain the shared issue directly, not mechanically say "this cluster groups opinions..."
 - Ground the label and description in the provided sample opinions only.
 - Do not invent issues that are not visible in the samples.
 - Do not wrap the response in code fences.
@@ -372,12 +377,15 @@ Group them into a smaller number of higher-level themes when a merge is semantic
 - Return plain text only using the exact header format defined below.
 - Every provided cluster must appear in exactly one theme.
 - Prefer semantically meaningful themes, not vague buckets.
-- Merge smaller or narrower clusters into broader themes only when the shared concern is clear.
+- Favor under-merging over over-merging.
+- Merge clusters only when the shared concern is clear and specific.
 - Do not merge clusters that merely sound adjacent but express materially different concerns.
-- Prefer 2 to 5 higher-level themes for a typical batch unless the evidence clearly demands otherwise.
-- Theme labels should be short and specific.
-- Theme summaries should explain what unifies the included clusters.
-- Merge rationale should briefly explain why these clusters belong together.
+- Singleton themes are acceptable when a clean merge is not defensible.
+- Do not force a target theme count.
+- Theme labels should be short, specific noun phrases.
+- Do not use keyword lists, comma-separated fragments, or vague umbrella labels.
+- Theme summaries should explain the shared issue or tension that unifies the included clusters.
+- Merge rationale should briefly name the concrete shared concern that makes the merge defensible.
 - Do not wrap the response in code fences.
 
 ## Output format
