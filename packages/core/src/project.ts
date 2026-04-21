@@ -8,6 +8,8 @@ export const DEFAULT_PROJECT_DIRECTORIES = [
   "data/embeddings",
   "data/review/comments",
   "data/review/opinions",
+  "data/review/suggestions/comments",
+  "data/review/suggestions/opinions",
   "archive/opinions",
   "archive/analysis",
   "llm-cache/text",
@@ -23,6 +25,9 @@ export interface ProjectPaths {
   reviewDir: string;
   reviewCommentsDir: string;
   reviewOpinionsDir: string;
+  reviewSuggestionsDir: string;
+  reviewCommentSuggestionsDir: string;
+  reviewOpinionSuggestionsDir: string;
   reviewConfigPath: string;
   archiveDir: string;
   llmCacheDir: string;
@@ -43,6 +48,21 @@ export function resolveProjectPaths(rootDir: string): ProjectPaths {
     reviewDir: path.join(absoluteRootDir, "data", "review"),
     reviewCommentsDir: path.join(absoluteRootDir, "data", "review", "comments"),
     reviewOpinionsDir: path.join(absoluteRootDir, "data", "review", "opinions"),
+    reviewSuggestionsDir: path.join(absoluteRootDir, "data", "review", "suggestions"),
+    reviewCommentSuggestionsDir: path.join(
+      absoluteRootDir,
+      "data",
+      "review",
+      "suggestions",
+      "comments"
+    ),
+    reviewOpinionSuggestionsDir: path.join(
+      absoluteRootDir,
+      "data",
+      "review",
+      "suggestions",
+      "opinions"
+    ),
     reviewConfigPath: path.join(absoluteRootDir, "data", "review", "config.json"),
     archiveDir: path.join(absoluteRootDir, "archive"),
     llmCacheDir: path.join(absoluteRootDir, "llm-cache"),

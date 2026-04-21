@@ -26,6 +26,17 @@ export interface AnalysisViewReport {
   clusters: ClusterSummary[];
 }
 
+export interface ReviewBoundarySummary {
+  configPath: string;
+  configSha256: string;
+  includeCommentStatuses: string[];
+  includeOpinionStatuses: string[];
+  totalOpinionsAvailable: number;
+  includedOpinions: number;
+  excludedOpinions: number;
+  excludedByStatus: Record<string, number>;
+}
+
 export interface ReportBundle {
   reportId: string;
   createdAt: string;
@@ -33,5 +44,6 @@ export interface ReportBundle {
   projectName: string;
   questions: string[];
   primaryViewId: string;
+  review?: ReviewBoundarySummary;
   views: AnalysisViewReport[];
 }

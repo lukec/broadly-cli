@@ -11,6 +11,7 @@ import { addModel, checkModels, removeModel } from "./commands/models.js";
 import { extractOpinionsWithModel } from "./commands/opinions.js";
 import { generateReport } from "./commands/report.js";
 import { runQa } from "./commands/qa.js";
+import { runReview } from "./commands/review.js";
 import { showProjectStatus } from "./commands/status.js";
 import { serveProjectWeb } from "./commands/web.js";
 
@@ -222,6 +223,38 @@ program
         ...(options.offset === undefined ? {} : { offset: options.offset }),
         ...(options.archive === true ? { archive: true } : {}),
         ...(options.resume === true ? { resume: true } : {}),
+        ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })
+      });
+    }
+  );
+
+program
+  .command("review")
+  .description("Generate machine review decisions and suggestions for comments and opinions.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--kind <kind>", "comments, opinions, or both", "both")
+  .option("--model <name>", "Project model alias to use for review screening")
+  .option(
+    "-c, --concurrency <count>",
+    "Number of review requests to run in parallel",
+    parsePositiveInteger
+  )
+  .action(
+    async (options: {
+      project?: string;
+      kind: string;
+      model?: string;
+      concurrency?: number;
+    }) => {
+      const normalizedKind =
+        options.kind === "comments" || options.kind === "opinions" || options.kind === "both"
+          ? options.kind
+          : "both";
+
+      await runReview({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        kind: normalizedKind,
+        ...(options.model === undefined ? {} : { model: options.model }),
         ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency })
       });
     }

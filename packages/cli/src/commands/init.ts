@@ -59,6 +59,10 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
     projectPaths.promptsDir,
     "qa-cluster-membership.md"
   );
+  const reviewScreeningPromptPath = path.join(
+    projectPaths.promptsDir,
+    "review-screening.md"
+  );
   const qaClusterThemeSupportPromptPath = path.join(
     projectPaths.promptsDir,
     "qa-cluster-theme-support.md"
@@ -100,6 +104,14 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
     await writeFile(
       qaClusterMembershipPromptPath,
       createStarterQaClusterMembershipPrompt(),
+      "utf8"
+    );
+  }
+
+  if (options.force || !(await fileExists(reviewScreeningPromptPath))) {
+    await writeFile(
+      reviewScreeningPromptPath,
+      createStarterReviewScreeningPrompt(),
       "utf8"
     );
   }
@@ -172,8 +184,8 @@ function printNextSteps(rootDir: string, configPath: string): void {
     `1. cd ${rootDir}`,
     "2. broadly ingest ./path/to/source.csv",
     "3. broadly models add",
-    "4. Review and edit prompts/opinion-extraction.md, the analysis prompt files, and the QA prompt files for your domain.",
-    "5. Edit broadly.yaml with questions, opinion extractions, analysis views, and qa_model."
+    "4. Review and edit prompts/opinion-extraction.md, prompts/review-screening.md, the analysis prompt files, and the QA prompt files for your domain.",
+    "5. Edit broadly.yaml with questions, opinion extractions, analysis views, review_model, and qa_model."
   ];
 
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -437,6 +449,52 @@ Confidence: high | medium | low
 Rationale: One or two sentences explaining the judgment
 \`\`\`
 `;
+}
+
+function createStarterReviewScreeningPrompt(): string {
+  return `# Review Screening Prompt
+
+You are helping Broadly classify public-input items for analysis quality control.
+
+Your goal is to make a careful, objective judgment about whether the item should remain included in the main analysis corpus, or whether it should likely be excluded because it is off-topic or non-substantive.
+
+## Principles
+
+- Be conservative.
+- Prefer \`included\` unless exclusion is well supported by the text.
+- Do not exclude content just because it is short, emotional, or poorly written.
+- Only use \`excluded-non-substantive\` for content that does not express a meaningful opinion, request, concern, proposal, complaint, or preference.
+- Only use \`excluded-off-topic\` when the content is clearly unrelated to the project topic or consultation subject.
+- Do not use \`excluded-duplicate\`; duplicates are handled separately by deterministic heuristics.
+- Do not use \`excluded-admin\`; that is reserved for human override.
+- Return plain text using the exact header format below.
+- Do not wrap the response in code fences.
+
+## Output format
+
+Decision: included | excluded-non-substantive | excluded-off-topic
+Confidence: 0.00 to 1.00
+Reason-Code: short-kebab-case-code
+Note: one short sentence explaining the judgment
+
+## Guidance on confidence
+
+- Use 0.90 to 1.00 only when the case is very clear.
+- Use 0.75 to 0.89 when exclusion is likely but not certain.
+- Use below 0.75 when the case is ambiguous and a human should probably review it.
+
+## Input
+
+You will receive:
+
+- project name
+- project questions
+- item kind
+- source identifiers
+- the actual text to judge
+- supporting context when available
+
+Judge the item against the project questions and topic, not against your personal preferences.`;
 }
 
 function createStarterQaClusterThemeSupportPrompt(): string {

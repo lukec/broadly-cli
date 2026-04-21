@@ -6,10 +6,13 @@ import {
   isReviewStatus,
   resolveProjectPaths,
   type CommentReviewArtifact,
+  type CommentReviewSuggestionArtifact,
   type OpinionReviewArtifact,
+  type OpinionReviewSuggestionArtifact,
   type ProjectPaths,
   type ReviewActor,
   type ReviewConfig,
+  type ReviewSuggestionActor,
   type ReviewStatus
 } from "@broadly/core";
 
@@ -35,6 +38,30 @@ export interface UpsertOpinionReviewInput {
   reasonCode: string;
   note: string;
   actor: ReviewActor;
+  opinionArtifactPath: string;
+  sourceId: string;
+  normalizedRecordPath: string;
+}
+
+export interface UpsertCommentReviewSuggestionInput {
+  subjectId: string;
+  suggestedStatus: ReviewStatus;
+  reasonCode: string;
+  note: string;
+  confidence: number;
+  state?: "proposed" | "accepted" | "rejected";
+  actor: ReviewSuggestionActor;
+  normalizedRecordPath: string;
+}
+
+export interface UpsertOpinionReviewSuggestionInput {
+  subjectId: string;
+  suggestedStatus: ReviewStatus;
+  reasonCode: string;
+  note: string;
+  confidence: number;
+  state?: "proposed" | "accepted" | "rejected";
+  actor: ReviewSuggestionActor;
   opinionArtifactPath: string;
   sourceId: string;
   normalizedRecordPath: string;
@@ -102,6 +129,30 @@ export async function loadOpinionReview(
   return artifact === null ? null : normalizeOpinionReviewArtifact(artifact);
 }
 
+export async function loadCommentReviewSuggestion(
+  projectRootOrPaths: string | ProjectPaths,
+  subjectId: string
+): Promise<CommentReviewSuggestionArtifact | null> {
+  const projectPaths = resolvePaths(projectRootOrPaths);
+  const artifact = await readJsonFile<CommentReviewSuggestionArtifact>(
+    `${projectPaths.reviewCommentSuggestionsDir}/${subjectId}.json`
+  );
+
+  return artifact === null ? null : normalizeCommentReviewSuggestionArtifact(artifact);
+}
+
+export async function loadOpinionReviewSuggestion(
+  projectRootOrPaths: string | ProjectPaths,
+  subjectId: string
+): Promise<OpinionReviewSuggestionArtifact | null> {
+  const projectPaths = resolvePaths(projectRootOrPaths);
+  const artifact = await readJsonFile<OpinionReviewSuggestionArtifact>(
+    `${projectPaths.reviewOpinionSuggestionsDir}/${subjectId}.json`
+  );
+
+  return artifact === null ? null : normalizeOpinionReviewSuggestionArtifact(artifact);
+}
+
 export async function upsertCommentReview(
   projectRootOrPaths: string | ProjectPaths,
   input: UpsertCommentReviewInput
@@ -153,6 +204,70 @@ export async function upsertOpinionReview(
 
   await mkdir(projectPaths.reviewOpinionsDir, { recursive: true });
   await writeJsonFile(`${projectPaths.reviewOpinionsDir}/${input.subjectId}.json`, artifact);
+  return artifact;
+}
+
+export async function upsertCommentReviewSuggestion(
+  projectRootOrPaths: string | ProjectPaths,
+  input: UpsertCommentReviewSuggestionInput
+): Promise<CommentReviewSuggestionArtifact> {
+  const projectPaths = resolvePaths(projectRootOrPaths);
+  const existing = await loadCommentReviewSuggestion(projectPaths, input.subjectId);
+  const createdAt = existing?.createdAt ?? new Date().toISOString();
+  const artifact = normalizeCommentReviewSuggestionArtifact({
+    subjectKind: "comment",
+    subjectId: input.subjectId,
+    suggestedStatus: input.suggestedStatus,
+    reasonCode: normalizeRequiredString(input.reasonCode, "machine-suggestion"),
+    note: typeof input.note === "string" ? input.note.trim() : "",
+    confidence: normalizeConfidence(input.confidence),
+    state: input.state ?? "proposed",
+    actor: normalizeReviewSuggestionActor(input.actor),
+    createdAt,
+    updatedAt: new Date().toISOString(),
+    provenance: {
+      normalizedRecordPath: normalizeRequiredString(input.normalizedRecordPath)
+    }
+  });
+
+  await mkdir(projectPaths.reviewCommentSuggestionsDir, { recursive: true });
+  await writeJsonFile(
+    `${projectPaths.reviewCommentSuggestionsDir}/${input.subjectId}.json`,
+    artifact
+  );
+  return artifact;
+}
+
+export async function upsertOpinionReviewSuggestion(
+  projectRootOrPaths: string | ProjectPaths,
+  input: UpsertOpinionReviewSuggestionInput
+): Promise<OpinionReviewSuggestionArtifact> {
+  const projectPaths = resolvePaths(projectRootOrPaths);
+  const existing = await loadOpinionReviewSuggestion(projectPaths, input.subjectId);
+  const createdAt = existing?.createdAt ?? new Date().toISOString();
+  const artifact = normalizeOpinionReviewSuggestionArtifact({
+    subjectKind: "opinion",
+    subjectId: input.subjectId,
+    suggestedStatus: input.suggestedStatus,
+    reasonCode: normalizeRequiredString(input.reasonCode, "machine-suggestion"),
+    note: typeof input.note === "string" ? input.note.trim() : "",
+    confidence: normalizeConfidence(input.confidence),
+    state: input.state ?? "proposed",
+    actor: normalizeReviewSuggestionActor(input.actor),
+    createdAt,
+    updatedAt: new Date().toISOString(),
+    provenance: {
+      opinionArtifactPath: normalizeRequiredString(input.opinionArtifactPath),
+      sourceId: normalizeRequiredString(input.sourceId),
+      normalizedRecordPath: normalizeRequiredString(input.normalizedRecordPath)
+    }
+  });
+
+  await mkdir(projectPaths.reviewOpinionSuggestionsDir, { recursive: true });
+  await writeJsonFile(
+    `${projectPaths.reviewOpinionSuggestionsDir}/${input.subjectId}.json`,
+    artifact
+  );
   return artifact;
 }
 
@@ -247,6 +362,48 @@ function normalizeOpinionReviewArtifact(artifact: OpinionReviewArtifact): Opinio
   };
 }
 
+function normalizeCommentReviewSuggestionArtifact(
+  artifact: CommentReviewSuggestionArtifact
+): CommentReviewSuggestionArtifact {
+  return {
+    subjectKind: "comment",
+    subjectId: normalizeRequiredString(artifact.subjectId),
+    suggestedStatus: normalizeReviewStatus(artifact.suggestedStatus),
+    reasonCode: normalizeRequiredString(artifact.reasonCode, "machine-suggestion"),
+    note: typeof artifact.note === "string" ? artifact.note.trim() : "",
+    confidence: normalizeConfidence(artifact.confidence),
+    state: normalizeSuggestionState(artifact.state),
+    actor: normalizeReviewSuggestionActor(artifact.actor),
+    createdAt: normalizeTimestamp(artifact.createdAt),
+    updatedAt: normalizeTimestamp(artifact.updatedAt),
+    provenance: {
+      normalizedRecordPath: normalizeRequiredString(artifact.provenance?.normalizedRecordPath)
+    }
+  };
+}
+
+function normalizeOpinionReviewSuggestionArtifact(
+  artifact: OpinionReviewSuggestionArtifact
+): OpinionReviewSuggestionArtifact {
+  return {
+    subjectKind: "opinion",
+    subjectId: normalizeRequiredString(artifact.subjectId),
+    suggestedStatus: normalizeReviewStatus(artifact.suggestedStatus),
+    reasonCode: normalizeRequiredString(artifact.reasonCode, "machine-suggestion"),
+    note: typeof artifact.note === "string" ? artifact.note.trim() : "",
+    confidence: normalizeConfidence(artifact.confidence),
+    state: normalizeSuggestionState(artifact.state),
+    actor: normalizeReviewSuggestionActor(artifact.actor),
+    createdAt: normalizeTimestamp(artifact.createdAt),
+    updatedAt: normalizeTimestamp(artifact.updatedAt),
+    provenance: {
+      opinionArtifactPath: normalizeRequiredString(artifact.provenance?.opinionArtifactPath),
+      sourceId: normalizeRequiredString(artifact.provenance?.sourceId),
+      normalizedRecordPath: normalizeRequiredString(artifact.provenance?.normalizedRecordPath)
+    }
+  };
+}
+
 function normalizeReviewStatus(value: unknown): ReviewStatus {
   return isReviewStatus(value) ? value : "included";
 }
@@ -261,6 +418,15 @@ function normalizeReviewActor(actor: ReviewActor | undefined): ReviewActor {
   return {
     type: actor?.type === "machine" ? "machine" : "human",
     name: normalizeRequiredString(actor?.name, "local-admin")
+  };
+}
+
+function normalizeReviewSuggestionActor(
+  actor: ReviewSuggestionActor | undefined
+): ReviewSuggestionActor {
+  return {
+    type: "machine",
+    name: normalizeRequiredString(actor?.name, "machine-suggester")
   };
 }
 
@@ -282,6 +448,20 @@ function normalizeRequiredString(value: unknown, fallback = ""): string {
 function normalizeTimestamp(value: unknown): string {
   const normalized = typeof value === "string" ? value.trim() : "";
   return normalized.length === 0 ? new Date().toISOString() : normalized;
+}
+
+function normalizeConfidence(value: unknown): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+
+  if (Number.isNaN(numeric)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function normalizeSuggestionState(value: unknown): "proposed" | "accepted" | "rejected" {
+  return value === "accepted" || value === "rejected" ? value : "proposed";
 }
 
 async function readJsonFile<T>(filePath: string): Promise<T | null> {

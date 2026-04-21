@@ -69,6 +69,7 @@ export const projectConfigSchema = z
       idColumn: z.string().min(1).optional(),
       allowFields: z.array(z.string().min(1)).min(1).optional()
     }),
+    review_model: z.string().min(1).optional(),
     qa_model: z.string().min(1).optional(),
     questions: z.array(z.string().min(1)).min(1),
     opinionExtractions: z.array(opinionExtractionConfigSchema).min(1),
@@ -194,6 +195,7 @@ export function createStarterProjectConfig(
       path: "./data/source.csv",
       format: "auto"
     },
+    review_model: "my-frontier-text-model",
     qa_model: "my-frontier-text-model",
     questions: [
       "What are the dominant themes in this corpus?",

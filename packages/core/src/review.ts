@@ -15,6 +15,10 @@ export interface ReviewActor {
   name: string;
 }
 
+export interface ReviewSuggestionActor extends ReviewActor {
+  type: "machine";
+}
+
 export interface CommentReviewArtifact {
   subjectKind: "comment";
   subjectId: string;
@@ -36,6 +40,40 @@ export interface OpinionReviewArtifact {
   reasonCode: string;
   note: string;
   actor: ReviewActor;
+  createdAt: string;
+  updatedAt: string;
+  provenance: {
+    opinionArtifactPath: string;
+    sourceId: string;
+    normalizedRecordPath: string;
+  };
+}
+
+export interface CommentReviewSuggestionArtifact {
+  subjectKind: "comment";
+  subjectId: string;
+  suggestedStatus: ReviewStatus;
+  reasonCode: string;
+  note: string;
+  confidence: number;
+  state: "proposed" | "accepted" | "rejected";
+  actor: ReviewSuggestionActor;
+  createdAt: string;
+  updatedAt: string;
+  provenance: {
+    normalizedRecordPath: string;
+  };
+}
+
+export interface OpinionReviewSuggestionArtifact {
+  subjectKind: "opinion";
+  subjectId: string;
+  suggestedStatus: ReviewStatus;
+  reasonCode: string;
+  note: string;
+  confidence: number;
+  state: "proposed" | "accepted" | "rejected";
+  actor: ReviewSuggestionActor;
   createdAt: string;
   updatedAt: string;
   provenance: {

@@ -64,6 +64,18 @@ interface SemanticMergeArtifact {
 interface AnalysisManifest {
   runId?: string;
   createdAt?: string;
+  input?: {
+    review?: {
+      configPath?: string;
+      configSha256?: string;
+      includeCommentStatuses?: string[];
+      includeOpinionStatuses?: string[];
+      totalOpinionsAvailable?: number;
+      selectedOpinions?: number;
+      excludedOpinions?: number;
+      excludedByStatus?: Record<string, number>;
+    };
+  };
 }
 
 export async function generateReport(options: ReportCommandOptions): Promise<void> {
@@ -181,6 +193,20 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
     projectName: config.project.name,
     questions: config.questions,
     primaryViewId: config.report.primaryView,
+    ...(manifest?.input?.review === undefined
+      ? {}
+      : {
+          review: {
+            configPath: manifest.input.review.configPath ?? "",
+            configSha256: manifest.input.review.configSha256 ?? "",
+            includeCommentStatuses: [...(manifest.input.review.includeCommentStatuses ?? [])],
+            includeOpinionStatuses: [...(manifest.input.review.includeOpinionStatuses ?? [])],
+            totalOpinionsAvailable: manifest.input.review.totalOpinionsAvailable ?? 0,
+            includedOpinions: manifest.input.review.selectedOpinions ?? 0,
+            excludedOpinions: manifest.input.review.excludedOpinions ?? 0,
+            excludedByStatus: { ...(manifest.input.review.excludedByStatus ?? {}) }
+          }
+        }),
     views
   };
 
@@ -192,6 +218,12 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
     "",
     `Analysis run: ${runId}`,
     `Primary view: ${config.report.primaryView}`,
+    ...(reportBundle.review === undefined
+      ? []
+      : [
+          `Review config: ${toPortableRelativePath(projectRoot, reportBundle.review.configPath)}`,
+          `Opinion boundary: ${reportBundle.review.includedOpinions} included / ${reportBundle.review.totalOpinionsAvailable} total (${reportBundle.review.excludedOpinions} excluded)`
+        ]),
     `Views included: ${views.length}`,
     `Bundle: ${toPortableRelativePath(projectRoot, bundlePath)}`
   ];
