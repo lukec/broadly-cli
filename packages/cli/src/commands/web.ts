@@ -5,7 +5,14 @@ import path from "node:path";
 import process from "node:process";
 
 import { parseProjectConfig } from "@broadly/config";
-import { resolveProjectPaths } from "@broadly/core";
+import {
+  REVIEW_STATUS_VALUES,
+  resolveProjectPaths,
+  type CommentReviewArtifact,
+  type OpinionReviewArtifact,
+  type ReviewConfig,
+  type ReviewStatus
+} from "@broadly/core";
 import type { NormalizedCommentRecord } from "@broadly/ingest";
 import type { ReportBundle } from "@broadly/report-model";
 
@@ -20,6 +27,12 @@ import {
   type ProjectDashboardData,
   type StepStatus
 } from "./projectDashboard.js";
+import {
+  ensureProjectReviewState,
+  loadCommentReview,
+  loadOpinionReview,
+  resolveEffectiveOpinionReviewStatus
+} from "../reviewState.js";
 
 export interface WebCommandOptions {
   project?: string;
@@ -189,6 +202,34 @@ interface NormalizedRecordPreview {
 }
 
 const INGEST_PREVIEW_PAGE_SIZE = 12;
+const ADMIN_CONTENT_PAGE_SIZE = 40;
+
+interface AdminCommentEntry {
+  sourceId: string;
+  recordPath: string;
+  record: NormalizedCommentRecord;
+  review: CommentReviewArtifact | null;
+  effectiveStatus: ReviewStatus;
+  relatedOpinionIds: string[];
+}
+
+interface AdminOpinionEntry {
+  opinionId: string;
+  artifactPath: string;
+  runId: string;
+  artifact: LoadedOpinionArtifact;
+  sourceRecord: NormalizedCommentRecord | null;
+  commentReview: CommentReviewArtifact | null;
+  opinionReview: OpinionReviewArtifact | null;
+  effectiveStatus: ReviewStatus;
+  effectiveStatusSource: "default" | "comment" | "opinion";
+}
+
+interface AdminCorpus {
+  reviewConfig: ReviewConfig;
+  comments: AdminCommentEntry[];
+  opinions: AdminOpinionEntry[];
+}
 
 interface LiveReloadController {
   handleClient(response: ServerResponse): void;
@@ -218,6 +259,60 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
       }
 
       const dashboard = await loadProjectDashboard(projectRoot, config, options.watch === true);
+      const adminMatch = requestUrl.pathname.match(/^\/admin\/(comments|opinions)\/([^/]+)$/);
+
+      if (requestUrl.pathname === "/admin") {
+        const adminCorpus = await loadAdminCorpus(projectPaths);
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderAdminOverviewPage(dashboard, adminCorpus));
+        return;
+      }
+
+      if (requestUrl.pathname === "/admin/content") {
+        const adminCorpus = await loadAdminCorpus(projectPaths);
+        const kind = requestUrl.searchParams.get("kind") === "comments" ? "comments" : "opinions";
+        const statusFilters = resolveReviewStatusFilters(
+          requestUrl.searchParams.getAll("status"),
+          kind === "comments"
+            ? adminCorpus.reviewConfig.web.defaultVisibleCommentStatuses
+            : adminCorpus.reviewConfig.web.defaultVisibleOpinionStatuses
+        );
+        const offset = parseOffset(requestUrl.searchParams.get("offset"));
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(
+          renderAdminContentPage(dashboard, adminCorpus, {
+            kind,
+            statusFilters,
+            offset,
+            limit: ADMIN_CONTENT_PAGE_SIZE
+          })
+        );
+        return;
+      }
+
+      if (requestUrl.pathname === "/admin/config") {
+        const adminCorpus = await loadAdminCorpus(projectPaths);
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderAdminConfigPage(dashboard, adminCorpus));
+        return;
+      }
+
+      if (adminMatch !== null) {
+        const adminCorpus = await loadAdminCorpus(projectPaths);
+        const subjectKind = adminMatch[1];
+        const subjectId = decodeURIComponent(adminMatch[2] ?? "");
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(
+          subjectKind === "comments"
+            ? renderAdminCommentDetailPage(dashboard, adminCorpus, subjectId)
+            : renderAdminOpinionDetailPage(dashboard, adminCorpus, subjectId)
+        );
+        return;
+      }
 
       if (requestUrl.pathname === "/") {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -581,6 +676,141 @@ async function loadNormalizedRecordPreviews(
   return previews;
 }
 
+async function loadAdminCorpus(projectPaths: ReturnType<typeof resolveProjectPaths>): Promise<AdminCorpus> {
+  const reviewConfig = await ensureProjectReviewState(projectPaths);
+  const comments = await loadAdminCommentEntries(projectPaths);
+  const opinions = await loadAdminOpinionEntries(projectPaths, comments);
+  const opinionIdsBySourceId = new Map<string, string[]>();
+
+  for (const opinion of opinions) {
+    const sourceId = opinion.artifact.sourceId;
+
+    if (typeof sourceId !== "string" || sourceId.length === 0) {
+      continue;
+    }
+
+    const existing = opinionIdsBySourceId.get(sourceId) ?? [];
+    existing.push(opinion.opinionId);
+    opinionIdsBySourceId.set(sourceId, existing);
+  }
+
+  return {
+    reviewConfig,
+    comments: comments.map((entry) => ({
+      ...entry,
+      relatedOpinionIds: [...(opinionIdsBySourceId.get(entry.sourceId) ?? [])].sort()
+    })),
+    opinions
+  };
+}
+
+async function loadAdminCommentEntries(
+  projectPaths: ReturnType<typeof resolveProjectPaths>
+): Promise<AdminCommentEntry[]> {
+  const recordPaths = await listNormalizedRecordPaths(path.join(projectPaths.dataDir, "normalized"));
+  const comments: AdminCommentEntry[] = [];
+
+  for (const recordPath of recordPaths) {
+    const record = await readJsonFile<NormalizedCommentRecord>(recordPath);
+
+    if (record === null) {
+      continue;
+    }
+
+    const review = await loadCommentReview(projectPaths, record.sourceId);
+
+    comments.push({
+      sourceId: record.sourceId,
+      recordPath,
+      record,
+      review,
+      effectiveStatus: review?.status ?? "included",
+      relatedOpinionIds: []
+    });
+  }
+
+  return comments.sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+}
+
+async function loadAdminOpinionEntries(
+  projectPaths: ReturnType<typeof resolveProjectPaths>,
+  comments: AdminCommentEntry[]
+): Promise<AdminOpinionEntry[]> {
+  const opinionsRootDir = path.join(projectPaths.dataDir, "opinions");
+  const runEntries = await readdir(opinionsRootDir, { withFileTypes: true }).catch(() => []);
+  const sortedRunEntries = runEntries
+    .filter((entry) => entry.isDirectory())
+    .sort((left, right) => right.name.localeCompare(left.name));
+  const commentBySourceId = new Map(comments.map((entry) => [entry.sourceId, entry] as const));
+  const opinionsById = new Map<string, AdminOpinionEntry>();
+
+  for (const runEntry of sortedRunEntries) {
+    const opinionsDir = path.join(opinionsRootDir, runEntry.name, "opinions");
+    const opinionEntries = await readdir(opinionsDir, { withFileTypes: true }).catch(() => []);
+
+    for (const opinionEntry of opinionEntries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      const artifactPath = path.join(opinionsDir, opinionEntry.name);
+      const artifact = await readJsonFile<LoadedOpinionArtifact>(artifactPath);
+
+      if (artifact?.opinionId === undefined || opinionsById.has(artifact.opinionId)) {
+        continue;
+      }
+
+      const commentEntry =
+        typeof artifact.sourceId === "string" ? commentBySourceId.get(artifact.sourceId) ?? null : null;
+      const [commentReview, opinionReview] = await Promise.all([
+        typeof artifact.sourceId === "string" && artifact.sourceId.length > 0
+          ? loadCommentReview(projectPaths, artifact.sourceId)
+          : Promise.resolve(null),
+        loadOpinionReview(projectPaths, artifact.opinionId)
+      ]);
+      const effective = resolveEffectiveOpinionReviewStatus({
+        commentReview,
+        opinionReview
+      });
+
+      opinionsById.set(artifact.opinionId, {
+        opinionId: artifact.opinionId,
+        artifactPath,
+        runId: runEntry.name,
+        artifact:
+          commentEntry?.record.contentText === undefined
+            ? artifact
+            : {
+                ...artifact,
+                fullComment: commentEntry.record.contentText
+              },
+        sourceRecord: commentEntry?.record ?? null,
+        commentReview,
+        opinionReview,
+        effectiveStatus: effective.status,
+        effectiveStatusSource: effective.source
+      });
+    }
+  }
+
+  return [...opinionsById.values()].sort((left, right) => left.opinionId.localeCompare(right.opinionId));
+}
+
+function resolveReviewStatusFilters(
+  requestedStatuses: string[],
+  defaultStatuses: ReviewStatus[]
+): ReviewStatus[] {
+  const requested = requestedStatuses.filter(isReviewStatusValue);
+
+  if (requested.length > 0) {
+    return [...new Set(requested)];
+  }
+
+  return [...new Set(defaultStatuses)];
+}
+
+function isReviewStatusValue(value: string): value is ReviewStatus {
+  return (REVIEW_STATUS_VALUES as readonly string[]).includes(value);
+}
+
 function renderHomePage(data: ProjectDashboardData): string {
   const steps = buildPipelineSteps(data);
 
@@ -639,6 +869,275 @@ function renderHomePage(data: ProjectDashboardData): string {
                 )
                 .join("")}
             </section>`}
+      </section>
+    </main>`
+  );
+}
+
+function renderAdminOverviewPage(data: ProjectDashboardData, adminCorpus: AdminCorpus): string {
+  const commentCounts = summarizeReviewStatuses(
+    adminCorpus.comments.map((entry) => entry.effectiveStatus)
+  );
+  const opinionCounts = summarizeReviewStatuses(
+    adminCorpus.opinions.map((entry) => entry.effectiveStatus)
+  );
+
+  return renderPage(
+    data,
+    "Admin Review",
+    `<main class="shell">
+      ${renderHeader(data, "Admin Review")}
+      <section class="panel two-up">
+        <article class="card feature-card">
+          <p class="eyebrow">Review Layer</p>
+          <h2>Visible content controls</h2>
+          <p class="lede">Filtering decisions are stored separately from normalized comments and extracted opinions. Nothing here deletes the underlying artifacts.</p>
+          <div class="button-row">
+            <a class="button-link" href="/admin/content?kind=opinions">Browse opinions</a>
+            <a class="button-link button-link-secondary" href="/admin/content?kind=comments">Browse comments</a>
+            <a class="button-link button-link-secondary" href="/admin/config">Open review config</a>
+          </div>
+        </article>
+        <article class="card">
+          <p class="eyebrow">Defaults</p>
+          <h2>Current visibility rules</h2>
+          ${renderKeyValueList([
+            [
+              "Analysis comments",
+              formatIncludedStatuses(adminCorpus.reviewConfig.analysis.includeCommentStatuses)
+            ],
+            [
+              "Analysis opinions",
+              formatIncludedStatuses(adminCorpus.reviewConfig.analysis.includeOpinionStatuses)
+            ],
+            [
+              "Web comments",
+              formatIncludedStatuses(adminCorpus.reviewConfig.web.defaultVisibleCommentStatuses)
+            ],
+            [
+              "Web opinions",
+              formatIncludedStatuses(adminCorpus.reviewConfig.web.defaultVisibleOpinionStatuses)
+            ]
+          ])}
+        </article>
+      </section>
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Comments</p>
+          <h2>${adminCorpus.comments.length} source comments</h2>
+          ${renderReviewStatusSummary(commentCounts)}
+        </article>
+        <article class="card">
+          <p class="eyebrow">Opinions</p>
+          <h2>${adminCorpus.opinions.length} extracted opinions</h2>
+          ${renderReviewStatusSummary(opinionCounts)}
+        </article>
+      </section>
+    </main>`
+  );
+}
+
+function renderAdminContentPage(
+  data: ProjectDashboardData,
+  adminCorpus: AdminCorpus,
+  options: {
+    kind: "comments" | "opinions";
+    statusFilters: ReviewStatus[];
+    offset: number;
+    limit: number;
+  }
+): string {
+  const allItems =
+    options.kind === "comments"
+      ? adminCorpus.comments.filter((entry) => options.statusFilters.includes(entry.effectiveStatus))
+      : adminCorpus.opinions.filter((entry) => options.statusFilters.includes(entry.effectiveStatus));
+  const pageItems = allItems.slice(options.offset, options.offset + options.limit);
+  const shownStart = allItems.length === 0 ? 0 : options.offset + 1;
+  const shownEnd = Math.min(options.offset + pageItems.length, allItems.length);
+  const nextOffset = options.offset + pageItems.length;
+  const hasMore = nextOffset < allItems.length;
+
+  return renderPage(
+    data,
+    "Admin Review",
+    `<main class="shell">
+      ${renderHeader(data, "Admin Review")}
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Content Browser</p>
+            <h2>Reviewable corpus</h2>
+          </div>
+          <p class="meta">Showing ${shownStart}-${shownEnd} of ${allItems.length} ${escapeHtml(options.kind)}</p>
+        </div>
+        <div class="admin-toolbar">
+          <div class="toggle-row">
+            ${renderAdminKindToggle(options.kind)}
+          </div>
+          <div class="filter-row">
+            ${renderReviewFilterLinks("/admin/content", options.kind, options.statusFilters)}
+          </div>
+        </div>
+        ${
+          options.kind === "comments"
+            ? renderAdminCommentTable(pageItems as AdminCommentEntry[])
+            : renderAdminOpinionTable(pageItems as AdminOpinionEntry[])
+        }
+        <div class="load-more-row">
+          ${
+            hasMore
+              ? `<a class="button-link" href="${buildAdminContentHref(options.kind, options.statusFilters, nextOffset)}">Load more...</a>`
+              : `<p class="meta">End of results.</p>`
+          }
+        </div>
+      </section>
+    </main>`
+  );
+}
+
+function renderAdminConfigPage(data: ProjectDashboardData, adminCorpus: AdminCorpus): string {
+  return renderPage(
+    data,
+    "Admin Review",
+    `<main class="shell">
+      ${renderHeader(data, "Admin Review")}
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Analysis</p>
+          <h2>Included in clustering and synthesis</h2>
+          ${renderKeyValueList([
+            ["Comment statuses", formatIncludedStatuses(adminCorpus.reviewConfig.analysis.includeCommentStatuses)],
+            ["Opinion statuses", formatIncludedStatuses(adminCorpus.reviewConfig.analysis.includeOpinionStatuses)]
+          ])}
+        </article>
+        <article class="card">
+          <p class="eyebrow">Report + Web</p>
+          <h2>Visualization defaults</h2>
+          ${renderKeyValueList([
+            ["Report comments", formatIncludedStatuses(adminCorpus.reviewConfig.report.includeCommentStatuses)],
+            ["Report opinions", formatIncludedStatuses(adminCorpus.reviewConfig.report.includeOpinionStatuses)],
+            ["Web comments", formatIncludedStatuses(adminCorpus.reviewConfig.web.defaultVisibleCommentStatuses)],
+            ["Web opinions", formatIncludedStatuses(adminCorpus.reviewConfig.web.defaultVisibleOpinionStatuses)]
+          ])}
+        </article>
+      </section>
+      <section class="panel">
+        <article class="card">
+          <p class="eyebrow">Artifact</p>
+          <h2>Review config file</h2>
+          <p class="meta">${escapeHtml(toPortableRelativePath(data.projectRoot, resolveProjectPaths(data.projectRoot).reviewConfigPath))}</p>
+          <p>Editing controls come next. This first pass makes the active review configuration inspectable before wiring mutations into the UI.</p>
+        </article>
+      </section>
+    </main>`
+  );
+}
+
+function renderAdminCommentDetailPage(
+  data: ProjectDashboardData,
+  adminCorpus: AdminCorpus,
+  sourceId: string
+): string {
+  const comment = adminCorpus.comments.find((entry) => entry.sourceId === sourceId);
+
+  if (comment === undefined) {
+    throw new Error(`Comment '${sourceId}' was not found.`);
+  }
+
+  const relatedOpinions = adminCorpus.opinions.filter((entry) => entry.artifact.sourceId === sourceId);
+
+  return renderPage(
+    data,
+    "Admin Review",
+    `<main class="shell">
+      ${renderHeader(data, "Admin Review")}
+      <section class="panel">
+        <p class="eyebrow"><a href="/admin/content?kind=comments">Back to comment browser</a></p>
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Comment</p>
+            <h2>${escapeHtml(comment.sourceId)}</h2>
+          </div>
+          ${renderReviewStatusBadge(comment.effectiveStatus)}
+        </div>
+        <article class="card">
+          ${renderKeyValueList([
+            ["Row", String(comment.record.provenance.sourceRowNumber ?? "unknown")],
+            ["External ID", comment.record.provenance.externalId ?? "none"],
+            ["Artifact", toPortableRelativePath(data.projectRoot, comment.recordPath)],
+            ["Related opinions", String(relatedOpinions.length)]
+          ])}
+          ${renderReviewArtifactSummary(comment.review, "comment")}
+          <pre>${escapeHtml(comment.record.contentText)}</pre>
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Opinions</p>
+            <h2>Derived from this comment</h2>
+          </div>
+        </div>
+        ${
+          relatedOpinions.length === 0
+            ? `<article class="card"><p>No extracted opinions reference this comment yet.</p></article>`
+            : `<section class="grid">
+                ${relatedOpinions.map((opinion) => renderAdminOpinionCard(opinion)).join("")}
+              </section>`
+        }
+      </section>
+    </main>`
+  );
+}
+
+function renderAdminOpinionDetailPage(
+  data: ProjectDashboardData,
+  adminCorpus: AdminCorpus,
+  opinionId: string
+): string {
+  const opinion = adminCorpus.opinions.find((entry) => entry.opinionId === opinionId);
+
+  if (opinion === undefined) {
+    throw new Error(`Opinion '${opinionId}' was not found.`);
+  }
+
+  return renderPage(
+    data,
+    "Admin Review",
+    `<main class="shell">
+      ${renderHeader(data, "Admin Review")}
+      <section class="panel">
+        <p class="eyebrow"><a href="/admin/content?kind=opinions">Back to opinion browser</a></p>
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Opinion</p>
+            <h2>${escapeHtml(truncateForUi(opinion.artifact.opinionText ?? opinion.opinionId, 120))}</h2>
+          </div>
+          ${renderReviewStatusBadge(opinion.effectiveStatus)}
+        </div>
+        <article class="card stack">
+          ${renderKeyValueList([
+            ["Opinion ID", opinion.opinionId],
+            ["Effective source", opinion.effectiveStatusSource],
+            ["Opinion artifact", toPortableRelativePath(data.projectRoot, opinion.artifactPath)],
+            ["Opinion run", opinion.runId],
+            ["Source comment", opinion.artifact.sourceId ?? "unknown"]
+          ])}
+          ${renderReviewArtifactSummary(opinion.opinionReview, "opinion")}
+          ${renderReviewArtifactSummary(opinion.commentReview, "comment")}
+          <div class="stack">
+            <p class="section-label">Opinion</p>
+            <p>${escapeHtml(opinion.artifact.opinionText ?? "")}</p>
+          </div>
+          <div class="stack">
+            <p class="section-label">Excerpt</p>
+            <p>${escapeHtml(opinion.artifact.excerpt ?? "")}</p>
+          </div>
+          <div class="stack">
+            <p class="section-label">Full comment</p>
+            <pre>${escapeHtml(opinion.sourceRecord?.contentText ?? opinion.artifact.fullComment ?? "Source comment unavailable.")}</pre>
+          </div>
+        </article>
       </section>
     </main>`
   );
@@ -1845,7 +2344,8 @@ function renderHeader(data: ProjectDashboardData, activePage: string): string {
     { href: "/pipeline/ingest", label: "Ingest Comments", key: "Ingest Comments" },
     { href: "/pipeline/opinions", label: "Extract Opinions", key: "Extract Opinions" },
     { href: "/pipeline/analysis", label: "Perform Analysis", key: "Perform Analysis" },
-    { href: "/pipeline/report", label: "Create Report", key: "Create Report" }
+    { href: "/pipeline/report", label: "Create Report", key: "Create Report" },
+    { href: "/admin", label: "Admin Review", key: "Admin Review" }
   ];
 
   return `<header class="site-header">
@@ -2206,6 +2706,196 @@ function renderPipelineCard(step: {
     <p>${escapeHtml(step.summary)}</p>
     <p class="meta">${escapeHtml(step.detail)}</p>
   </a>`;
+}
+
+function renderAdminKindToggle(kind: "comments" | "opinions"): string {
+  return [
+    { kind: "opinions", label: "Opinions" },
+    { kind: "comments", label: "Comments" }
+  ]
+    .map(
+      (item) => `<a class="filter-chip ${item.kind === kind ? "active" : ""}" href="/admin/content?kind=${item.kind}">${escapeHtml(item.label)}</a>`
+    )
+    .join("");
+}
+
+function renderReviewFilterLinks(
+  basePath: string,
+  kind: "comments" | "opinions",
+  selectedStatuses: ReviewStatus[]
+): string {
+  const allActive = selectedStatuses.length === REVIEW_STATUS_VALUES.length;
+
+  return [
+    `<a class="filter-chip ${allActive ? "active" : ""}" href="${basePath}?kind=${kind}">Default view</a>`,
+    ...REVIEW_STATUS_VALUES.map(
+      (status) =>
+        `<a class="filter-chip ${selectedStatuses.includes(status) ? "active" : ""}" href="${buildAdminContentHref(kind, [status], 0)}">${escapeHtml(
+          status
+        )}</a>`
+    )
+  ].join("");
+}
+
+function buildAdminContentHref(
+  kind: "comments" | "opinions",
+  statuses: ReviewStatus[],
+  offset: number
+): string {
+  const params = new URLSearchParams();
+  params.set("kind", kind);
+
+  for (const status of statuses) {
+    params.append("status", status);
+  }
+
+  if (offset > 0) {
+    params.set("offset", String(offset));
+  }
+
+  return `/admin/content?${params.toString()}`;
+}
+
+function renderAdminCommentTable(entries: AdminCommentEntry[]): string {
+  if (entries.length === 0) {
+    return `<article class="card"><p>No comments matched this filter.</p></article>`;
+  }
+
+  return `<div class="table-shell">
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>Comment</th>
+          <th>Status</th>
+          <th>Opinions</th>
+          <th>Preview</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${entries
+          .map(
+            (entry) => `<tr>
+                <td><a href="/admin/comments/${encodeURIComponent(entry.sourceId)}">${escapeHtml(entry.sourceId)}</a></td>
+                <td>${renderReviewStatusBadge(entry.effectiveStatus)}</td>
+                <td>${entry.relatedOpinionIds.length}</td>
+                <td>${escapeHtml(truncateForUi(entry.record.contentText, 180))}</td>
+              </tr>`
+          )
+          .join("")}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function renderAdminOpinionTable(entries: AdminOpinionEntry[]): string {
+  if (entries.length === 0) {
+    return `<article class="card"><p>No opinions matched this filter.</p></article>`;
+  }
+
+  return `<div class="table-shell">
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>Opinion</th>
+          <th>Status</th>
+          <th>Source</th>
+          <th>Excerpt</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${entries
+          .map(
+            (entry) => `<tr>
+                <td><a href="/admin/opinions/${encodeURIComponent(entry.opinionId)}">${escapeHtml(
+                  truncateForUi(entry.artifact.opinionText ?? entry.opinionId, 120)
+                )}</a></td>
+                <td>${renderReviewStatusBadge(entry.effectiveStatus)}</td>
+                <td><a href="/admin/comments/${encodeURIComponent(entry.artifact.sourceId ?? "")}">${escapeHtml(entry.artifact.sourceId ?? "unknown")}</a></td>
+                <td>${escapeHtml(truncateForUi(entry.artifact.excerpt ?? "", 160))}</td>
+              </tr>`
+          )
+          .join("")}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function summarizeReviewStatuses(statuses: ReviewStatus[]): Array<[ReviewStatus, number]> {
+  const counts = new Map<ReviewStatus, number>(
+    REVIEW_STATUS_VALUES.map((status) => [status, 0] as const)
+  );
+
+  for (const status of statuses) {
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+
+  return REVIEW_STATUS_VALUES.map((status) => [status, counts.get(status) ?? 0]);
+}
+
+function renderReviewStatusSummary(items: Array<[ReviewStatus, number]>): string {
+  return `<div class="review-status-grid">
+    ${items
+      .map(
+        ([status, count]) => `<div class="review-status-card">
+            ${renderReviewStatusBadge(status)}
+            <p class="review-status-count">${count}</p>
+          </div>`
+      )
+      .join("")}
+  </div>`;
+}
+
+function formatIncludedStatuses(statuses: ReviewStatus[]): string {
+  return statuses.length === 0 ? "none" : statuses.join(", ");
+}
+
+function renderReviewStatusBadge(status: ReviewStatus): string {
+  return `<span class="status-badge ${reviewStatusClassName(status)}">${escapeHtml(status)}</span>`;
+}
+
+function reviewStatusClassName(status: ReviewStatus): string {
+  return `status-${status.replaceAll(/[^a-z0-9]+/g, "-")}`;
+}
+
+function renderReviewArtifactSummary(
+  artifact: CommentReviewArtifact | OpinionReviewArtifact | null,
+  kind: "comment" | "opinion"
+): string {
+  if (artifact === null) {
+    return `<div class="stack">
+      <p class="section-label">${kind === "comment" ? "Comment review" : "Opinion review"}</p>
+      <p class="meta">No explicit ${kind} review artifact exists. The effective status currently falls back to default or inherited state.</p>
+    </div>`;
+  }
+
+  return `<div class="stack">
+    <p class="section-label">${kind === "comment" ? "Comment review" : "Opinion review"}</p>
+    ${renderKeyValueList([
+      ["Status", artifact.status],
+      ["Reason", artifact.reasonCode],
+      ["Actor", `${artifact.actor.type}:${artifact.actor.name}`],
+      ["Updated", artifact.updatedAt]
+    ])}
+    ${
+      artifact.note.length === 0
+        ? ""
+        : `<p class="meta">${escapeHtml(artifact.note)}</p>`
+    }
+  </div>`;
+}
+
+function renderAdminOpinionCard(opinion: AdminOpinionEntry): string {
+  return `<article class="card record-card">
+    <div class="record-header">
+      <p class="eyebrow">Opinion</p>
+      <h3><a href="/admin/opinions/${encodeURIComponent(opinion.opinionId)}">${escapeHtml(
+        truncateForUi(opinion.artifact.opinionText ?? opinion.opinionId, 120)
+      )}</a></h3>
+      <p class="meta">${escapeHtml(opinion.opinionId)}</p>
+    </div>
+    <p>${renderReviewStatusBadge(opinion.effectiveStatus)} <span class="meta">via ${escapeHtml(opinion.effectiveStatusSource)}</span></p>
+    <p>${escapeHtml(opinion.artifact.excerpt ?? "")}</p>
+  </article>`;
 }
 
 function renderKeyValueList(items: Array<[string, string]>): string {
@@ -2616,6 +3306,12 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         text-decoration: none;
         filter: brightness(1.03);
       }
+      .button-link-secondary {
+        background: rgba(255,255,255,0.88);
+        color: var(--bl-primary-800);
+        border: 1px solid rgba(27,114,176,0.18);
+        box-shadow: none;
+      }
       .facts {
         display: grid;
         gap: 12px;
@@ -2659,6 +3355,113 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         display: flex;
         justify-content: center;
         margin-top: 18px;
+      }
+      .button-row,
+      .admin-toolbar,
+      .toggle-row,
+      .filter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .admin-toolbar {
+        flex-direction: column;
+        margin-bottom: 16px;
+      }
+      .table-shell {
+        overflow-x: auto;
+      }
+      .admin-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: rgba(255,255,255,0.9);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        overflow: hidden;
+      }
+      .admin-table th,
+      .admin-table td {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+        text-align: left;
+      }
+      .admin-table th {
+        color: var(--muted);
+        font: 700 12px/1.2 ui-monospace, monospace;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: rgba(245,247,251,0.92);
+      }
+      .admin-table tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      .filter-chip,
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 999px;
+        font: 700 12px/1.2 ui-monospace, monospace;
+        letter-spacing: 0.02em;
+      }
+      .filter-chip {
+        padding: 10px 14px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.9);
+        color: var(--muted);
+      }
+      .filter-chip.active {
+        border-color: rgba(27,114,176,0.22);
+        background: rgba(27,114,176,0.10);
+        color: var(--bl-primary-800);
+      }
+      .status-badge {
+        padding: 7px 10px;
+        border: 1px solid transparent;
+        white-space: nowrap;
+      }
+      .status-included {
+        background: rgba(21,121,79,0.12);
+        border-color: rgba(21,121,79,0.18);
+        color: #0d5f3b;
+      }
+      .status-excluded-non-substantive {
+        background: rgba(232,145,58,0.14);
+        border-color: rgba(232,145,58,0.18);
+        color: #9b5808;
+      }
+      .status-excluded-off-topic {
+        background: rgba(166,77,121,0.12);
+        border-color: rgba(166,77,121,0.18);
+        color: #86355e;
+      }
+      .status-excluded-admin {
+        background: rgba(198,69,54,0.12);
+        border-color: rgba(198,69,54,0.18);
+        color: #8c2e24;
+      }
+      .status-excluded-duplicate {
+        background: rgba(108,99,255,0.12);
+        border-color: rgba(108,99,255,0.18);
+        color: #4d44d3;
+      }
+      .review-status-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      }
+      .review-status-card {
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(250,251,253,0.92);
+      }
+      .review-status-count {
+        margin: 10px 0 0;
+        font-size: 1.6rem;
+        font-weight: 700;
+        color: var(--bl-gray-900);
       }
       .columns {
         display: grid;
