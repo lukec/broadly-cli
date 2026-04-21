@@ -6,6 +6,8 @@ export const DEFAULT_PROJECT_DIRECTORIES = [
   "data/normalized",
   "data/opinions",
   "data/embeddings",
+  "data/review/comments",
+  "data/review/opinions",
   "archive/opinions",
   "archive/analysis",
   "llm-cache/text",
@@ -18,6 +20,10 @@ export interface ProjectPaths {
   rootDir: string;
   configPath: string;
   dataDir: string;
+  reviewDir: string;
+  reviewCommentsDir: string;
+  reviewOpinionsDir: string;
+  reviewConfigPath: string;
   archiveDir: string;
   llmCacheDir: string;
   promptsDir: string;
@@ -34,6 +40,10 @@ export function resolveProjectPaths(rootDir: string): ProjectPaths {
     rootDir: absoluteRootDir,
     configPath: path.join(absoluteRootDir, "broadly.yaml"),
     dataDir: path.join(absoluteRootDir, "data"),
+    reviewDir: path.join(absoluteRootDir, "data", "review"),
+    reviewCommentsDir: path.join(absoluteRootDir, "data", "review", "comments"),
+    reviewOpinionsDir: path.join(absoluteRootDir, "data", "review", "opinions"),
+    reviewConfigPath: path.join(absoluteRootDir, "data", "review", "config.json"),
     archiveDir: path.join(absoluteRootDir, "archive"),
     llmCacheDir: path.join(absoluteRootDir, "llm-cache"),
     promptsDir: path.join(absoluteRootDir, "prompts"),

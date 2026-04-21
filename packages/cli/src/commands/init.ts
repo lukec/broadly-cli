@@ -13,6 +13,7 @@ import {
   ensureProjectLayout
 } from "@broadly/core";
 import { appendProjectLogEvent, ensureProjectLogFile, PROJECT_LOG_FILENAME } from "../projectLog.js";
+import { ensureProjectReviewState } from "../reviewState.js";
 
 export interface InitProjectOptions {
   project?: string;
@@ -39,6 +40,7 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
 
   await writeFile(projectPaths.configPath, broadlyYaml, "utf8");
   await ensureProjectLogFile(setup.rootDir);
+  await ensureProjectReviewState(projectPaths);
 
   const starterPromptPath = path.join(projectPaths.promptsDir, "opinion-extraction.md");
   const analysisClusterPromptPath = path.join(
@@ -158,6 +160,7 @@ function printNextSteps(rootDir: string, configPath: string): void {
     "- data/raw",
     "- data/normalized",
     "- data/opinions",
+    "- data/review",
     "- archive",
     "- llm-cache",
     "- prompts",
