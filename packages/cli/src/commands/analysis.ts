@@ -12,7 +12,12 @@ import {
   type AnalysisViewConfig,
   type BroadlyProjectConfig
 } from "@broadly/config";
-import { resolveProjectPaths, sha256Hex } from "@broadly/core";
+import {
+  resolveProjectPaths,
+  sha256Hex,
+  type ReviewConfig,
+  type ReviewStatus
+} from "@broadly/core";
 import { UMAP } from "umap-js";
 import { kmeans } from "ml-kmeans";
 
@@ -26,6 +31,12 @@ import {
   writeCurrentRunId
 } from "../projectArtifacts.js";
 import { withProjectActionLog } from "../projectLog.js";
+import {
+  ensureProjectReviewState,
+  loadCommentReview,
+  loadOpinionReview,
+  resolveEffectiveOpinionReviewStatus
+} from "../reviewState.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -254,6 +265,16 @@ interface AnalysisRunManifest {
     opinionRunDir: string;
     opinionsDir: string;
     opinionsSelected: number;
+    review: {
+      configPath: string;
+      configSha256: string;
+      includeCommentStatuses: ReviewStatus[];
+      includeOpinionStatuses: ReviewStatus[];
+      totalOpinionsAvailable: number;
+      selectedOpinions: number;
+      excludedOpinions: number;
+      excludedByStatus: ReviewStatusCounts;
+    };
     offset?: number;
     limit?: number;
     extractionModel: RegisteredModel;
@@ -292,6 +313,12 @@ interface AnalysisRunManifest {
       opinionRunDir: string;
       opinionsDir: string;
       opinionsSelected: number;
+      review: {
+        totalOpinionsAvailable: number;
+        selectedOpinions: number;
+        excludedOpinions: number;
+        excludedByStatus: ReviewStatusCounts;
+      };
       extractionModel: RegisteredModel;
       embeddingModel: RegisteredModel;
       embeddingsDir: string;
@@ -324,6 +351,7 @@ interface AnalysisRunFingerprint {
   opinionRunId: string;
   selectedOpinionIdsSha256: string;
   groupsSha256?: string;
+  reviewConfigSha256: string;
   embeddingModel: string;
   analysisModel: string;
   viewsSha256: string;
@@ -389,9 +417,17 @@ interface AnalysisViewGroup {
   opinionsRunDir: string;
   opinionsDir: string;
   selectedOpinionPaths: string[];
+  review: {
+    totalOpinionCount: number;
+    selectedOpinionCount: number;
+    excludedOpinionCount: number;
+    effectiveStatusCounts: Record<ReviewStatus, number>;
+  };
   embeddingsDir: string;
   embeddingsManifestPath: string;
 }
+
+type ReviewStatusCounts = Record<ReviewStatus, number>;
 
 export async function runAnalysis(options: AnalysisCommandOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
@@ -406,6 +442,8 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
     action: async () => {
       const projectPaths = resolveProjectPaths(projectRoot);
       const config = await loadProjectConfig(projectPaths.configPath);
+      const reviewConfig = await ensureProjectReviewState(projectPaths);
+      const reviewConfigSha256 = sha256Hex(JSON.stringify(reviewConfig));
       const analysisViews = resolveConfiguredAnalysisViews(config, options.embeddingModel);
       const firstView = analysisViews[0];
 
@@ -451,6 +489,7 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
         config,
         projectPaths,
         projectRoot,
+        reviewConfig,
         resolvedViews,
         currentOpinionRunId,
         offset,
@@ -469,9 +508,27 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       const selectedOpinionPaths = firstGroup.selectedOpinionPaths;
       const embeddingsDir = firstGroup.embeddingsDir;
       const embeddingsManifestPath = firstGroup.embeddingsManifestPath;
+      const reviewTotals = analysisGroups.reduce(
+        (summary, group) => ({
+          totalOpinionCount: summary.totalOpinionCount + group.review.totalOpinionCount,
+          selectedOpinionCount: summary.selectedOpinionCount + group.review.selectedOpinionCount,
+          excludedOpinionCount: summary.excludedOpinionCount + group.review.excludedOpinionCount,
+          excludedByStatus: mergeReviewStatusCounts(
+            summary.excludedByStatus,
+            extractExcludedReviewStatusCounts(group.review.effectiveStatusCounts)
+          )
+        }),
+        {
+          totalOpinionCount: 0,
+          selectedOpinionCount: 0,
+          excludedOpinionCount: 0,
+          excludedByStatus: createEmptyReviewStatusCounts()
+        }
+      );
       const fingerprint = buildAnalysisRunFingerprint({
         opinionRunId: firstGroup.opinionRunId,
         selectedOpinionPaths: analysisGroups.flatMap((group) => group.selectedOpinionPaths),
+        reviewConfigSha256,
         embeddingModel,
         analysisModel,
         clusterLabelingPromptSha256: resolvedViews[0]?.prompts.clusterLabeling.sha256 ?? "",
@@ -568,10 +625,9 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
         extractionModel,
         embeddingModel,
         analysisModel,
-        opinionsSelected: analysisGroups.reduce(
-          (sum, group) => sum + group.selectedOpinionPaths.length,
-          0
-        ),
+        opinionsSelected: reviewTotals.selectedOpinionCount,
+        reviewConfig,
+        reviewTotals,
         offset,
         ...(options.limit === undefined ? {} : { limit: options.limit })
       }));
@@ -617,10 +673,17 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
             opinionRunId: latestOpinionRun.runId,
             opinionRunDir: firstGroup.opinionsRunDir,
             opinionsDir: firstGroup.opinionsDir,
-            opinionsSelected: analysisGroups.reduce(
-              (sum, group) => sum + group.selectedOpinionPaths.length,
-              0
-            ),
+            opinionsSelected: reviewTotals.selectedOpinionCount,
+            review: {
+              configPath: projectPaths.reviewConfigPath,
+              configSha256: reviewConfigSha256,
+              includeCommentStatuses: [...reviewConfig.analysis.includeCommentStatuses],
+              includeOpinionStatuses: [...reviewConfig.analysis.includeOpinionStatuses],
+              totalOpinionsAvailable: reviewTotals.totalOpinionCount,
+              selectedOpinions: reviewTotals.selectedOpinionCount,
+              excludedOpinions: reviewTotals.excludedOpinionCount,
+              excludedByStatus: reviewTotals.excludedByStatus
+            },
             ...(offset > 0 ? { offset } : {}),
             ...(options.limit === undefined ? {} : { limit: options.limit }),
             extractionModel,
@@ -662,6 +725,14 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
               opinionRunDir: group.opinionsRunDir,
               opinionsDir: group.opinionsDir,
               opinionsSelected: group.selectedOpinionPaths.length,
+              review: {
+              totalOpinionsAvailable: group.review.totalOpinionCount,
+              selectedOpinions: group.review.selectedOpinionCount,
+              excludedOpinions: group.review.excludedOpinionCount,
+              excludedByStatus: extractExcludedReviewStatusCounts(
+                group.review.effectiveStatusCounts
+              )
+            },
               extractionModel: group.extractionModel,
               embeddingModel: group.embeddingModel,
               embeddingsDir: group.embeddingsDir,
@@ -1157,7 +1228,15 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
         formatDetailLine("Opinion Run", latestOpinionRun.runId),
         formatDetailLine("Embedding", `${embeddingModel.name} (${embeddingModel.provider} · ${embeddingModel.region} · ${embeddingModel.modelId})`),
         formatDetailLine("Analysis", `${analysisModel.name} (${analysisModel.provider} · ${analysisModel.region} · ${analysisModel.modelId})`),
-        formatDetailLine("Selection", `${selectedOpinionPaths.length} opinions${offset > 0 ? ` · offset ${offset}` : ""}${options.limit === undefined ? "" : ` · limit ${options.limit}`}`),
+        formatDetailLine("Selection", `${reviewTotals.selectedOpinionCount} opinions${offset > 0 ? ` · offset ${offset}` : ""}${options.limit === undefined ? "" : ` · limit ${options.limit}`}`),
+        formatDetailLine(
+          "Review",
+          `comments=${formatIncludedReviewStatuses(reviewConfig.analysis.includeCommentStatuses)} · opinions=${formatIncludedReviewStatuses(reviewConfig.analysis.includeOpinionStatuses)}`
+        ),
+        formatDetailLine(
+          "Filtered",
+          `${reviewTotals.excludedOpinionCount} excluded of ${reviewTotals.totalOpinionCount} total · ${formatExcludedReviewStatusCounts(reviewTotals.excludedByStatus)}`
+        ),
         formatDetailLine("Resume", autoResumed ? "Compatible existing run reused" : "Fresh analysis run"),
         formatDetailLine("Embeddings", `${embeddingsReady} ready · ${embeddingsGenerated} generated · ${embeddingsReused} reused · ${failedOpinions} failed`),
         formatDetailLine("Reductions", reductionSummary === "" ? "none" : `${reductionSummary} · ${reductionsGenerated} generated · ${reductionsReused} reused`),
@@ -1272,6 +1351,7 @@ async function resolveAnalysisViewGroups(options: {
   config: BroadlyProjectConfig;
   projectPaths: ReturnType<typeof resolveProjectPaths>;
   projectRoot: string;
+  reviewConfig: ReviewConfig;
   resolvedViews: ResolvedAnalysisView[];
   currentOpinionRunId: string | null;
   offset: number;
@@ -1322,7 +1402,42 @@ async function resolveAnalysisViewGroups(options: {
     const opinionsRunDir = path.join(options.projectPaths.dataDir, "opinions", latestOpinionRun.runId);
     const opinionsDir = path.join(opinionsRunDir, "opinions");
     const allOpinionPaths = await listOpinionArtifactPaths(opinionsDir);
-    const selectedOpinionPaths = allOpinionPaths.slice(
+    const effectiveStatusCounts = createEmptyReviewStatusCounts();
+    const filteredOpinionPaths: string[] = [];
+
+    for (const opinionPath of allOpinionPaths) {
+      const opinionId = path.basename(opinionPath, ".json");
+      const opinionArtifact = await readJsonFile<OpinionArtifact>(opinionPath);
+
+      if (opinionArtifact === null || typeof opinionArtifact.sourceId !== "string") {
+        effectiveStatusCounts.included += 1;
+        filteredOpinionPaths.push(opinionPath);
+        continue;
+      }
+
+      const [commentReview, opinionReview] = await Promise.all([
+        loadCommentReview(options.projectPaths, opinionArtifact.sourceId),
+        loadOpinionReview(options.projectPaths, opinionId)
+      ]);
+      const resolvedReview = resolveEffectiveOpinionReviewStatus({
+        commentReview,
+        opinionReview
+      });
+
+      effectiveStatusCounts[resolvedReview.status] += 1;
+
+      if (
+        countIncludedReviewStatuses(
+          options.reviewConfig,
+          resolvedReview.source,
+          resolvedReview.status
+        )
+      ) {
+        filteredOpinionPaths.push(opinionPath);
+      }
+    }
+
+    const selectedOpinionPaths = filteredOpinionPaths.slice(
       options.offset,
       options.limit === undefined ? undefined : options.offset + options.limit
     );
@@ -1343,6 +1458,12 @@ async function resolveAnalysisViewGroups(options: {
       opinionsRunDir,
       opinionsDir,
       selectedOpinionPaths,
+      review: {
+        totalOpinionCount: allOpinionPaths.length,
+        selectedOpinionCount: selectedOpinionPaths.length,
+        excludedOpinionCount: allOpinionPaths.length - filteredOpinionPaths.length,
+        effectiveStatusCounts
+      },
       embeddingsDir,
       embeddingsManifestPath: path.join(embeddingsDir, "manifest.json")
     });
@@ -1369,6 +1490,63 @@ function uniqueList(values: string[]): string[] {
 
 function uniqueNumberList(values: number[]): number[] {
   return [...new Set(values)].sort((left, right) => left - right);
+}
+
+function createEmptyReviewStatusCounts(): ReviewStatusCounts {
+  return {
+    included: 0,
+    "excluded-non-substantive": 0,
+    "excluded-off-topic": 0,
+    "excluded-admin": 0,
+    "excluded-duplicate": 0
+  };
+}
+
+function mergeReviewStatusCounts(
+  left: ReviewStatusCounts,
+  right: ReviewStatusCounts
+): ReviewStatusCounts {
+  const merged = createEmptyReviewStatusCounts();
+
+  for (const key of Object.keys(merged) as ReviewStatus[]) {
+    merged[key] = (left[key] ?? 0) + (right[key] ?? 0);
+  }
+
+  return merged;
+}
+
+function extractExcludedReviewStatusCounts(counts: ReviewStatusCounts): ReviewStatusCounts {
+  return {
+    included: 0,
+    "excluded-non-substantive": counts["excluded-non-substantive"] ?? 0,
+    "excluded-off-topic": counts["excluded-off-topic"] ?? 0,
+    "excluded-admin": counts["excluded-admin"] ?? 0,
+    "excluded-duplicate": counts["excluded-duplicate"] ?? 0
+  };
+}
+
+function formatExcludedReviewStatusCounts(counts: ReviewStatusCounts): string {
+  const parts = (Object.entries(counts) as Array<[ReviewStatus, number]>)
+    .filter(([status, count]) => status !== "included" && count > 0)
+    .map(([status, count]) => `${status}=${count}`);
+
+  return parts.length === 0 ? "none" : parts.join(" · ");
+}
+
+function formatIncludedReviewStatuses(statuses: ReviewStatus[]): string {
+  return statuses.length === 0 ? "none" : statuses.join(", ");
+}
+
+function countIncludedReviewStatuses(
+  reviewConfig: ReviewConfig,
+  effectiveStatusSource: "default" | "comment" | "opinion",
+  status: ReviewStatus
+): boolean {
+  if (effectiveStatusSource === "comment") {
+    return reviewConfig.analysis.includeCommentStatuses.includes(status);
+  }
+
+  return reviewConfig.analysis.includeOpinionStatuses.includes(status);
 }
 
 function formatRunTimestamp(value: Date): string {
@@ -3074,6 +3252,7 @@ function buildAnalysisRunFingerprint(options: {
   embeddingModel: RegisteredModel;
   analysisModel: RegisteredModel;
   groupsSha256?: string;
+  reviewConfigSha256: string;
   viewsSha256: string;
   clusterLabelingPromptSha256: string;
   perspectiveSummaryPromptSha256: string;
@@ -3093,6 +3272,7 @@ function buildAnalysisRunFingerprint(options: {
   return {
     opinionRunId: options.opinionRunId,
     selectedOpinionIdsSha256,
+    reviewConfigSha256: options.reviewConfigSha256,
     embeddingModel: modelFingerprintValue(options.embeddingModel),
     analysisModel: modelFingerprintValue(options.analysisModel),
     viewsSha256: options.viewsSha256,
@@ -3177,6 +3357,13 @@ function renderAnalysisIntro(options: {
   embeddingModel: RegisteredModel;
   analysisModel: RegisteredModel;
   opinionsSelected: number;
+  reviewConfig: ReviewConfig;
+  reviewTotals: {
+    totalOpinionCount: number;
+    selectedOpinionCount: number;
+    excludedOpinionCount: number;
+    excludedByStatus: ReviewStatusCounts;
+  };
   offset: number;
   limit?: number;
 }): string {
@@ -3194,6 +3381,14 @@ function renderAnalysisIntro(options: {
     formatDetailLine(
       "Selection",
       `${options.opinionsSelected} opinions${options.offset > 0 ? ` · offset ${options.offset}` : ""}${options.limit === undefined ? "" : ` · limit ${options.limit}`}`
+    ),
+    formatDetailLine(
+      "Review",
+      `comments=${formatIncludedReviewStatuses(options.reviewConfig.analysis.includeCommentStatuses)} · opinions=${formatIncludedReviewStatuses(options.reviewConfig.analysis.includeOpinionStatuses)}`
+    ),
+    formatDetailLine(
+      "Filtered",
+      `${options.reviewTotals.excludedOpinionCount} excluded of ${options.reviewTotals.totalOpinionCount} total · ${formatExcludedReviewStatusCounts(options.reviewTotals.excludedByStatus)}`
     ),
     formatDetailLine(
       "Resume",
