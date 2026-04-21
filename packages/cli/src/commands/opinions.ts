@@ -8,7 +8,11 @@ import {
   type BroadlyProjectConfig
 } from "@broadly/config";
 import { resolveProjectPaths, sha256Hex } from "@broadly/core";
-import type { NormalizedCommentRecord } from "@broadly/ingest";
+import {
+  getNormalizedCommentDerivedFields,
+  getNormalizedCommentPrimaryText,
+  type NormalizedCommentRecord
+} from "@broadly/ingest";
 
 import { runTextPromptWithModel } from "../modelRuntime.js";
 import {
@@ -886,6 +890,7 @@ function buildOpinionPrompt(
   promptTemplate: string,
   normalizedRecord: NormalizedCommentRecord
 ): string {
+  const derived = getNormalizedCommentDerivedFields(normalizedRecord);
   const fieldList = Object.keys(normalizedRecord.rawRow)
     .map((field) => `- ${field}`)
     .join("\n");
@@ -896,6 +901,33 @@ function buildOpinionPrompt(
 
 ${fieldList}
 
+## Derived primary text
+
+\`\`\`text
+${getNormalizedCommentPrimaryText(normalizedRecord)}
+\`\`\`
+
+${derived.translatedPrimaryText === undefined ? "" : `## Derived translated primary text
+
+\`\`\`text
+${derived.translatedPrimaryText}
+\`\`\`
+
+`}
+${derived.titleText === undefined ? "" : `## Derived title or subject
+
+\`\`\`text
+${derived.titleText}
+\`\`\`
+
+`}
+${derived.contextText === undefined ? "" : `## Derived context or prompt
+
+\`\`\`text
+${derived.contextText}
+\`\`\`
+
+`}
 ## Source record
 
 \`\`\`text

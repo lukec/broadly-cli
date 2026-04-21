@@ -18,6 +18,7 @@ export interface NormalizedCommentRecord {
   sourceId: string;
   contentSha256: string;
   contentText: string;
+  derived?: NormalizedCommentDerivedFields;
   rawRow: Record<string, string>;
   provenance: {
     importPath: string;
@@ -28,6 +29,21 @@ export interface NormalizedCommentRecord {
     sourceRowNumber: number;
     externalId?: string;
   };
+}
+
+export interface NormalizedCommentDerivedFields {
+  primaryText: string;
+  primaryFieldNames: string[];
+  translatedPrimaryText?: string;
+  translatedFieldNames?: string[];
+  titleText?: string;
+  titleFieldNames?: string[];
+  contextText?: string;
+  contextFieldNames?: string[];
+  sourceLabel?: string;
+  sourceFieldNames?: string[];
+  language?: string;
+  languageFieldNames?: string[];
 }
 
 export interface IngestManifest {
@@ -131,6 +147,7 @@ export async function addTabularDataSource(
       sourceId: contentSha256,
       contentSha256,
       contentText,
+      derived: deriveNormalizedCommentDerivedFields(rawRow),
       rawRow,
       provenance: {
         importPath: storedDatasetPath,
@@ -209,6 +226,96 @@ export async function addTabularDataSource(
     headers,
     sourceHeaders
   };
+}
+
+export function deriveNormalizedCommentDerivedFields(
+  rawRow: Record<string, string>
+): NormalizedCommentDerivedFields {
+  const populatedFields = Object.entries(rawRow)
+    .map(([header, value]) => ({
+      header,
+      value: normalizeCellValue(value),
+      normalizedHeader: normalizeFieldName(header)
+    }))
+    .filter((entry) => entry.value.length > 0);
+
+  const primaryFields = populatedFields.filter((entry) => isPrimaryContentField(entry.normalizedHeader));
+  const translatedPrimaryFields = populatedFields.filter((entry) =>
+    isTranslatedPrimaryContentField(entry.normalizedHeader)
+  );
+  const titleFields = populatedFields.filter((entry) => isTitleField(entry.normalizedHeader));
+  const contextFields = populatedFields.filter((entry) => isContextField(entry.normalizedHeader));
+  const sourceFields = populatedFields.filter((entry) => isSourceField(entry.normalizedHeader));
+  const languageFields = populatedFields.filter((entry) => isLanguageField(entry.normalizedHeader));
+  const fallbackPrimaryFields =
+    primaryFields.length > 0
+      ? primaryFields
+      : selectFallbackPrimaryFields(
+          populatedFields.filter(
+            (entry) =>
+              isTranslatedPrimaryContentField(entry.normalizedHeader) === false &&
+              isTitleField(entry.normalizedHeader) === false &&
+              isContextField(entry.normalizedHeader) === false &&
+              isSourceField(entry.normalizedHeader) === false &&
+              isLanguageField(entry.normalizedHeader) === false
+          )
+        );
+
+  const derived: NormalizedCommentDerivedFields = {
+    primaryText: joinFieldValues(fallbackPrimaryFields),
+    primaryFieldNames: fallbackPrimaryFields.map((entry) => entry.header)
+  };
+
+  const translatedPrimaryText = joinFieldValues(translatedPrimaryFields);
+  const titleText = joinFieldValues(titleFields);
+  const contextText = joinFieldValues(contextFields);
+  const sourceLabel = joinFieldValues(sourceFields);
+  const language = joinFieldValues(languageFields);
+
+  if (translatedPrimaryText.length > 0) {
+    derived.translatedPrimaryText = translatedPrimaryText;
+    derived.translatedFieldNames = translatedPrimaryFields.map((entry) => entry.header);
+  }
+
+  if (titleText.length > 0) {
+    derived.titleText = titleText;
+    derived.titleFieldNames = titleFields.map((entry) => entry.header);
+  }
+
+  if (contextText.length > 0) {
+    derived.contextText = contextText;
+    derived.contextFieldNames = contextFields.map((entry) => entry.header);
+  }
+
+  if (sourceLabel.length > 0) {
+    derived.sourceLabel = sourceLabel;
+    derived.sourceFieldNames = sourceFields.map((entry) => entry.header);
+  }
+
+  if (language.length > 0) {
+    derived.language = language;
+    derived.languageFieldNames = languageFields.map((entry) => entry.header);
+  }
+
+  if (derived.primaryText.length === 0) {
+    derived.primaryText = joinFieldValues(populatedFields);
+    derived.primaryFieldNames = populatedFields.map((entry) => entry.header);
+  }
+
+  return derived;
+}
+
+export function getNormalizedCommentDerivedFields(
+  record: Pick<NormalizedCommentRecord, "rawRow" | "derived">
+): NormalizedCommentDerivedFields {
+  return record.derived ?? deriveNormalizedCommentDerivedFields(record.rawRow);
+}
+
+export function getNormalizedCommentPrimaryText(
+  record: Pick<NormalizedCommentRecord, "contentText" | "rawRow" | "derived">
+): string {
+  const derived = getNormalizedCommentDerivedFields(record);
+  return derived.primaryText.length > 0 ? derived.primaryText : record.contentText;
 }
 
 function decodeSourceText(sourceBuffer: Buffer): { encoding: string; text: string } {
@@ -403,6 +510,104 @@ function renderContentText(headers: string[], rawRow: Record<string, string>): s
   }
 
   return lines.join("\n");
+}
+
+function joinFieldValues(
+  entries: Array<{ header: string; value: string; normalizedHeader: string }>
+): string {
+  return entries
+    .map((entry) => entry.value.trim())
+    .filter((value) => value.length > 0)
+    .join("\n\n");
+}
+
+function selectFallbackPrimaryFields(
+  entries: Array<{ header: string; value: string; normalizedHeader: string }>
+): Array<{ header: string; value: string; normalizedHeader: string }> {
+  if (entries.length === 0) {
+    return [];
+  }
+
+  return [...entries]
+    .sort((left, right) => right.value.length - left.value.length || left.header.localeCompare(right.header))
+    .slice(0, 1);
+}
+
+function normalizeFieldName(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function hasAnyKeyword(header: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => header.includes(keyword));
+}
+
+function isTranslatedPrimaryContentField(header: string): boolean {
+  return header.includes("translation") && isPrimaryContentField(header, { allowTranslation: true });
+}
+
+function isPrimaryContentField(
+  header: string,
+  options?: {
+    allowTranslation?: boolean;
+  }
+): boolean {
+  if (header.length === 0) {
+    return false;
+  }
+
+  if (options?.allowTranslation !== true && header.includes("translation")) {
+    return false;
+  }
+
+  if (isTitleField(header) || isContextField(header) || isSourceField(header) || isLanguageField(header)) {
+    return false;
+  }
+
+  return hasAnyKeyword(header, [
+    "comment",
+    "question",
+    "idea",
+    "feedback",
+    "response",
+    "opinion",
+    "submission",
+    "remark",
+    "suggestion"
+  ]);
+}
+
+function isTitleField(header: string): boolean {
+  return hasAnyKeyword(header, ["subject", "title", "topic"]);
+}
+
+function isContextField(header: string): boolean {
+  return hasAnyKeyword(header, ["context", "prompt"]);
+}
+
+function isSourceField(header: string): boolean {
+  return header.includes("source") && header.includes("language") === false;
+}
+
+function isLanguageField(header: string): boolean {
+  return (
+    header.includes("language") &&
+    hasAnyKeyword(header, [
+      "comment",
+      "question",
+      "idea",
+      "feedback",
+      "response",
+      "opinion",
+      "submission",
+      "remark",
+      "suggestion"
+    ]) === false
+  );
 }
 
 function normalizeCellValue(value: string): string {

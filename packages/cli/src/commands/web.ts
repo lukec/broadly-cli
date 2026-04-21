@@ -15,7 +15,11 @@ import {
   type ReviewConfig,
   type ReviewStatus
 } from "@broadly/core";
-import type { NormalizedCommentRecord } from "@broadly/ingest";
+import {
+  getNormalizedCommentDerivedFields,
+  getNormalizedCommentPrimaryText,
+  type NormalizedCommentRecord
+} from "@broadly/ingest";
 import type { ReportBundle } from "@broadly/report-model";
 
 import {
@@ -203,6 +207,7 @@ interface NormalizedRecordPreview {
   sourceId: string;
   contentSha256: string;
   contentText: string;
+  primaryText: string;
   externalId: string | null;
   sourceRowNumber: number | null;
   normalizedRecordPath: string;
@@ -850,6 +855,7 @@ async function loadNormalizedRecordPreviews(
       sourceId: record.sourceId,
       contentSha256: record.contentSha256,
       contentText: record.contentText,
+      primaryText: getNormalizedCommentPrimaryText(record),
       externalId: record.provenance.externalId ?? null,
       sourceRowNumber: record.provenance.sourceRowNumber ?? null,
       normalizedRecordPath: recordPath
@@ -1372,6 +1378,12 @@ function renderAdminCommentDetailPage(
           ])}
           ${renderReviewArtifactSummary(comment.review, "comment")}
           ${renderReviewSuggestionSummary(comment.suggestion, "comment")}
+          ${
+            getNormalizedCommentPrimaryText(comment.record) === comment.record.contentText
+              ? ""
+              : `<p class="section-label">Primary text</p><pre>${escapeHtml(getNormalizedCommentPrimaryText(comment.record))}</pre>`
+          }
+          <p class="section-label">Full normalized record</p>
           <pre>${escapeHtml(comment.record.contentText)}</pre>
         </article>
         <form class="card admin-form" method="post" action="/admin/comments/${encodeURIComponent(comment.sourceId)}/review">
@@ -3042,6 +3054,12 @@ function renderNormalizedRecordPreview(
       <h3>${escapeHtml(record.sourceId)}</h3>
       <p class="meta">Row ${escapeHtml(record.sourceRowNumber?.toString() ?? "unknown")} · External ID ${escapeHtml(record.externalId ?? "none")}</p>
     </div>
+    ${
+      record.primaryText === record.contentText
+        ? ""
+        : `<p class="section-label">Primary text</p><pre>${escapeHtml(record.primaryText)}</pre>`
+    }
+    <p class="section-label">Full normalized record</p>
     <pre>${escapeHtml(record.contentText)}</pre>
     <p class="meta">SHA-256 ${escapeHtml(record.contentSha256)}</p>
     <p class="meta">Artifact ${escapeHtml(toPortableRelativePath(projectRoot, record.normalizedRecordPath))}</p>
@@ -3202,7 +3220,9 @@ function renderAdminCommentTable(entries: AdminCommentEntry[]): string {
               )}">Open</a>
             </div>
           </div>
-          <p class="review-snippet review-snippet-comment">${escapeHtml(entry.record.contentText)}</p>
+          <p class="review-snippet review-snippet-comment">${escapeHtml(
+            truncateForUi(getNormalizedCommentPrimaryText(entry.record), 320)
+          )}</p>
           <div class="meta-chip-row">${chips}</div>
           ${
             entry.review?.note.length
@@ -3275,7 +3295,9 @@ function renderAdminOpinionTable(entries: AdminOpinionEntry[]): string {
           <div class="meta-chip-row">${chips}</div>
           <p class="review-snippet review-snippet-source">${escapeHtml(
             truncateForUi(
-              entry.sourceRecord?.contentText ?? entry.artifact.fullComment ?? "Source comment unavailable.",
+              entry.sourceRecord === null || entry.sourceRecord === undefined
+                ? entry.artifact.fullComment ?? "Source comment unavailable."
+                : getNormalizedCommentPrimaryText(entry.sourceRecord),
               320
             )
           )}</p>
@@ -3352,6 +3374,7 @@ function matchesAdminCommentQuery(entry: AdminCommentEntry, query: string): bool
 
   return buildAdminSearchHaystack([
     entry.sourceId,
+    getNormalizedCommentPrimaryText(entry.record),
     entry.record.contentText,
     entry.record.provenance.externalId ?? "",
     entry.review?.reasonCode ?? "",
@@ -3371,6 +3394,9 @@ function matchesAdminOpinionQuery(entry: AdminOpinionEntry, query: string): bool
     entry.artifact.sourceId ?? "",
     entry.artifact.opinionText ?? "",
     entry.artifact.excerpt ?? "",
+    entry.sourceRecord === null || entry.sourceRecord === undefined
+      ? ""
+      : getNormalizedCommentPrimaryText(entry.sourceRecord),
     entry.sourceRecord?.contentText ?? entry.artifact.fullComment ?? "",
     entry.opinionReview?.reasonCode ?? "",
     entry.opinionReview?.note ?? "",

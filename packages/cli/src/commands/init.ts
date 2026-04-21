@@ -196,7 +196,11 @@ function createStarterOpinionExtractionPrompt(): string {
 
 You are a research assistant for broad listening analysis.
 
-The input is one normalized source record rendered as labeled fields followed by values.
+The input includes:
+- a derived primary text field that tries to isolate the substantive comment body
+- optional derived context such as title, prompt, or translation
+- the full normalized source record rendered as labeled fields
+
 Extract zero or more distinct opinion units from that record.
 
 ## Working definition
@@ -206,6 +210,7 @@ An opinion unit is one substantive request, concern, proposal, complaint, judgme
 ## Rules
 
 - Return plain text only using the exact header format defined below.
+- Use the derived primary text as your starting point, but verify against the full source record before deciding.
 - Keep the output in the same language as the source excerpt whenever possible.
 - Prefer to keep the record as a single opinion unit unless it clearly contains multiple distinct issues.
 - Split only when the source expresses materially separate issues that would cluster differently.

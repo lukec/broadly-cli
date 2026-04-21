@@ -4,7 +4,11 @@ import process from "node:process";
 
 import { parseProjectConfig, type BroadlyProjectConfig } from "@broadly/config";
 import { resolveProjectPaths, type ReviewStatus } from "@broadly/core";
-import type { NormalizedCommentRecord } from "@broadly/ingest";
+import {
+  getNormalizedCommentDerivedFields,
+  getNormalizedCommentPrimaryText,
+  type NormalizedCommentRecord
+} from "@broadly/ingest";
 
 import { type RegisteredModel, runTextPromptWithModel } from "../modelRuntime.js";
 import { withProjectActionLog } from "../projectLog.js";
@@ -107,6 +111,11 @@ interface ParsedLlmReviewDecision {
   note: string;
 }
 
+interface LoadedReviewPromptTemplate {
+  source: string;
+  path: string | null;
+}
+
 interface ReviewTarget<TKind extends "comment" | "opinion"> {
   kind: TKind;
   subjectId: string;
@@ -170,7 +179,7 @@ export async function runReview(options: ReviewCommandOptions): Promise<void> {
           : await runReviewTargetsWithModel(
               llmCommentTargets,
               reviewModel,
-              promptTemplate,
+              promptTemplate.source,
               projectRoot,
               concurrency
             );
@@ -180,7 +189,7 @@ export async function runReview(options: ReviewCommandOptions): Promise<void> {
           : await runReviewTargetsWithModel(
               llmOpinionTargets,
               reviewModel,
-              promptTemplate,
+              promptTemplate.source,
               projectRoot,
               concurrency
             );
@@ -211,8 +220,8 @@ export async function runReview(options: ReviewCommandOptions): Promise<void> {
                 modelId: reviewModel.modelId
               },
         prompt: {
-          path: reviewModel === null ? null : promptPath,
-          sha256: reviewModel === null ? null : simpleHash(promptTemplate)
+          path: reviewModel === null ? null : promptTemplate.path,
+          sha256: reviewModel === null ? null : simpleHash(promptTemplate.source)
         },
         thresholds: {
           machineReview: MACHINE_REVIEW_THRESHOLD,
@@ -342,7 +351,7 @@ function proposeHeuristicCommentOutcomes(
     comments.map((entry) => ({
       id: entry.subjectId,
       canonicalOrder: entry.record.provenance.sourceRowNumber ?? Number.MAX_SAFE_INTEGER,
-      text: entry.record.contentText
+      text: getNormalizedCommentPrimaryText(entry.record)
     }))
   );
 
@@ -372,7 +381,11 @@ function proposeHeuristicCommentOutcomes(
       continue;
     }
 
-    const outcome = detectShortNonSubstantive(comment.record.contentText, "comment", comment.subjectId);
+    const outcome = detectShortNonSubstantive(
+      getNormalizedCommentPrimaryText(comment.record),
+      "comment",
+      comment.subjectId
+    );
 
     if (outcome !== null) {
       outcomes.push(outcome);
@@ -985,6 +998,8 @@ function renderCommentReviewPrompt(
   config: BroadlyProjectConfig,
   comment: LoadedCommentEntry
 ): string {
+  const derived = getNormalizedCommentDerivedFields(comment.record);
+
   return [
     "Project-Name:",
     config.project.name,
@@ -998,7 +1013,17 @@ function renderCommentReviewPrompt(
     "Source-ID:",
     comment.subjectId,
     "",
-    "Comment-Text:",
+    "Primary-Text:",
+    derived.primaryText.length === 0 ? comment.record.contentText : derived.primaryText,
+    ...(derived.translatedPrimaryText === undefined
+      ? []
+      : ["", "Translated-Primary-Text:", derived.translatedPrimaryText]),
+    ...(derived.titleText === undefined ? [] : ["", "Title-Text:", derived.titleText]),
+    ...(derived.contextText === undefined ? [] : ["", "Context-Text:", derived.contextText]),
+    ...(derived.language === undefined ? [] : ["", "Language:", derived.language]),
+    ...(derived.sourceLabel === undefined ? [] : ["", "Source:", derived.sourceLabel]),
+    "",
+    "Full-Record:",
     comment.record.contentText
   ].join("\n");
 }
@@ -1034,11 +1059,17 @@ function renderOpinionReviewPrompt(
   ].join("\n");
 }
 
-async function readReviewPromptTemplate(promptPath: string): Promise<string> {
+async function readReviewPromptTemplate(promptPath: string): Promise<LoadedReviewPromptTemplate> {
   try {
-    return await readFile(promptPath, "utf8");
+    return {
+      source: await readFile(promptPath, "utf8"),
+      path: promptPath
+    };
   } catch {
-    return createFallbackReviewPrompt();
+    return {
+      source: createFallbackReviewPrompt(),
+      path: null
+    };
   }
 }
 
