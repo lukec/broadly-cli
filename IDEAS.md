@@ -217,3 +217,94 @@ Practical shape:
 - produce a higher-level theme layer without destroying lower-level cluster evidence
 
 This keeps the analysis inspectable while moving beyond purely geometric merging.
+
+## Quality Cost Ladder
+
+When discussing future quality work, use this framing:
+
+- cheap
+  No new paid model calls.
+  Reuse existing opinion artifacts, embeddings, and local analysis outputs.
+
+- medium
+  Some model calls, but only on a targeted subset such as flagged clusters or suspicious opinions.
+
+- expensive
+  Corpus-wide reruns, multiple frontier-model passes, or broad benchmark sweeps that burn materially more credits.
+
+## Medium-Cost Quality Ideas
+
+These ideas are promising, but should land after the cheap repair and filtering layers.
+
+- LLM review only for flagged cluster members
+  After cheap outlier detection, ask a model whether a suspicious opinion is:
+  - `fit`
+  - `borderline`
+  - `outlier`
+  and whether it belongs in one of a few candidate destination clusters.
+
+- LLM-assisted topicality and substance screening
+  Apply a model to opinions that look ambiguous and classify them into:
+  - on-topic
+  - adjacent
+  - off-topic
+  - non-substantive
+  This should complement, not replace, visible analyst review.
+
+- Re-embedding with alternate embedding models
+  Keep opinion extraction fixed and compare how different embedding models affect cluster purity, stability, and theme quality.
+
+- Split broad clusters after QA
+  When a cluster repeatedly scores poorly or shows many borderline members, use a targeted repair pass to split it rather than only relabeling it.
+
+- Budget routing driven by cheap metrics
+  Use cheap signals such as stability, outlier rate, and cohesion to decide where limited LLM budget is worth spending.
+
+- Human-in-the-loop adjudication tools
+  Add analyst tools that let a human confirm or reject machine-proposed repairs while preserving durable provenance and auditability.
+
+## Expensive Quality Ideas
+
+These are worth preserving, but should wait until the cheaper search-and-repair loop is in place.
+
+- Re-run opinion extraction with multiple models
+  Compare cheaper and frontier extraction models on the same source corpus to see how much downstream analysis quality actually changes.
+
+- Frontier-model review over all cluster members
+  Instead of reviewing only flagged items, run a high-end model over every cluster member to judge fit and propose reassignments.
+
+- Full candidate-analysis judging with a frontier model
+  Generate many candidate analyses and then use a frontier model to compare them, rank them, and justify which ones deserve report treatment.
+
+- Multi-model benchmark sweeps
+  Compare several combinations of:
+  - opinion extraction model
+  - embedding model
+  - reducer
+  - clustering settings
+  - merge strategy
+  against benchmark corpora and official findings.
+
+- Full-corpus QA passes
+  Run exhaustive review over cluster membership, cluster labels, and theme merges rather than sampling.
+
+## Additional Future Analysis Ideas
+
+- Uncertain / unplaced bucket
+  Instead of forcing every opinion into a cluster, allow some opinions to remain explicitly unplaced when the assignment is weak or disputed.
+  This may improve cluster purity and legitimacy, especially for odd or mixed comments.
+
+- Support-signal handling for non-substantive praise
+  Not every short comment is useless.
+  Some comments may be weak for clustering but still useful as a support or satisfaction signal.
+  Broadly may eventually want to distinguish:
+  - substantive policy opinions
+  - endorsements
+  - praise
+  - logistics
+
+- Multiple reducer seeds as a first-class signal
+  Rather than treating seed changes as implementation noise, use them as evidence about whether a pattern is robust or brittle.
+
+- Local clusterer variants beyond the current default
+  Once the cheap scoring harness exists, compare alternate local clustering heuristics without paying for new model calls.

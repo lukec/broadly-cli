@@ -177,7 +177,7 @@ Current status:
 
 - embeddings are implemented and cached
 - `umap` is implemented
-- `pacmap` is still planned, not yet implemented
+- `pacmap` is implemented via a Python wrapper
 - two cluster counts per run are implemented
 - LLM-based cluster labeling, perspective summaries, and semantic higher-level theme merging are implemented
 - report viewing in `broadly web` is implemented with scatterplots, cluster/theme exploration, and source-opinion drill-down
@@ -425,18 +425,108 @@ Current working surface is broader than the initial bootstrap plan. The immediat
 
 ## Immediate Next Steps
 
-1. Finish Phase 2 by tightening report usability:
+### Cost Framing
+
+For near-term planning, use this rule:
+
+- cheap = reuse existing local artifacts and avoid new paid model calls
+- medium = limited model calls on a filtered subset
+- expensive = corpus-wide or frontier-model reruns
+
+The next implementation slices should favor cheap permutations and cheap scoring first, then spend model budget only on the most promising or suspicious cases.
+
+### Analysis Quality Track
+
+1. Add a two-stage cluster repair loop
+   - cheap pass:
+     - use embedding-space signals to flag suspicious members
+     - candidate signals:
+       - far from cluster centroid
+       - much closer to another cluster centroid
+       - low assignment margin between top candidate clusters
+       - tiny or diffuse clusters
+   - expensive pass:
+     - send only flagged opinions to an LLM
+     - ask for:
+       - `fit | borderline | outlier`
+       - best existing destination cluster from a short candidate list, or leave as-is
+   - record full provenance:
+     - original cluster
+     - review verdict
+     - reassignment target if any
+     - rationale
+     - model, prompt, and timestamp
+
+2. Add a visible filtering layer plus admin web UI
+   - build an admin view with:
+     - table view of comments and opinions
+     - per-record drill-down with related source comment, extracted opinions, and metadata
+     - toggles for visible status flags
+     - filtering by those flags
+   - initial visible statuses should include:
+     - `included`
+     - `excluded-non-substantive`
+     - `excluded-off-topic`
+     - `excluded-admin`
+     - `excluded-duplicate`
+   - add an admin config page that decides which statuses are included in downstream analysis and in report visualization
+   - all exclusions must remain visible, inspectable, and reversible
+
+3. Expand cheap analysis search and cheap scoring
+   - generate as many cheap candidate analysis variants as feasible before expensive synthesis
+   - cheap axes should include:
+     - reduction method
+     - cluster count
+     - random seed
+     - local reassignment heuristics
+   - cheap scoring should include:
+     - cohesion / separation style signals
+     - outlier rate
+     - cluster size distribution
+     - cluster stability across seeds and related runs
+   - use those scores to choose a smaller handful of interesting candidate analysis versions for report generation and deeper review
+
+4. Add duplicate collapse
+   - detect exact duplicates and near-duplicates
+   - keep duplicate handling visible and reversible
+   - ensure duplicate collapse does not destroy provenance back to raw source records
+
+5. Add a transparent topicality and substance screen
+   - define a visible screen for:
+     - on-topic substantive opinions
+     - adjacent or weakly related opinions
+     - off-topic opinions
+     - non-substantive praise, logistics, or filler
+   - decide whether this screen belongs:
+     - before clustering
+     - as an analyst-admin review layer
+     - or as a hybrid workflow
+   - keep this legitimacy-oriented:
+     - excluded items remain reviewable
+     - reasons stay explicit
+     - analyst overrides remain auditable
+
+6. Add cluster stability scoring
+   - compare cluster membership under:
+     - different seeds
+     - different cluster counts
+     - different reducers
+   - surface stable versus brittle clusters in analysis scoring and report provenance
+
+### UI And Comparison Follow-On
+
+1. Continue tightening report usability
    - clearer perspective switching at the top of the report
    - stronger explanation of what differs between perspectives
    - more legible cluster and theme navigation
-2. Improve Phase 2 analysis quality:
-   - implement `pacmap`
-   - improve semantic theme merging reliability
-   - avoid low-quality fallback artifacts
-3. Start Phase 3 comparison tooling:
-   - per-perspective scoring
-   - run comparison view/output
-4. Start Phase 4 benchmark work:
+   - better expression of why a highlighted set of clusters was selected over the alternatives
+
+2. Improve candidate-analysis comparison
+   - per-analysis scoring
+   - side-by-side comparison view/output
+   - clearer explanation of which cheap knobs differ between candidate analyses
+
+3. Continue benchmark and evaluation work
    - compare Broadly outputs with official summaries for benchmark corpora
    - add lightweight review checklists and evaluation notes
 

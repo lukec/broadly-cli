@@ -11,6 +11,11 @@ If you are an agent working here, optimize for:
 - reproducible project setup
 - long-term portability from local runs to on-demand AWS execution
 
+## Dev notes
+
+- always make clean, documented, discrete commits
+- commit and push your work when you're done
+
 ## First Orientation
 
 Start with:
@@ -23,7 +28,7 @@ Start with:
    - `/Users/lukec/src/broadly/strategy/18-local-first-implementation-plan.md`
    - `/Users/lukec/src/broadly/product/09-roadmap.md`
 
-Do not treat this repo as the place to rediscover product strategy from scratch. The wiki exists for that.
+Do not treat this repo as the place to rediscover product strategy from scratch. The sister repo wiki exists for that.
 
 ## Broader Context
 
