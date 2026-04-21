@@ -31,7 +31,10 @@ import {
   ensureProjectReviewState,
   loadCommentReview,
   loadOpinionReview,
-  resolveEffectiveOpinionReviewStatus
+  resolveEffectiveOpinionReviewStatus,
+  upsertCommentReview,
+  upsertOpinionReview,
+  writeReviewConfig
 } from "../reviewState.js";
 
 export interface WebCommandOptions {
@@ -246,6 +249,10 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
   const server = createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+      const adminDetailMatch = requestUrl.pathname.match(/^\/admin\/(comments|opinions)\/([^/]+)$/);
+      const adminReviewPostMatch = requestUrl.pathname.match(
+        /^\/admin\/(comments|opinions)\/([^/]+)\/review$/
+      );
 
       if (requestUrl.pathname === "/__broadly_live_reload") {
         if (liveReload === null) {
@@ -258,8 +265,106 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         return;
       }
 
+      if (request.method === "POST" && adminReviewPostMatch !== null) {
+        const adminCorpus = await loadAdminCorpus(projectPaths);
+        const form = await readRequestForm(request);
+        const subjectKind = adminReviewPostMatch[1];
+        const subjectId = decodeURIComponent(adminReviewPostMatch[2] ?? "");
+        const status = parseSubmittedReviewStatus(form.get("status"));
+        const reasonCode = normalizeSubmittedText(form.get("reasonCode"), "manual-update");
+        const note = normalizeSubmittedText(form.get("note"));
+        const nextLocation =
+          normalizeSubmittedText(form.get("next")) ||
+          `/admin/${subjectKind}/${encodeURIComponent(subjectId)}`;
+
+        if (subjectKind === "comments") {
+          const comment = adminCorpus.comments.find((entry) => entry.sourceId === subjectId);
+
+          if (comment === undefined) {
+            throw new Error(`Comment '${subjectId}' was not found.`);
+          }
+
+          await upsertCommentReview(projectPaths, {
+            subjectId,
+            status,
+            reasonCode,
+            note,
+            actor: { type: "human", name: "local-admin" },
+            normalizedRecordPath: comment.recordPath
+          });
+        } else {
+          const opinion = adminCorpus.opinions.find((entry) => entry.opinionId === subjectId);
+
+          if (opinion === undefined) {
+            throw new Error(`Opinion '${subjectId}' was not found.`);
+          }
+
+          await upsertOpinionReview(projectPaths, {
+            subjectId,
+            status,
+            reasonCode,
+            note,
+            actor: { type: "human", name: "local-admin" },
+            opinionArtifactPath: opinion.artifactPath,
+            sourceId: opinion.artifact.sourceId ?? opinion.sourceRecord?.sourceId ?? "",
+            normalizedRecordPath:
+              opinion.sourceRecord === null
+                ? opinion.opinionReview?.provenance.normalizedRecordPath ??
+                  opinion.commentReview?.provenance.normalizedRecordPath ??
+                  ""
+                : path.join(projectPaths.dataDir, "normalized", `${opinion.sourceRecord.sourceId}.json`)
+          });
+        }
+
+        redirectResponse(response, nextLocation);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/admin/config") {
+        const currentReviewConfig = await ensureProjectReviewState(projectPaths);
+        const form = await readRequestForm(request);
+        const updatedReviewConfig: ReviewConfig = {
+          analysis: {
+            includeCommentStatuses: parseSubmittedReviewStatusList(
+              form.getAll("analysisIncludeCommentStatuses"),
+              "analysis comment statuses"
+            ),
+            includeOpinionStatuses: parseSubmittedReviewStatusList(
+              form.getAll("analysisIncludeOpinionStatuses"),
+              "analysis opinion statuses"
+            )
+          },
+          report: {
+            includeCommentStatuses: parseSubmittedReviewStatusList(
+              form.getAll("reportIncludeCommentStatuses"),
+              "report comment statuses"
+            ),
+            includeOpinionStatuses: parseSubmittedReviewStatusList(
+              form.getAll("reportIncludeOpinionStatuses"),
+              "report opinion statuses"
+            )
+          },
+          web: {
+            defaultVisibleCommentStatuses: parseSubmittedReviewStatusList(
+              form.getAll("webDefaultVisibleCommentStatuses"),
+              "web comment statuses"
+            ),
+            defaultVisibleOpinionStatuses: parseSubmittedReviewStatusList(
+              form.getAll("webDefaultVisibleOpinionStatuses"),
+              "web opinion statuses"
+            )
+          }
+        };
+
+        if (JSON.stringify(updatedReviewConfig) !== JSON.stringify(currentReviewConfig)) {
+          await writeReviewConfig(projectPaths, updatedReviewConfig);
+        }
+
+        redirectResponse(response, "/admin/config");
+        return;
+      }
+
       const dashboard = await loadProjectDashboard(projectRoot, config, options.watch === true);
-      const adminMatch = requestUrl.pathname.match(/^\/admin\/(comments|opinions)\/([^/]+)$/);
 
       if (requestUrl.pathname === "/admin") {
         const adminCorpus = await loadAdminCorpus(projectPaths);
@@ -300,10 +405,10 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         return;
       }
 
-      if (adminMatch !== null) {
+      if (adminDetailMatch !== null) {
         const adminCorpus = await loadAdminCorpus(projectPaths);
-        const subjectKind = adminMatch[1];
-        const subjectId = decodeURIComponent(adminMatch[2] ?? "");
+        const subjectKind = adminDetailMatch[1];
+        const subjectId = decodeURIComponent(adminDetailMatch[2] ?? "");
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end(
@@ -811,6 +916,47 @@ function isReviewStatusValue(value: string): value is ReviewStatus {
   return (REVIEW_STATUS_VALUES as readonly string[]).includes(value);
 }
 
+async function readRequestForm(
+  request: AsyncIterable<Buffer | string>
+): Promise<URLSearchParams> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of request) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+
+  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+}
+
+function redirectResponse(response: ServerResponse, location: string): void {
+  response.writeHead(303, { Location: location });
+  response.end();
+}
+
+function parseSubmittedReviewStatus(value: string | null): ReviewStatus {
+  if (value !== null && isReviewStatusValue(value)) {
+    return value;
+  }
+
+  throw new Error("A valid review status is required.");
+}
+
+function parseSubmittedReviewStatusList(values: string[], fieldLabel: string): ReviewStatus[] {
+  const statuses = values.filter(isReviewStatusValue);
+  const uniqueStatuses = [...new Set(statuses)];
+
+  if (uniqueStatuses.length === 0) {
+    throw new Error(`Select at least one status for ${fieldLabel}.`);
+  }
+
+  return uniqueStatuses;
+}
+
+function normalizeSubmittedText(value: string | null, fallback = ""): string {
+  const normalized = value?.trim() ?? "";
+  return normalized.length === 0 ? fallback : normalized;
+}
+
 function renderHomePage(data: ProjectDashboardData): string {
   const steps = buildPipelineSteps(data);
 
@@ -1001,32 +1147,65 @@ function renderAdminConfigPage(data: ProjectDashboardData, adminCorpus: AdminCor
     "Admin Review",
     `<main class="shell">
       ${renderHeader(data, "Admin Review")}
-      <section class="panel two-up">
-        <article class="card">
-          <p class="eyebrow">Analysis</p>
-          <h2>Included in clustering and synthesis</h2>
-          ${renderKeyValueList([
-            ["Comment statuses", formatIncludedStatuses(adminCorpus.reviewConfig.analysis.includeCommentStatuses)],
-            ["Opinion statuses", formatIncludedStatuses(adminCorpus.reviewConfig.analysis.includeOpinionStatuses)]
-          ])}
-        </article>
-        <article class="card">
-          <p class="eyebrow">Report + Web</p>
-          <h2>Visualization defaults</h2>
-          ${renderKeyValueList([
-            ["Report comments", formatIncludedStatuses(adminCorpus.reviewConfig.report.includeCommentStatuses)],
-            ["Report opinions", formatIncludedStatuses(adminCorpus.reviewConfig.report.includeOpinionStatuses)],
-            ["Web comments", formatIncludedStatuses(adminCorpus.reviewConfig.web.defaultVisibleCommentStatuses)],
-            ["Web opinions", formatIncludedStatuses(adminCorpus.reviewConfig.web.defaultVisibleOpinionStatuses)]
-          ])}
-        </article>
+      <section class="panel">
+        <form class="card admin-form" method="post" action="/admin/config">
+          <p class="eyebrow">Review Config</p>
+          <h2>Included and visible statuses</h2>
+          <div class="form-grid">
+            <section class="stack">
+              <p class="section-label">Analysis: comments</p>
+              ${renderReviewStatusCheckboxes(
+                "analysisIncludeCommentStatuses",
+                adminCorpus.reviewConfig.analysis.includeCommentStatuses
+              )}
+            </section>
+            <section class="stack">
+              <p class="section-label">Analysis: opinions</p>
+              ${renderReviewStatusCheckboxes(
+                "analysisIncludeOpinionStatuses",
+                adminCorpus.reviewConfig.analysis.includeOpinionStatuses
+              )}
+            </section>
+            <section class="stack">
+              <p class="section-label">Report: comments</p>
+              ${renderReviewStatusCheckboxes(
+                "reportIncludeCommentStatuses",
+                adminCorpus.reviewConfig.report.includeCommentStatuses
+              )}
+            </section>
+            <section class="stack">
+              <p class="section-label">Report: opinions</p>
+              ${renderReviewStatusCheckboxes(
+                "reportIncludeOpinionStatuses",
+                adminCorpus.reviewConfig.report.includeOpinionStatuses
+              )}
+            </section>
+            <section class="stack">
+              <p class="section-label">Web defaults: comments</p>
+              ${renderReviewStatusCheckboxes(
+                "webDefaultVisibleCommentStatuses",
+                adminCorpus.reviewConfig.web.defaultVisibleCommentStatuses
+              )}
+            </section>
+            <section class="stack">
+              <p class="section-label">Web defaults: opinions</p>
+              ${renderReviewStatusCheckboxes(
+                "webDefaultVisibleOpinionStatuses",
+                adminCorpus.reviewConfig.web.defaultVisibleOpinionStatuses
+              )}
+            </section>
+          </div>
+          <div class="button-row">
+            <button class="button-link" type="submit">Save review config</button>
+          </div>
+        </form>
       </section>
       <section class="panel">
         <article class="card">
           <p class="eyebrow">Artifact</p>
           <h2>Review config file</h2>
           <p class="meta">${escapeHtml(toPortableRelativePath(data.projectRoot, resolveProjectPaths(data.projectRoot).reviewConfigPath))}</p>
-          <p>Editing controls come next. This first pass makes the active review configuration inspectable before wiring mutations into the UI.</p>
+          <p>These lists control what analysis consumes, what reports surface, and what the admin UI shows by default. Every list must contain at least one status.</p>
         </article>
       </section>
     </main>`
@@ -1070,6 +1249,30 @@ function renderAdminCommentDetailPage(
           ${renderReviewArtifactSummary(comment.review, "comment")}
           <pre>${escapeHtml(comment.record.contentText)}</pre>
         </article>
+        <form class="card admin-form" method="post" action="/admin/comments/${encodeURIComponent(comment.sourceId)}/review">
+          <input type="hidden" name="next" value="/admin/comments/${encodeURIComponent(comment.sourceId)}" />
+          <p class="eyebrow">Update Review</p>
+          <h3>Comment status</h3>
+          <div class="form-grid">
+            <label class="field">
+              <span>Status</span>
+              <select name="status">
+                ${renderReviewStatusOptions(comment.review?.status ?? comment.effectiveStatus)}
+              </select>
+            </label>
+            <label class="field">
+              <span>Reason code</span>
+              <input name="reasonCode" value="${escapeHtmlAttribute(comment.review?.reasonCode ?? "manual-update")}" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Note</span>
+            <textarea name="note" rows="4" placeholder="Optional note. Required for excluded-admin.">${escapeHtml(comment.review?.note ?? "")}</textarea>
+          </label>
+          <div class="button-row">
+            <button class="button-link" type="submit">Save comment review</button>
+          </div>
+        </form>
       </section>
       <section class="panel">
         <div class="section-head">
@@ -1138,6 +1341,30 @@ function renderAdminOpinionDetailPage(
             <pre>${escapeHtml(opinion.sourceRecord?.contentText ?? opinion.artifact.fullComment ?? "Source comment unavailable.")}</pre>
           </div>
         </article>
+        <form class="card admin-form" method="post" action="/admin/opinions/${encodeURIComponent(opinion.opinionId)}/review">
+          <input type="hidden" name="next" value="/admin/opinions/${encodeURIComponent(opinion.opinionId)}" />
+          <p class="eyebrow">Update Review</p>
+          <h3>Opinion status</h3>
+          <div class="form-grid">
+            <label class="field">
+              <span>Status</span>
+              <select name="status">
+                ${renderReviewStatusOptions(opinion.opinionReview?.status ?? opinion.effectiveStatus)}
+              </select>
+            </label>
+            <label class="field">
+              <span>Reason code</span>
+              <input name="reasonCode" value="${escapeHtmlAttribute(opinion.opinionReview?.reasonCode ?? "manual-update")}" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Note</span>
+            <textarea name="note" rows="4" placeholder="Optional note. Required for excluded-admin.">${escapeHtml(opinion.opinionReview?.note ?? "")}</textarea>
+          </label>
+          <div class="button-row">
+            <button class="button-link" type="submit">Save opinion review</button>
+          </div>
+        </form>
       </section>
     </main>`
   );
@@ -2898,6 +3125,24 @@ function renderAdminOpinionCard(opinion: AdminOpinionEntry): string {
   </article>`;
 }
 
+function renderReviewStatusOptions(selectedStatus: ReviewStatus): string {
+  return REVIEW_STATUS_VALUES.map(
+    (status) =>
+      `<option value="${escapeHtmlAttribute(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`
+  ).join("");
+}
+
+function renderReviewStatusCheckboxes(fieldName: string, selectedStatuses: ReviewStatus[]): string {
+  return `<div class="checkbox-grid">
+    ${REVIEW_STATUS_VALUES.map(
+      (status) => `<label class="checkbox-pill ${selectedStatuses.includes(status) ? "active" : ""}">
+          <input type="checkbox" name="${escapeHtmlAttribute(fieldName)}" value="${escapeHtmlAttribute(status)}" ${selectedStatuses.includes(status) ? "checked" : ""} />
+          <span>${escapeHtml(status)}</span>
+        </label>`
+    ).join("")}
+  </div>`;
+}
+
 function renderKeyValueList(items: Array<[string, string]>): string {
   return `<dl class="facts">
     ${items
@@ -3363,6 +3608,58 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
+      }
+      .admin-form {
+        display: grid;
+        gap: 16px;
+      }
+      .form-grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+      .field {
+        display: grid;
+        gap: 8px;
+        color: var(--bl-gray-900);
+        font: 700 12px/1.2 ui-monospace, monospace;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .field input,
+      .field select,
+      .field textarea {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.98);
+        color: var(--ink);
+        font: 500 14px/1.45 ui-sans-serif, system-ui, sans-serif;
+      }
+      .checkbox-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .checkbox-pill {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255,255,255,0.92);
+        font: 700 12px/1.2 ui-monospace, monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+      }
+      .checkbox-pill.active {
+        border-color: rgba(27,114,176,0.20);
+        background: rgba(27,114,176,0.08);
+        color: var(--bl-primary-800);
       }
       .admin-toolbar {
         flex-direction: column;
