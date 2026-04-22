@@ -2448,19 +2448,22 @@ async function buildSemanticHierarchyArtifact(options: {
   }
 
   const prompt = buildSemanticMergePrompt(options.promptTemplate, options.artifact);
-  const attemptCount = 3;
+  const attemptCount = 4;
   let latestRawText = "";
   let latestStopReason: string | null = null;
   let latestError = "Semantic merge did not produce a valid response.";
 
   for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
     try {
+      const retryPrompt =
+        attempt === 1
+          ? prompt
+          : isThemeLabelValidationError(latestError)
+            ? buildSemanticMergeLabelRepairPrompt(prompt, latestRawText, latestError)
+            : buildSemanticMergeRetryPrompt(prompt, latestRawText, latestError);
       const result = await runTextPromptWithModel({
         model: options.analysisModel,
-        prompt:
-          attempt === 1
-            ? prompt
-            : buildSemanticMergeRetryPrompt(prompt, latestRawText, latestError),
+        prompt: retryPrompt,
         maxOutputTokens: 8192,
         projectRoot: options.projectRoot,
         temperature: 0
@@ -2708,12 +2711,44 @@ Return the full answer again from scratch.
 - Use only the required headers.
 - Assign every cluster exactly once.
 - Favor leaving clusters separate over forcing a weak merge.
-- Use natural-language labels, not bags of keywords.
+- Use natural-language labels, not bags of keywords or comma-separated token lists.
+- Keep Theme-Label values concise noun phrases, ideally 2-6 words.
+- Do not use commas, pipes, or semicolons inside Theme-Label values.
 - Do not add commentary before or after the theme blocks.
 
 ## Previous invalid response
 
 ${previousResponseText}`.trim();
+}
+
+function buildSemanticMergeLabelRepairPrompt(
+  originalPrompt: string,
+  previousResponseText: string,
+  parseError: string
+): string {
+  return `${originalPrompt}
+
+## Targeted repair instructions
+
+Your previous response was close, but one or more Theme-Label values failed validation.
+
+Validation error: ${parseError}
+
+Return the full answer again from scratch.
+- Preserve the same cluster assignments unless absolutely necessary to satisfy the contract.
+- Rewrite any weak Theme-Label values into concise natural noun phrases.
+- Theme-Label values must not contain commas, pipes, or semicolons.
+- Theme-Label values should read like report headings, not keyword bags.
+- Keep Theme-Summary and Merge-Rationale grounded in the provided cluster evidence.
+- Do not add commentary before or after the theme blocks.
+
+## Previous invalid response
+
+${previousResponseText}`.trim();
+}
+
+function isThemeLabelValidationError(message: string): boolean {
+  return /^Theme-ID \d+ label\b/i.test(message);
 }
 
 function parseIntegerListHeader(lines: string[], headerName: string): number[] {

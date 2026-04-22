@@ -83,7 +83,10 @@ interface OpinionRunFingerprint {
   extractionName: string;
   promptSha256: string;
   ingestManifestSha256: string | null;
+  inputRendererSha256: string;
 }
+
+const OPINION_INPUT_RENDERER_VERSION = "primary-text-v1";
 
 export async function extractOpinionsWithModel(
   options: OpinionsCommandOptions
@@ -638,11 +641,13 @@ async function findLatestCompatibleOpinionRunForModel(
         extractionName?: string;
         promptSha256?: string;
         ingestManifestSha256?: string | null;
+        inputRendererSha256?: string;
       };
       input?: {
         fingerprint?: {
           promptSha256?: string;
           ingestManifestSha256?: string | null;
+          inputRendererSha256?: string;
         };
       };
     }>(manifestPath);
@@ -659,7 +664,10 @@ async function findLatestCompatibleOpinionRunForModel(
       ((manifest.fingerprint?.ingestManifestSha256 ??
         manifest.input?.fingerprint?.ingestManifestSha256 ??
         null) ===
-        fingerprint.ingestManifestSha256)
+        fingerprint.ingestManifestSha256) &&
+      (manifest.fingerprint?.inputRendererSha256 ??
+        manifest.input?.fingerprint?.inputRendererSha256 ??
+        null) === fingerprint.inputRendererSha256
     ) {
       matchingRuns.push({
         runId: entry.name,
@@ -687,11 +695,13 @@ async function findCompatibleOpinionRunById(
       extractionName?: string;
       promptSha256?: string;
       ingestManifestSha256?: string | null;
+      inputRendererSha256?: string;
     };
     input?: {
       fingerprint?: {
         promptSha256?: string;
         ingestManifestSha256?: string | null;
+        inputRendererSha256?: string;
       };
     };
   }>(path.join(opinionsRootDir, runId, "manifest.json"));
@@ -707,7 +717,10 @@ async function findCompatibleOpinionRunById(
       fingerprint.promptSha256 ||
     ((manifest.fingerprint?.ingestManifestSha256 ??
       manifest.input?.fingerprint?.ingestManifestSha256 ??
-      null) !== fingerprint.ingestManifestSha256)
+      null) !== fingerprint.ingestManifestSha256) ||
+    (manifest.fingerprint?.inputRendererSha256 ??
+      manifest.input?.fingerprint?.inputRendererSha256 ??
+      null) !== fingerprint.inputRendererSha256
   ) {
     return null;
   }
@@ -730,7 +743,8 @@ async function resolveOpinionRunFingerprint(
     extractionName,
     promptSha256,
     ingestManifestSha256:
-      ingestManifestSource === null ? null : sha256Hex(ingestManifestSource)
+      ingestManifestSource === null ? null : sha256Hex(ingestManifestSource),
+    inputRendererSha256: sha256Hex(OPINION_INPUT_RENDERER_VERSION)
   };
 }
 
