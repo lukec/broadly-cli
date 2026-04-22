@@ -450,7 +450,7 @@ function expectedReductionCount(run: AnalysisRunSummary): number {
 }
 
 function expectedClusterArtifactCount(run: AnalysisRunSummary): number {
-  return run.reductionMethods.length * run.clusterCounts.length;
+  return run.viewNames.length;
 }
 
 function expectedPerspectiveArtifactCount(run: AnalysisRunSummary): number {
