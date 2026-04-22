@@ -3,7 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { parseProjectConfig, type BroadlyProjectConfig } from "@broadly/config";
-import { resolveProjectPaths, type ReviewStatus } from "@broadly/core";
+import { resolveProjectPaths, sha256Hex, type ReviewStatus } from "@broadly/core";
 import {
   getNormalizedCommentDerivedFields,
   getNormalizedCommentPrimaryText,
@@ -35,6 +35,12 @@ interface ReviewManifest {
   createdAt: string;
   updatedAt: string;
   kind: "comments" | "opinions" | "both";
+  fingerprint: {
+    commentsSha256: string | null;
+    opinionsSha256: string | null;
+    modelSha256: string | null;
+    promptSha256: string | null;
+  };
   model: null | {
     name: string;
     provider: string;
@@ -128,7 +134,7 @@ interface ReviewTarget<TKind extends "comment" | "opinion"> {
 const MACHINE_REVIEW_THRESHOLD = 0.85;
 const SUGGESTION_THRESHOLD = 0.55;
 const DEFAULT_CONCURRENCY = 4;
-const REVIEW_PROMPT_FILENAME = "review-screening.md";
+export const REVIEW_PROMPT_FILENAME = "review-screening.md";
 const REVIEW_MACHINE_ACTOR = "review-llm";
 const REVIEW_HEURISTIC_ACTOR = "review-heuristic";
 const MACHINE_REVIEW_ACTORS = new Set([REVIEW_MACHINE_ACTOR, REVIEW_HEURISTIC_ACTOR]);
@@ -151,7 +157,7 @@ export async function runReview(options: ReviewCommandOptions): Promise<void> {
       const config = parseProjectConfig(await readFile(projectPaths.configPath, "utf8"));
       const reviewModel = resolveReviewModel(config, options.model);
       const promptPath = path.join(projectPaths.promptsDir, REVIEW_PROMPT_FILENAME);
-      const promptTemplate = await readReviewPromptTemplate(promptPath);
+      const promptTemplate = await loadReviewPromptTemplate(promptPath);
       const comments =
         kind === "opinions"
           ? []
@@ -206,10 +212,47 @@ export async function runReview(options: ReviewCommandOptions): Promise<void> {
       const commentApplySummary = await applyCommentOutcomes(projectPaths, comments, activeCommentOutcomes);
       const opinionApplySummary = await applyOpinionOutcomes(projectPaths, opinions, activeOpinionOutcomes);
       const manifestPath = path.join(projectPaths.reviewDir, "review-manifest.json");
+      const commentsSha256 =
+        kind === "opinions"
+          ? null
+          : sha256Hex(
+              JSON.stringify(
+                comments
+                  .map((comment) => comment.subjectId)
+                  .sort((left, right) => left.localeCompare(right))
+              )
+            );
+      const opinionsSha256 =
+        kind === "comments"
+          ? null
+          : sha256Hex(
+              JSON.stringify(
+                opinions
+                  .map((opinion) => opinion.subjectId)
+                  .sort((left, right) => left.localeCompare(right))
+              )
+            );
+      const modelFingerprint =
+        reviewModel === null
+          ? null
+          : sha256Hex(
+              JSON.stringify({
+                name: reviewModel.name,
+                provider: reviewModel.provider,
+                region: reviewModel.region,
+                modelId: reviewModel.modelId
+              })
+            );
       const manifest: ReviewManifest = {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         kind,
+        fingerprint: {
+          commentsSha256,
+          opinionsSha256,
+          modelSha256: modelFingerprint,
+          promptSha256: reviewModel === null ? null : sha256Hex(promptTemplate.source)
+        },
         model:
           reviewModel === null
             ? null
@@ -1059,7 +1102,9 @@ function renderOpinionReviewPrompt(
   ].join("\n");
 }
 
-async function readReviewPromptTemplate(promptPath: string): Promise<LoadedReviewPromptTemplate> {
+export async function loadReviewPromptTemplate(
+  promptPath: string
+): Promise<LoadedReviewPromptTemplate> {
   try {
     return {
       source: await readFile(promptPath, "utf8"),
@@ -1073,7 +1118,7 @@ async function readReviewPromptTemplate(promptPath: string): Promise<LoadedRevie
   }
 }
 
-function createFallbackReviewPrompt(): string {
+export function createFallbackReviewPrompt(): string {
   return [
     "You are helping Broadly screen public-input items for analysis quality control.",
     "Be conservative and prefer included unless exclusion is well supported.",
@@ -1088,7 +1133,7 @@ function createFallbackReviewPrompt(): string {
   ].join("\n");
 }
 
-function resolveReviewModel(
+export function resolveReviewModel(
   config: BroadlyProjectConfig,
   explicitModelAlias: string | undefined
 ): RegisteredModel | null {

@@ -11,6 +11,7 @@ import { addModel, checkModels, removeModel } from "./commands/models.js";
 import { extractOpinionsWithModel } from "./commands/opinions.js";
 import { generateReport } from "./commands/report.js";
 import { runQa } from "./commands/qa.js";
+import { runPipeline } from "./commands/run.js";
 import { runReview } from "./commands/review.js";
 import { showProjectStatus } from "./commands/status.js";
 import { serveProjectWeb } from "./commands/web.js";
@@ -90,6 +91,45 @@ program
           : { embeddingModel: options.embeddingModel }),
         ...(options.limit === undefined ? {} : { limit: options.limit }),
         ...(options.offset === undefined ? {} : { offset: options.offset })
+      });
+    }
+  );
+
+program
+  .command("run")
+  .description("Run the end-to-end local pipeline: review, opinions, analysis, and report.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--review-model <name>", "Project model alias to use for comment review")
+  .option("--extraction <name>", "Configured opinion extraction name to run; defaults to all configured extractions")
+  .option(
+    "-c, --concurrency <count>",
+    "Number of opinion extraction requests to run in parallel",
+    parsePositiveInteger
+  )
+  .option("--no-review", "Skip the review step")
+  .option("--no-opinions", "Skip the opinion extraction step")
+  .option("--no-analysis", "Skip the analysis step")
+  .option("--no-report", "Skip the report generation step")
+  .action(
+    async (options: {
+      project?: string;
+      reviewModel?: string;
+      extraction?: string;
+      concurrency?: number;
+      review: boolean;
+      opinions: boolean;
+      analysis: boolean;
+      report: boolean;
+    }) => {
+      await runPipeline({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel }),
+        ...(options.extraction === undefined ? {} : { extraction: options.extraction }),
+        ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+        review: options.review,
+        opinions: options.opinions,
+        analysis: options.analysis,
+        report: options.report
       });
     }
   );
