@@ -102,6 +102,91 @@ What it should measure:
 The goal is not to prove a reducer is mathematically "correct."
 The goal is to determine whether it is stable, legible, and useful for broad listening.
 
+## MAPLE-Inspired Research Track
+
+The MAPLE paper suggests a useful reframing:
+the next improvement may not be "pick a better 2D reducer," but "learn or repair a better neighborhood graph before 2D layout."
+
+Why this is interesting for Broadly:
+
+- Public-comment embeddings likely contain noisy local neighborhoods
+  Comments can be multi-issue, stance-mixed, or semantically adjacent while opposing each other.
+  A better local-neighbor graph may matter more than swapping UMAP for PaCMAP.
+
+- Minority and dissent pockets may depend on local graph quality
+  If the neighborhood graph is wrong, small but meaningful pockets can get absorbed into broader thematic clouds.
+
+- This fits Broadly's explanation-search framing
+  A neighborhood graph can be treated as another candidate explanation of corpus structure, criticized and compared like any other perspective artifact.
+
+- This also fits the semantic-opinion-basis direction
+  Learned semantic signals could help repair neighborhood structure before layout rather than only after clustering.
+
+Important constraint:
+
+- MAPLE was not evaluated on public consultation text
+  Treat it as a research direction to test against Broadly benchmark corpora, not as a method to adopt on faith.
+
+Possible next steps:
+
+- Cheap: add neighborhood-fidelity diagnostics
+  Extend the reducer evaluation harness to measure:
+  - nearest-neighbor preservation from embedding space into 2D
+  - minority-cluster survival
+  - support/opposition separation where labels exist
+  - stability across seeds and nearby settings
+
+- Cheap: compare clustering surfaces explicitly
+  Measure the difference between clustering on:
+  - original embedding vectors
+  - learned or repaired neighborhood graphs later
+  - 2D coordinates
+  Broadly should avoid accidentally treating map layout as the authoritative semantic surface.
+
+- Medium: add a pre-reduction graph-builder boundary
+  Instead of reducer selection only, introduce an experimental step:
+  embeddings -> neighborhood graph builder -> 2D reducer
+  Early graph-builder variants could include:
+  - plain kNN baseline
+  - mutual-kNN filtering
+  - shared-neighbor weighting
+  - question-aware edge reweighting
+  - stance-aware edge reweighting
+
+- Medium: try semantic graph repair before layout
+  Use existing or cheaply derived signals to reweight local neighborhoods:
+  - stance polarity
+  - support vs opposition
+  - target institution
+  - concern type
+  - feasibility / implementation orientation
+  This would be a Broadly-native approximation of the MAPLE idea before trying a full algorithm port.
+
+- Medium: benchmark graph variants on canonical corpora
+  Use the same opinion slice, embeddings, and prompts across variants.
+  Judge results with both metrics and report-review outputs:
+  - cluster coherence
+  - dissent visibility
+  - evidence legibility
+  - human preference in side-by-side report review
+
+- Medium: connect graph quality to report usefulness
+  Do not stop at prettier maps.
+  Track whether graph changes improve:
+  - cluster labels
+  - theme merges
+  - alternate perspectives
+  - reviewer confidence in the final report
+
+- Expensive: port or reimplement a MAPLE-like method
+  Only do this after the evaluation harness exists and simpler graph-repair variants show promise on consultation corpora.
+
+Practical recommendation:
+
+- First build the harness and graph-builder seam
+- then test Broadly-specific graph repair ideas
+- only then consider direct MAPLE implementation
+
 ## Report UI Track
 
 The report surface needs to make Broadly's unique perspective easier to understand and compare across runs.
