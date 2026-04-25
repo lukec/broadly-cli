@@ -43,7 +43,10 @@ export async function addDataSource(options: AddDataSourceOptions): Promise<void
         datasetPath: absoluteDatasetPath,
         ...(config.dataset.allowFields === undefined
           ? {}
-          : { allowFields: config.dataset.allowFields })
+          : { allowFields: config.dataset.allowFields }),
+        ...(config.dataset.fieldMap === undefined
+          ? {}
+          : { fieldMap: config.dataset.fieldMap })
       });
       const relativeDatasetPath = toPortableRelativePath(projectRoot, ingestResult.storedDatasetPath);
       const relativeManifestPath = toPortableRelativePath(projectRoot, ingestResult.manifestPath);
@@ -56,7 +59,10 @@ export async function addDataSource(options: AddDataSourceOptions): Promise<void
         ...(ingestResult.idColumn === undefined ? {} : { idColumn: ingestResult.idColumn }),
         ...(config.dataset.allowFields === undefined
           ? {}
-          : { allowFields: config.dataset.allowFields })
+          : { allowFields: config.dataset.allowFields }),
+        ...(config.dataset.fieldMap === undefined
+          ? {}
+          : { fieldMap: config.dataset.fieldMap })
       };
 
       await writeFile(projectPaths.configPath, serializeProjectConfig(config), "utf8");

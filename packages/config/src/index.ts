@@ -7,6 +7,16 @@ const analysisViewModeValues = ["balanced", "dissent"] as const;
 const mergeStrategyValues = ["semantic"] as const;
 const modelProviderValues = ["bedrock", "google-cloud", "openai"] as const;
 
+const datasetFieldMapSchema = z.object({
+  primaryText: z.array(z.string().min(1)).min(1),
+  context: z.array(z.string().min(1)).default([]),
+  sourceLabel: z.array(z.string().min(1)).default([]),
+  language: z.array(z.string().min(1)).default([]),
+  metadata: z.array(z.string().min(1)).default([]),
+  mutableMetrics: z.array(z.string().min(1)).default([]),
+  exclude: z.array(z.string().min(1)).default([])
+});
+
 const opinionExtractionConfigSchema = z.object({
   name: z.string().min(1),
   title: z.string().min(1).optional(),
@@ -67,7 +77,8 @@ export const projectConfigSchema = z
       encoding: z.string().min(1).optional(),
       delimiter: z.string().min(1).optional(),
       idColumn: z.string().min(1).optional(),
-      allowFields: z.array(z.string().min(1)).min(1).optional()
+      allowFields: z.array(z.string().min(1)).min(1).optional(),
+      fieldMap: datasetFieldMapSchema.optional()
     }),
     review_model: z.string().min(1).optional(),
     qa_model: z.string().min(1).optional(),

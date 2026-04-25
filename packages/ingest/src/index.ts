@@ -46,6 +46,16 @@ export interface NormalizedCommentDerivedFields {
   languageFieldNames?: string[];
 }
 
+export interface DatasetFieldMap {
+  primaryText: string[];
+  context?: string[];
+  sourceLabel?: string[];
+  language?: string[];
+  metadata?: string[];
+  mutableMetrics?: string[];
+  exclude?: string[];
+}
+
 export interface IngestManifest {
   createdAt: string;
   source: {
@@ -76,6 +86,7 @@ export interface AddTabularDataSourceOptions {
   projectRoot: string;
   datasetPath: string;
   allowFields?: string[];
+  fieldMap?: DatasetFieldMap;
 }
 
 export interface AddTabularDataSourceResult {
@@ -147,7 +158,7 @@ export async function addTabularDataSource(
       sourceId: contentSha256,
       contentSha256,
       contentText,
-      derived: deriveNormalizedCommentDerivedFields(rawRow),
+      derived: deriveNormalizedCommentDerivedFields(rawRow, options.fieldMap),
       rawRow,
       provenance: {
         importPath: storedDatasetPath,
@@ -229,7 +240,8 @@ export async function addTabularDataSource(
 }
 
 export function deriveNormalizedCommentDerivedFields(
-  rawRow: Record<string, string>
+  rawRow: Record<string, string>,
+  fieldMap?: DatasetFieldMap
 ): NormalizedCommentDerivedFields {
   const populatedFields = Object.entries(rawRow)
     .map(([header, value]) => ({
@@ -238,6 +250,10 @@ export function deriveNormalizedCommentDerivedFields(
       normalizedHeader: normalizeFieldName(header)
     }))
     .filter((entry) => entry.value.length > 0);
+
+  if (fieldMap !== undefined) {
+    return deriveNormalizedCommentDerivedFieldsFromMap(rawRow, populatedFields, fieldMap);
+  }
 
   const primaryFields = populatedFields.filter((entry) => isPrimaryContentField(entry.normalizedHeader));
   const translatedPrimaryFields = populatedFields.filter((entry) =>
@@ -309,6 +325,56 @@ export function getNormalizedCommentDerivedFields(
   record: Pick<NormalizedCommentRecord, "rawRow" | "derived">
 ): NormalizedCommentDerivedFields {
   return record.derived ?? deriveNormalizedCommentDerivedFields(record.rawRow);
+}
+
+function deriveNormalizedCommentDerivedFieldsFromMap(
+  rawRow: Record<string, string>,
+  populatedFields: Array<{ header: string; value: string; normalizedHeader: string }>,
+  fieldMap: DatasetFieldMap
+): NormalizedCommentDerivedFields {
+  const primaryFields = selectMappedFields(rawRow, fieldMap.primaryText);
+  const contextFields = selectMappedFields(rawRow, fieldMap.context ?? []);
+  const sourceFields = selectMappedFields(rawRow, fieldMap.sourceLabel ?? []);
+  const languageFields = selectMappedFields(rawRow, fieldMap.language ?? []);
+  const fallbackPrimaryFields =
+    primaryFields.length > 0 ? primaryFields : selectFallbackPrimaryFields(populatedFields);
+  const derived: NormalizedCommentDerivedFields = {
+    primaryText: joinFieldValues(fallbackPrimaryFields),
+    primaryFieldNames: fallbackPrimaryFields.map((entry) => entry.header)
+  };
+  const contextText = joinFieldValues(contextFields);
+  const sourceLabel = joinFieldValues(sourceFields);
+  const language = joinFieldValues(languageFields);
+
+  if (contextText.length > 0) {
+    derived.contextText = contextText;
+    derived.contextFieldNames = contextFields.map((entry) => entry.header);
+  }
+
+  if (sourceLabel.length > 0) {
+    derived.sourceLabel = sourceLabel;
+    derived.sourceFieldNames = sourceFields.map((entry) => entry.header);
+  }
+
+  if (language.length > 0) {
+    derived.language = language;
+    derived.languageFieldNames = languageFields.map((entry) => entry.header);
+  }
+
+  return derived;
+}
+
+function selectMappedFields(
+  rawRow: Record<string, string>,
+  fieldNames: string[]
+): Array<{ header: string; value: string; normalizedHeader: string }> {
+  return fieldNames
+    .map((header) => ({
+      header,
+      value: normalizeCellValue(rawRow[header] ?? ""),
+      normalizedHeader: normalizeFieldName(header)
+    }))
+    .filter((entry) => entry.value.length > 0);
 }
 
 export function getNormalizedCommentPrimaryText(

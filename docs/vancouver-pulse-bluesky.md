@@ -43,6 +43,11 @@ node packages/cli/dist/index.js scrape bluesky \
   --since-days 30 \
   --limit 500
 
+node packages/cli/dist/index.js configure dataset \
+  projects/vancouver-pulse/data/raw/bluesky-vancouver-pulse.csv \
+  --project projects/vancouver-pulse \
+  --model gpt54mini
+
 node packages/cli/dist/index.js ingest \
   projects/vancouver-pulse/data/raw/bluesky-vancouver-pulse.csv \
   --project projects/vancouver-pulse
@@ -51,6 +56,8 @@ node packages/cli/dist/index.js ingest \
 For a periodic job, use a smaller overlap window such as `--since-days 7`. The scraper merges by Bluesky post URI, so overlapping runs update counts and avoid duplicate rows.
 
 The raw CSV retains engagement counts. The `vancouver-pulse` project config excludes those mutable count fields from ingest so periodic re-ingests do not create duplicate normalized records when only engagement counts changed.
+
+The dataset mapping step uses an LLM to classify known CSV headers into constrained JSON buckets. Broadly validates the result, applies deterministic guardrails for mutable fields such as engagement counters and `scraped_at`, then writes valid `dataset.allowFields` and `dataset.fieldMap` config itself.
 
 ## Default Queries
 

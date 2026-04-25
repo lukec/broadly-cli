@@ -5,6 +5,7 @@ import { Command } from "commander";
 import { addDataSource } from "./commands/addDataSource.js";
 import { runAnalysis } from "./commands/analysis.js";
 import { defaultBlueskyScrapeOptions, scrapeBluesky } from "./commands/bluesky.js";
+import { configureDataset } from "./commands/configureDataset.js";
 import { extractOpinions } from "./commands/extractOpinions.js";
 import { initProject } from "./commands/init.js";
 import { runLlm } from "./commands/llm.js";
@@ -67,6 +68,48 @@ program
       await addDataSource({
         datasetPath: file,
         ...(options.project === undefined ? {} : { project: options.project })
+      });
+    }
+  );
+
+const configureCommand = program
+  .command("configure")
+  .description("Configure project settings from local artifacts.");
+
+configureCommand
+  .command("dataset")
+  .description("Inspect a tabular dataset and configure the fields Broadly should analyze.")
+  .argument("[file]", "Path to a CSV or TSV file; defaults to dataset.path in broadly.yaml")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--model <name>", "Project model alias to use for field classification")
+  .option(
+    "--sample-rows <count>",
+    "Number of example rows to include in the classification prompt",
+    parsePositiveInteger,
+    8
+  )
+  .option(
+    "--max-output-tokens <count>",
+    "Maximum output tokens to request from the classification model",
+    parsePositiveInteger,
+    1200
+  )
+  .action(
+    async (
+      file: string | undefined,
+      options: {
+        maxOutputTokens: number;
+        model?: string;
+        project?: string;
+        sampleRows: number;
+      }
+    ) => {
+      await configureDataset({
+        ...(file === undefined ? {} : { file }),
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.model === undefined ? {} : { model: options.model }),
+        sampleRows: options.sampleRows,
+        maxOutputTokens: options.maxOutputTokens
       });
     }
   );
