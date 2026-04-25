@@ -4,6 +4,7 @@ import { Command } from "commander";
 
 import { addDataSource } from "./commands/addDataSource.js";
 import { runAnalysis } from "./commands/analysis.js";
+import { defaultBlueskyScrapeOptions, scrapeBluesky } from "./commands/bluesky.js";
 import { extractOpinions } from "./commands/extractOpinions.js";
 import { initProject } from "./commands/init.js";
 import { runLlm } from "./commands/llm.js";
@@ -317,6 +318,89 @@ program
   .action(async (options: { project?: string; port?: number; watch: boolean }) => {
     await serveProjectWeb(options);
   });
+
+const blueskyCommand = program
+  .command("bluesky")
+  .description("Scrape public Bluesky content into local Broadly datasets.");
+
+blueskyCommand
+  .command("scrape")
+  .description("Scrape recent Bluesky posts matching account and city queries into a project CSV.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option(
+    "--account <handle>",
+    "Target Bluesky account handle to resolve; repeat to track more than one account",
+    collectOptionValue,
+    []
+  )
+  .option(
+    "--query <query>",
+    "Bluesky search query; repeat to add more than one query",
+    collectOptionValue,
+    []
+  )
+  .option("--since <iso>", "Only collect posts at or after this ISO timestamp")
+  .option("--until <iso>", "Only collect posts before this ISO timestamp")
+  .option(
+    "--since-days <days>",
+    "Date window to collect when --since is omitted",
+    parsePositiveInteger,
+    defaultBlueskyScrapeOptions.sinceDays
+  )
+  .option(
+    "--limit <count>",
+    "Maximum posts to fetch per query",
+    parsePositiveInteger,
+    defaultBlueskyScrapeOptions.limit
+  )
+  .option(
+    "--output <path>",
+    "Project-relative CSV output path",
+    defaultBlueskyScrapeOptions.output
+  )
+  .option(
+    "--manifest <path>",
+    "Project-relative scrape manifest path",
+    defaultBlueskyScrapeOptions.manifest
+  )
+  .option(
+    "--appview <url>",
+    "Bluesky AppView service URL",
+    defaultBlueskyScrapeOptions.appview
+  )
+  .action(
+    async (options: {
+      account: string[];
+      appview: string;
+      limit: number;
+      manifest: string;
+      output: string;
+      project?: string;
+      query: string[];
+      since?: string;
+      sinceDays: number;
+      until?: string;
+    }) => {
+      await scrapeBluesky({
+        account:
+          options.account.length === 0
+            ? [...defaultBlueskyScrapeOptions.account]
+            : options.account,
+        appview: options.appview,
+        limit: options.limit,
+        manifest: options.manifest,
+        output: options.output,
+        ...(options.project === undefined ? {} : { project: options.project }),
+        query:
+          options.query.length === 0
+            ? [...defaultBlueskyScrapeOptions.query]
+            : options.query,
+        ...(options.since === undefined ? {} : { since: options.since }),
+        sinceDays: options.sinceDays,
+        ...(options.until === undefined ? {} : { until: options.until })
+      });
+    }
+  );
 
 program
   .command("llm")
