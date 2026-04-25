@@ -319,12 +319,12 @@ program
     await serveProjectWeb(options);
   });
 
-const blueskyCommand = program
-  .command("bluesky")
-  .description("Scrape public Bluesky content into local Broadly datasets.");
-
-blueskyCommand
+const scrapeCommand = program
   .command("scrape")
+  .description("Scrape public web and social sources into local Broadly datasets.");
+
+scrapeCommand
+  .command("bluesky")
   .description("Scrape recent Bluesky posts matching account and city queries into a project CSV.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
   .option(

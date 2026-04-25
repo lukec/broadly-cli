@@ -38,7 +38,7 @@ The CSV can be ingested through the normal Broadly tabular ingest path. The init
 From the repository root:
 
 ```bash
-node packages/cli/dist/index.js bluesky scrape \
+node packages/cli/dist/index.js scrape bluesky \
   --project projects/vancouver-pulse \
   --since-days 30 \
   --limit 500

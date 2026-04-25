@@ -122,7 +122,7 @@ export async function scrapeBluesky(options: BlueskyScrapeOptions): Promise<void
 
   await withProjectActionLog({
     projectRoot,
-    command: "bluesky scrape",
+    command: "scrape bluesky",
     details: {
       accounts: options.account,
       queries: options.query,
