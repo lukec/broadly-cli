@@ -1,34 +1,32 @@
 # Broadly CLI
 
-Open-source local-first CLI and analysis harness for Broad Listener.
+Open-source local-first CLI for structured analysis of public-input and consultation datasets.
 
-This repository is the implementation workspace for **Phase 0** of the Broad Listener plan: prove the analysis loop on real consultation corpora before productizing it as a hosted listening studio.
+This repository is a standalone experiment in local-first qualitative analysis.
+It is designed to ingest tabular feedback data, turn records into inspectable opinion artifacts, run clustering and synthesis steps, and produce a local report you can review in the browser.
 
-The current goal is narrow:
+The goal is narrow:
 
 > Given a real consultation dataset and a set of analysis questions, generate a useful, evidence-linked, locally viewable report with more than one defensible interpretation of the data.
 
-The strategy context for this repo lives in the sibling wiki at `../broadly`.
-
 ## Status
 
-Early scaffold.
+Active experimental CLI.
 
-Phase 0 priorities:
+Current priorities:
 
 - local-first project initialization
 - YAML-based project config
 - content-addressed local artifact layout
-- Bedrock-backed preprocessing and analysis wrappers
-- future package boundaries for ingest, pipeline, report model, and report site
+- inspectable ingest, extraction, and analysis artifacts
+- reusable package boundaries for ingest, pipeline, report model, and report site
 
 Not in scope yet:
 
-- hosted multi-tenant infrastructure
 - PDFs and report-pack ingestion
-- statement voting
-- participant accounts
+- hosted multi-tenant infrastructure
 - multilingual support
+- workflow features unrelated to the local analysis loop
 
 ## Repository Layout
 
@@ -187,7 +185,7 @@ The project config now declares:
 
 So `broadly opinions`, `broadly analysis`, and `broadly report` can follow the named extraction and view specs from `broadly.yaml` instead of relying on a single implicit default model.
 
-Projects also include `prompts/`, which is intended to hold reusable prompt files for stages such as opinion extraction.
+Projects also include `prompts/`, which is intended to hold reusable prompt files for stages such as opinion extraction and analysis.
 New projects start with:
 
 - `prompts/opinion-extraction.md`
@@ -211,14 +209,7 @@ Or open the local web overview:
 node ../../packages/cli/dist/index.js web
 ```
 
-## Open Source Intent
-
-This repo is intended to become the open implementation surface for Broad Listener's local CLI, evidence pipeline, report model, and report viewer.
-
-It is being set up so the same core packages can later run:
-
-- locally during research and benchmarking
-- in a hosted AWS environment with on-demand execution
+The web view is a local inspection surface for the same project state and artifacts used by the CLI.
 
 ## Contributing
 
