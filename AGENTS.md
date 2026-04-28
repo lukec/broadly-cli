@@ -2,7 +2,7 @@
 
 This repository is the **implementation repo** for Broad Listener's open-source local CLI and report pipeline.
 
-It is intentionally separate from the sibling wiki at `/Users/lukec/src/broadly`, which remains the canonical product and strategy knowledge base.
+It is intentionally separate from the sibling wiki at `../broadly`, which remains the canonical product and strategy knowledge base.
 
 If you are an agent working here, optimize for:
 
@@ -24,9 +24,9 @@ Start with:
 2. this file
 3. the most relevant package README or source files
 4. the sibling wiki when product context matters:
-   - `/Users/lukec/src/broadly/index.md`
-   - `/Users/lukec/src/broadly/strategy/18-local-first-implementation-plan.md`
-   - `/Users/lukec/src/broadly/product/09-roadmap.md`
+   - `../broadly/index.md`
+   - `../broadly/strategy/18-local-first-implementation-plan.md`
+   - `../broadly/product/09-roadmap.md`
 
 Do not treat this repo as the place to rediscover product strategy from scratch. The sister repo wiki exists for that.
 
@@ -34,16 +34,16 @@ Do not treat this repo as the place to rediscover product strategy from scratch.
 
 When implementation work needs broader context about the problem domain, product thesis, municipal use case, or prior strategy decisions, read from the sibling wiki at:
 
-- `/Users/lukec/src/broadly`
+- `../broadly`
 
 Especially useful pages include:
 
-- `/Users/lukec/src/broadly/index.md`
-- `/Users/lukec/src/broadly/product/01-product-overview.md`
-- `/Users/lukec/src/broadly/product/03-core-workflows.md`
-- `/Users/lukec/src/broadly/market/11-demo-datasets-and-public-corpora.md`
-- `/Users/lukec/src/broadly/strategy/15-explanation-search-and-perspectives.md`
-- `/Users/lukec/src/broadly/strategy/18-local-first-implementation-plan.md`
+- `../broadly/index.md`
+- `../broadly/product/01-product-overview.md`
+- `../broadly/product/03-core-workflows.md`
+- `../broadly/market/11-demo-datasets-and-public-corpora.md`
+- `../broadly/strategy/15-explanation-search-and-perspectives.md`
+- `../broadly/strategy/18-local-first-implementation-plan.md`
 
 Use that repo for broader domain understanding. Use this repo for implementation truth.
 
@@ -86,7 +86,7 @@ This repo is not yet the hosted SaaS product.
 ### 1. Keep The Wiki And Code Separate
 
 - implementation lives here
-- durable product reasoning lives in `/Users/lukec/src/broadly`
+- durable product reasoning lives in `../broadly`
 
 If code changes product assumptions, update the wiki in a separate pass rather than stuffing strategy prose into source comments.
 

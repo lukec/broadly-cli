@@ -4,9 +4,9 @@ This document is the implementation-facing version of Broad Listener's `v0` loca
 
 Canonical strategy context still lives in the sibling wiki:
 
-- `/Users/lukec/src/broadly`
-- `/Users/lukec/src/broadly/strategy/18-local-first-implementation-plan.md`
-- `/Users/lukec/src/broadly/product/09-roadmap.md`
+- `../broadly`
+- `../broadly/strategy/18-local-first-implementation-plan.md`
+- `../broadly/product/09-roadmap.md`
 
 This file exists so work in this repo stays aligned with that plan without needing to reread the wiki for every coding session.
 
@@ -338,7 +338,7 @@ Imported labels such as theme, sub-theme, commitment, or source-system categorie
 
 The first concrete ingest target is:
 
-- `/Users/lukec/src/broadly-cli/data/opengov-2017/engagement-compilation.csv`
+- `./data/opengov-2017/engagement-compilation.csv`
 
 This corpus is a good `v0` benchmark because it is a real mixed-source consultation export and already contains legacy labels, translation columns, and source/channel variation.
 
@@ -544,7 +544,7 @@ Recent implementation decisions that future sessions should assume unless explic
 
 ## Change Discipline
 
-When this repo changes product assumptions, write the durable reasoning back into the wiki at `/Users/lukec/src/broadly`.
+When this repo changes product assumptions, write the durable reasoning back into the sibling wiki at `../broadly`.
 
 This repo should contain implementation truth.
 The sibling wiki should contain product and strategy truth.

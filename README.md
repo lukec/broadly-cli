@@ -8,7 +8,7 @@ The current goal is narrow:
 
 > Given a real consultation dataset and a set of analysis questions, generate a useful, evidence-linked, locally viewable report with more than one defensible interpretation of the data.
 
-The strategy context for this repo lives in the sibling wiki at `/Users/lukec/src/broadly`.
+The strategy context for this repo lives in the sibling wiki at `../broadly`.
 
 ## Status
 

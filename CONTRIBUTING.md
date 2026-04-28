@@ -29,6 +29,6 @@ npm run build
 
 The long-form product and strategy context lives in the sibling wiki:
 
-- `/Users/lukec/src/broadly`
+- `../broadly`
 
 If a code change materially changes product assumptions, write that back into the wiki rather than letting the code become the only source of truth.
