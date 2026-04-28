@@ -79,7 +79,7 @@ Broadly will automatically prefer `./.venv-pacmap/bin/python` when running `pacm
 Initialize a local project:
 
 ```bash
-node packages/cli/dist/index.js init my-first-project
+broadly init my-first-project
 ```
 
 The command prompts for:
@@ -91,7 +91,7 @@ The command prompts for:
 You can skip prompts with CLI args:
 
 ```bash
-node packages/cli/dist/index.js init my-first-project \
+broadly init my-first-project \
   --name "My First Project" \
   --description "Neighborhood mobility feedback analysis" \
   --goal "Identify the main concerns in the corpus" \
@@ -114,7 +114,7 @@ Register a tabular data source from inside the project directory:
 
 ```bash
 cd projects/my-first-project
-node ../../packages/cli/dist/index.js ingest ../../data/opengov-2017/engagement-compilation.csv
+broadly ingest ../../data/opengov-2017/engagement-compilation.csv
 ```
 
 That command:
@@ -128,7 +128,7 @@ That command:
 Register model aliases for the project:
 
 ```bash
-node ../../packages/cli/dist/index.js models add
+broadly models add
 ```
 
 The `models` command currently supports:
@@ -140,32 +140,32 @@ During `models add`, Broadly prompts for the provider, the provider model name, 
 It also prompts for the model region, which is stored in the project config and used later at execution time.
 
 ```bash
-node ../../packages/cli/dist/index.js models check
+broadly models check
 ```
 
 Run a simple prompt against one model alias:
 
 ```bash
-node ../../packages/cli/dist/index.js llm --model text-main "Tell me a joke"
+broadly llm --model text-main "Tell me a joke"
 ```
 
 Or run the same prompt against all registered models in parallel:
 
 ```bash
-node ../../packages/cli/dist/index.js llm --all-models "Tell me a joke"
+broadly llm --all-models "Tell me a joke"
 ```
 
 Extract opinion artifacts from the normalized records:
 
 ```bash
-node ../../packages/cli/dist/index.js extract-opinions
+broadly extract-opinions
 ```
 
 By default, Broadly reuses a compatible opinion-extraction run if the model, prompt, and ingest fingerprint still match.
 If you want to move older opinion runs out of the way before starting fresh:
 
 ```bash
-node ../../packages/cli/dist/index.js extract-opinions --archive
+broadly extract-opinions --archive
 ```
 
 Opinion extraction:
@@ -195,7 +195,7 @@ New projects start with:
 Check the current project state from the terminal:
 
 ```bash
-node ../../packages/cli/dist/index.js status
+broadly status
 ```
 
 `broadly status` mirrors the overview shown by `broadly web`, including the main
@@ -206,7 +206,7 @@ produced all configured reductions, clustering outputs, and perspectives.
 Or open the local web overview:
 
 ```bash
-node ../../packages/cli/dist/index.js web
+broadly web
 ```
 
 The web view is a local inspection surface for the same project state and artifacts used by the CLI.
