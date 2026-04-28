@@ -200,6 +200,11 @@ Check the current project state from the terminal:
 node ../../packages/cli/dist/index.js status
 ```
 
+`broadly status` mirrors the overview shown by `broadly web`, including the main
+pipeline stages and their current state.
+The analysis stage is only shown as complete when the latest analysis run has
+produced all configured reductions, clustering outputs, and perspectives.
+
 Or open the local web overview:
 
 ```bash
