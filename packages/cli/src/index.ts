@@ -4,6 +4,7 @@ import { Command } from "commander";
 
 import { addDataSource } from "./commands/addDataSource.js";
 import { runAnalysis } from "./commands/analysis.js";
+import { attestReport, attestStatements, verifyArtifacts } from "./commands/attest.js";
 import { defaultBlueskyScrapeOptions, scrapeBluesky } from "./commands/bluesky.js";
 import { configureDataset } from "./commands/configureDataset.js";
 import { extractOpinions } from "./commands/extractOpinions.js";
@@ -416,6 +417,61 @@ voteCommand
       await publishVoteReport({
         ...(options.project === undefined ? {} : { project: options.project }),
         ...(options.round === undefined ? {} : { round: options.round })
+      });
+    }
+  );
+
+const attestCommand = program
+  .command("attest")
+  .description("Write unsigned hash attestation manifests for local artifacts.");
+
+attestCommand
+  .command("report")
+  .description("Hash and attest a report bundle plus its supporting artifacts.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <runId>", "Report/analysis run id; defaults to latest report")
+  .action(
+    async (options: {
+      project?: string;
+      run?: string;
+    }) => {
+      await attestReport({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run })
+      });
+    }
+  );
+
+attestCommand
+  .command("statements")
+  .description("Hash and attest a statement bank plus its supporting artifacts.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <statementRunId>", "Statement run id; defaults to current, then latest")
+  .action(
+    async (options: {
+      project?: string;
+      run?: string;
+    }) => {
+      await attestStatements({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run })
+      });
+    }
+  );
+
+program
+  .command("verify")
+  .description("Verify local artifacts against attestation manifests.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--manifest <path>", "Specific attestation manifest to verify; defaults to all local attestations")
+  .action(
+    async (options: {
+      manifest?: string;
+      project?: string;
+    }) => {
+      await verifyArtifacts({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.manifest === undefined ? {} : { manifest: options.manifest })
       });
     }
   );

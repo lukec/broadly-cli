@@ -205,6 +205,9 @@ The current command surface is:
 | `broadly vote export` | Export reaction state and statement-level vote results. |
 | `broadly vote analyze` | Summarize a local voting round. |
 | `broadly vote report` | Attach a vote summary to the matching report artifacts. |
+| `broadly attest report` | Write an unsigned hash manifest for a report bundle and supporting artifacts. |
+| `broadly attest statements` | Write an unsigned hash manifest for a statement bank and supporting artifacts. |
+| `broadly verify` | Verify local artifacts against one or more attestation manifests. |
 | `broadly run` | Run review, opinions, analysis, and report as an end-to-end local pipeline. |
 | `broadly status` | Print the same pipeline state used by the web overview. |
 | `broadly web` | Serve the local project inspection, report, analysis, and review/admin UI. |
@@ -676,6 +679,43 @@ reports/<analysis-run-id>/vote-summary.json
 The `broadly web` report view displays that follow-up voting section when the
 summary file is present.
 
+## Attestation And Verification
+
+The first attestation implementation uses unsigned hash manifests. It does not
+yet manage signing keys. Verification works offline against local artifacts.
+
+Attestation contracts are implemented in `@broadly/report-model`:
+
+- `AttestationManifest`
+- `AttestationArtifactRecord`
+
+Attestation manifests live under:
+
+```text
+attestations/
+  reports/
+    <analysis-run-id>.attestation.json
+  statements/
+    <statement-run-id>.attestation.json
+```
+
+`broadly attest report` records hashes for the report bundle, analysis
+manifest, ingest manifest when present, source dataset when present, opinion
+manifests referenced by the analysis run, prompt files referenced by the
+analysis run, and generated analysis artifacts under reductions, clusters,
+hierarchies, and perspectives.
+
+`broadly attest statements` records hashes for the statement bank, individual
+statement artifacts, source report bundle, analysis manifest, ingest manifest
+when present, source dataset when present, opinion manifests, and prompt files.
+
+The manifest also records package version, publication timestamp, subject id,
+analysis run id, and registered model references from `broadly.yaml`.
+
+`broadly verify` checks every local attestation manifest by default, or a single
+manifest passed with `--manifest`. It reports missing required artifacts and
+hash mismatches with the affected artifact paths.
+
 ## QA
 
 `broadly qa` runs checks against an analysis run and optional report bundle.
@@ -808,6 +848,8 @@ The implementation is useful but not finished.
 - The local voting sandbox has no identity, spam resistance, participant
   clustering, or full Pol.is math.
 - Vote analysis currently reports statement-level summaries only.
+- Attestations are unsigned hash manifests. Signing can be added once the
+  manifest shape is stable.
 - Config accepts dataset formats that the current ingest command does not yet
   import.
 - Raw and normalized source artifacts are content-addressed, but not every
