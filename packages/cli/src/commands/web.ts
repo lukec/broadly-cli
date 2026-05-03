@@ -25,7 +25,8 @@ import type {
   Statement,
   StatementModerationStatus,
   StatementReviewArtifact,
-  StatementVisibilityStatus
+  StatementVisibilityStatus,
+  VoteRoundSummary
 } from "@broadly/report-model";
 
 import {
@@ -59,6 +60,7 @@ import {
   type LoadedStatementBank
 } from "./statements.js";
 import { readCurrentRunId } from "../projectArtifacts.js";
+import { loadVoteSummaryForReport } from "./vote.js";
 
 export interface WebCommandOptions {
   project?: string;
@@ -608,13 +610,26 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
 
         const reportBundle = await loadReportBundle(projectPaths.reportsDir, runId);
         const analysisRun = await loadAnalysisRun(projectPaths.runsDir, reportBundle.analysisRunId);
+        const voteSummary = await loadVoteSummaryForReport(
+          projectPaths.reportsDir,
+          reportBundle.analysisRunId
+        );
         const opinionLookup = await loadOpinionArtifactLookup(
           path.join(projectPaths.dataDir, "opinions"),
           collectOpinionRunIds(analysisRun.manifest.input)
         );
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end(renderPublishedReportPage(dashboard, runId, reportBundle, analysisRun, opinionLookup));
+        response.end(
+          renderPublishedReportPage(
+            dashboard,
+            runId,
+            reportBundle,
+            analysisRun,
+            opinionLookup,
+            voteSummary
+          )
+        );
         return;
       }
 
@@ -648,13 +663,26 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         const runId = decodeURIComponent(requestUrl.pathname.slice("/reports/".length));
         const reportBundle = await loadReportBundle(projectPaths.reportsDir, runId);
         const analysisRun = await loadAnalysisRun(projectPaths.runsDir, reportBundle.analysisRunId);
+        const voteSummary = await loadVoteSummaryForReport(
+          projectPaths.reportsDir,
+          reportBundle.analysisRunId
+        );
         const opinionLookup = await loadOpinionArtifactLookup(
           path.join(projectPaths.dataDir, "opinions"),
           collectOpinionRunIds(analysisRun.manifest.input)
         );
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end(renderPublishedReportPage(dashboard, runId, reportBundle, analysisRun, opinionLookup));
+        response.end(
+          renderPublishedReportPage(
+            dashboard,
+            runId,
+            reportBundle,
+            analysisRun,
+            opinionLookup,
+            voteSummary
+          )
+        );
         return;
       }
 
@@ -1984,12 +2012,52 @@ function renderStatementsPage(data: ProjectDashboardData, loaded: LoadedStatemen
   );
 }
 
+function renderVoteSummarySection(summary: VoteRoundSummary): string {
+  const topStatements = summary.statements
+    .filter((statement) => statement.totals.total > 0)
+    .sort((left, right) => right.totals.total - left.totals.total)
+    .slice(0, 6);
+
+  return `<section class="panel">
+    <article class="card feature-card">
+      <p class="eyebrow">Follow-up Voting Round</p>
+      <h2>${escapeHtml(summary.voteRoundId)}</h2>
+      ${renderKeyValueList([
+        ["Participants", String(summary.participantCount)],
+        ["Statements", String(summary.statementCount)],
+        ["High consensus", String(summary.highConsensusStatementIds.length)],
+        ["High contention", String(summary.highContentionStatementIds.length)],
+        ["Low participation", String(summary.lowParticipationStatementIds.length)]
+      ])}
+      ${
+        topStatements.length === 0
+          ? `<p class="meta">No reactions have been recorded yet.</p>`
+          : `<div class="stack">
+              <p class="section-label">Statement results</p>
+              ${topStatements
+                .map(
+                  (statement) => `<blockquote>
+                    <strong>${escapeHtml(statement.classification)}</strong>
+                    · agree ${Math.round(statement.rates.agree * 100)}%
+                    · disagree ${Math.round(statement.rates.disagree * 100)}%
+                    · pass ${Math.round(statement.rates.pass * 100)}%
+                    <br />${escapeHtml(statement.statementText)}
+                  </blockquote>`
+                )
+                .join("")}
+            </div>`
+      }
+    </article>
+  </section>`;
+}
+
 function renderPublishedReportPage(
   data: ProjectDashboardData,
   runId: string,
   report: ReportBundle,
   analysisRun: LoadedAnalysisRun,
-  opinionLookup: Record<string, LoadedOpinionArtifact>
+  opinionLookup: Record<string, LoadedOpinionArtifact>,
+  voteSummary: VoteRoundSummary | null
 ): string {
   const primaryPerspective =
     report.views.find((view) => view.viewId === report.primaryViewId) ?? report.views[0];
@@ -2075,6 +2143,7 @@ function renderPublishedReportPage(
               </article>
             </section>`
       }
+      ${voteSummary === null ? "" : renderVoteSummarySection(voteSummary)}
       <section class="panel">
         <article class="card feature-card">
           <p class="eyebrow">Perspectives</p>

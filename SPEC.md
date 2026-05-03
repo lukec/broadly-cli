@@ -200,6 +200,11 @@ The current command surface is:
 | `broadly statements generate --from-report` | Generate a pending statement bank from a report bundle and highlighted report evidence. |
 | `broadly statements qa` | Run deterministic QA checks over generated statements. |
 | `broadly statements review` | Apply local statement review statuses, text edits, and accepted-statement exports. |
+| `broadly vote init` | Initialize a local voting round from accepted public statements. |
+| `broadly vote web` | Serve the local reference voting sandbox. |
+| `broadly vote export` | Export reaction state and statement-level vote results. |
+| `broadly vote analyze` | Summarize a local voting round. |
+| `broadly vote report` | Attach a vote summary to the matching report artifacts. |
 | `broadly run` | Run review, opinions, analysis, and report as an end-to-end local pipeline. |
 | `broadly status` | Print the same pipeline state used by the web overview. |
 | `broadly web` | Serve the local project inspection, report, analysis, and review/admin UI. |
@@ -605,6 +610,72 @@ accepted, rejected, hidden, and excluded statements, evidence references,
 generation rationale, and basic local status/text edits. Web edits are review
 overlays and do not mutate the generated statement bank.
 
+## Local Voting Sandbox
+
+The local voting sandbox is a reference workflow for the open vote contracts. It
+is intentionally not a hosted participant product: there are no accounts, email
+flows, CRM records, production moderation queues, or anti-abuse operations.
+
+Vote contracts are implemented in `@broadly/report-model`:
+
+- `ReactionEvent`
+- `ReactionState`
+- `VoteRoundManifest`
+- `VoteRoundSummary`
+- `VoteStatementSummary`
+
+Reaction values are:
+
+- `agree`
+- `disagree`
+- `pass`
+
+`broadly vote init --statements <path>` reads a statement bank or
+`accepted-statements.json`, applies local review overlays when the source is a
+generated `statement-bank.json`, and initializes a round from accepted
+non-private, non-duplicate statements.
+
+Voting artifacts live under:
+
+```text
+votes/
+  <vote-round-id>/
+    manifest.json
+    statements.json
+    reaction-events.jsonl
+    reaction-state.json
+    summary.json
+    exports/
+```
+
+`reaction-events.jsonl` is append-only. `reaction-state.json` is the latest
+derived state by participant id and statement id.
+
+`broadly vote web` serves a small local form for anonymous or named-local
+participant ids. Votes are persisted as reaction events and reflected in the
+derived state. The page labels itself as a local reference sandbox, not
+production civic infrastructure.
+
+`broadly vote export` writes:
+
+- `exports/reaction-state.json`
+- `exports/statements.json`
+- `exports/statement-results.csv`
+
+`broadly vote analyze` writes `summary.json` with statement-level totals,
+agreement/disagreement/pass rates, high-consensus statements, high-contention
+statements, low-participation statements, and bridge-candidate placeholders
+when enough participants exist for future richer analysis.
+
+`broadly vote report` copies the current vote summary to:
+
+```text
+reports/<analysis-run-id>/vote-summary.json
+```
+
+The `broadly web` report view displays that follow-up voting section when the
+summary file is present.
+
 ## QA
 
 `broadly qa` runs checks against an analysis run and optional report bundle.
@@ -666,6 +737,7 @@ failures.
 - analysis run summaries
 - report view with perspective switching
 - statement bank review with status and text edits
+- follow-up voting summary when `vote-summary.json` is attached to a report
 - scatterplots for clustered reductions
 - theme and cluster exploration
 - cluster detail pages with assigned opinions
@@ -733,6 +805,9 @@ The implementation is useful but not finished.
 - Statement generation is deterministic and report-derived in the first pass;
   it does not yet call a statement-specific LLM prompt.
 - Statement QA is heuristic and local. It does not yet use a model judge.
+- The local voting sandbox has no identity, spam resistance, participant
+  clustering, or full Pol.is math.
+- Vote analysis currently reports statement-level summaries only.
 - Config accepts dataset formats that the current ingest command does not yet
   import.
 - Raw and normalized source artifacts are content-addressed, but not every

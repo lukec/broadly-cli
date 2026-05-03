@@ -17,6 +17,13 @@ import { runPipeline } from "./commands/run.js";
 import { runReview } from "./commands/review.js";
 import { showProjectStatus } from "./commands/status.js";
 import { generateStatements, reviewStatements, runStatementQa } from "./commands/statements.js";
+import {
+  analyzeVoteRound,
+  exportVoteRound,
+  initVoteRound,
+  publishVoteReport,
+  serveVoteWeb
+} from "./commands/vote.js";
 import { serveProjectWeb } from "./commands/web.js";
 
 const program = new Command();
@@ -317,6 +324,98 @@ statementsCommand
         ...(options.accept.length === 0 ? {} : { accept: options.accept }),
         ...(options.reject.length === 0 ? {} : { reject: options.reject }),
         ...(options.exportAccepted === true ? { exportAccepted: true } : {})
+      });
+    }
+  );
+
+const voteCommand = program
+  .command("vote")
+  .description("Run the local reference voting sandbox and summarize vote results.");
+
+voteCommand
+  .command("init")
+  .description("Initialize a local voting round from accepted statements.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--statements <path>", "Statement bank or accepted-statements JSON path")
+  .action(
+    async (options: {
+      project?: string;
+      statements?: string;
+    }) => {
+      await initVoteRound({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.statements === undefined ? {} : { statements: options.statements })
+      });
+    }
+  );
+
+voteCommand
+  .command("web")
+  .description("Start a local voting web sandbox for one vote round.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--round <voteRoundId>", "Vote round id; defaults to current, then latest")
+  .option("--port <port>", "Port to bind the local voting server", parsePositiveInteger)
+  .action(
+    async (options: {
+      port?: number;
+      project?: string;
+      round?: string;
+    }) => {
+      await serveVoteWeb({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.round === undefined ? {} : { round: options.round }),
+        ...(options.port === undefined ? {} : { port: options.port })
+      });
+    }
+  );
+
+voteCommand
+  .command("export")
+  .description("Export the current reaction state and statement-level results.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--round <voteRoundId>", "Vote round id; defaults to current, then latest")
+  .action(
+    async (options: {
+      project?: string;
+      round?: string;
+    }) => {
+      await exportVoteRound({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.round === undefined ? {} : { round: options.round })
+      });
+    }
+  );
+
+voteCommand
+  .command("analyze")
+  .description("Summarize a local voting round.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--round <voteRoundId>", "Vote round id; defaults to current, then latest")
+  .action(
+    async (options: {
+      project?: string;
+      round?: string;
+    }) => {
+      await analyzeVoteRound({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.round === undefined ? {} : { round: options.round })
+      });
+    }
+  );
+
+voteCommand
+  .command("report")
+  .description("Attach a voting-round summary to the matching report artifacts.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--round <voteRoundId>", "Vote round id; defaults to current, then latest")
+  .action(
+    async (options: {
+      project?: string;
+      round?: string;
+    }) => {
+      await publishVoteReport({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.round === undefined ? {} : { round: options.round })
       });
     }
   );

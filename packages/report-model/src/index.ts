@@ -275,6 +275,7 @@ export interface VoteStatementSummary {
 export interface VoteRoundSummary {
   voteRoundId: string;
   statementRunId: string;
+  analysisRunId: string;
   createdAt: string;
   participantCount: number;
   statementCount: number;
