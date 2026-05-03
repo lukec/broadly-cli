@@ -246,6 +246,16 @@ Contract docs:
 - [Reaction event format](./docs/reaction-event-format.md)
 - [Attestation manifest](./docs/attestation-manifest.md)
 - [Local voting sandbox](./docs/local-voting-sandbox.md)
+- [NEXT demo workflow](./docs/next-demo.md)
+
+Run the guided no-LLM demo for the full `NEXT.md` workflow:
+
+```bash
+npm run demo:next
+```
+
+The demo creates `projects/open-contracts-demo/`, including initial voting
+questions, synthetic votes, attestations, exports, and a static report site.
 
 Run the no-LLM open-contract smoke workflow:
 
