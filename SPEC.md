@@ -42,11 +42,11 @@ The repo is a workspace under `packages/*`.
 
 | Package | Current responsibility |
 | --- | --- |
-| `@broadly/core` | Hashing, project path layout, artifact/run types, and review status contracts. |
+| `@broadly/core` | Hashing, project path layout, artifact/run types, review status contracts, and shared paths for statements, votes, and attestations. |
 | `@broadly/config` | `broadly.yaml` schema, YAML parse/serialize helpers, starter config generation, and cross-reference validation. |
 | `@broadly/ingest` | CSV/TSV source import, delimiter detection, raw file copy, normalized record creation, field-map derived fields, and ingest manifests. |
 | `@broadly/pipeline` | Early pipeline boundary and pass-through opinion-unit extraction helper. The richer LLM extraction and map analysis flow currently lives in `packages/cli`. |
-| `@broadly/report-model` | TypeScript interfaces for report bundles, views, clusters, evidence quotes, themes, and review boundary summaries. |
+| `@broadly/report-model` | TypeScript interfaces for report bundles, views, clusters, evidence quotes, themes, review boundary summaries, statement banks, vote rounds, and attestation manifests. |
 | `@broadly/report-site` | Placeholder HTML renderer for a report bundle. The active local UI is currently served by `packages/cli/src/commands/web.ts`. |
 | `@broadly/cli` | User-facing commands, model runtime adapters, orchestration, local web server, review/admin UI, analysis, QA, and report bundle generation. |
 
@@ -113,6 +113,29 @@ project/
   reports/
     <analysis-run-id>/
       report-bundle.json
+  statements/
+    current-run.txt
+    <statement-run-id>/
+      manifest.json
+      statement-bank.json
+      statements/
+        <statement-id>.json
+      qa/
+      review/
+        statements/
+      accepted-statements.json
+  votes/
+    current-round.txt
+    <vote-round-id>/
+      manifest.json
+      statements.json
+      reaction-events.jsonl
+      reaction-state.json
+      summary.json
+      exports/
+  attestations/
+    reports/
+    statements/
 ```
 
 Generated project artifacts are intentionally local and inspectable. They are
@@ -470,6 +493,52 @@ The current `report` command writes the JSON bundle only. It does not currently
 emit a standalone static HTML file. The active report reading experience is in
 `broadly web`, which renders the bundle together with analysis artifacts.
 
+## Statement Bank Contract
+
+The statement contract is implemented in `@broadly/report-model` and is ready
+for command workflows to write local artifacts. A statement bank is a durable
+set of votable statements derived from reports, clusters, themes, opinions, or
+manual seeds.
+
+Statement artifacts use:
+
+- `Statement`
+- `StatementBank`
+- `StatementEvidenceRef`
+- `StatementGenerationProvenance`
+- `StatementModerationStatus`
+- `StatementVisibilityStatus`
+
+Statement moderation statuses are:
+
+- `pending`
+- `accepted`
+- `rejected`
+- `hidden_from_public`
+- `excluded_from_analysis`
+
+Statement visibility statuses are:
+
+- `private`
+- `admin_only`
+- `public`
+
+The implemented local artifact location is:
+
+```text
+statements/
+  <statement-run-id>/
+    manifest.json
+    statement-bank.json
+    statements/
+      <statement-id>.json
+  current-run.txt
+```
+
+The core project helpers expose `resolveStatementRunPaths`,
+`resolveVoteRoundPaths`, and `resolveAttestationPaths` so later local and
+hosted runners can write the same artifact layout.
+
 ## QA
 
 `broadly qa` runs checks against an analysis run and optional report bundle.
@@ -594,6 +663,8 @@ The implementation is useful but not finished.
   `@broadly/pipeline`.
 - `@broadly/report-site` has a placeholder renderer, while `broadly report`
   writes only `report-bundle.json`.
+- The statement bank contract exists, but the first statement generation and
+  review commands are still being layered on top of it.
 - Config accepts dataset formats that the current ingest command does not yet
   import.
 - Raw and normalized source artifacts are content-addressed, but not every

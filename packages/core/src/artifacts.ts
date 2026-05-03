@@ -1,4 +1,12 @@
-export type ArtifactKind = "raw" | "normalized" | "opinion" | "run" | "report";
+export type ArtifactKind =
+  | "raw"
+  | "normalized"
+  | "opinion"
+  | "run"
+  | "report"
+  | "statement"
+  | "vote"
+  | "attestation";
 
 export interface ArtifactRecord {
   id: string;
