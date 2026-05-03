@@ -21,6 +21,12 @@ import {
   type NormalizedCommentRecord
 } from "@broadly/ingest";
 import type { ReportBundle } from "@broadly/report-model";
+import type {
+  Statement,
+  StatementModerationStatus,
+  StatementReviewArtifact,
+  StatementVisibilityStatus
+} from "@broadly/report-model";
 
 import {
   buildPipelineSteps,
@@ -44,6 +50,15 @@ import {
   upsertOpinionReview,
   writeReviewConfig
 } from "../reviewState.js";
+import {
+  exportAcceptedStatements,
+  findLatestStatementRunId,
+  isStatementVisibilityStatus,
+  loadStatementBankWithReviews,
+  writeStatementReviewArtifact,
+  type LoadedStatementBank
+} from "./statements.js";
+import { readCurrentRunId } from "../projectArtifacts.js";
 
 export interface WebCommandOptions {
   project?: string;
@@ -264,6 +279,9 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
       const adminReviewPostMatch = requestUrl.pathname.match(
         /^\/admin\/(comments|opinions)\/([^/]+)\/review$/
       );
+      const statementReviewPostMatch = requestUrl.pathname.match(
+        /^\/statements\/([^/]+)\/([^/]+)\/review$/
+      );
 
       if (requestUrl.pathname === "/__broadly_live_reload") {
         if (liveReload === null) {
@@ -445,6 +463,46 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         return;
       }
 
+      if (request.method === "POST" && statementReviewPostMatch !== null) {
+        const statementRunId = decodeURIComponent(statementReviewPostMatch[1] ?? "");
+        const statementId = decodeURIComponent(statementReviewPostMatch[2] ?? "");
+        const loaded = await loadStatementBankWithReviews(projectRoot, statementRunId);
+        const statement = loaded.statements.find((item) => item.statementId === statementId);
+
+        if (statement === undefined) {
+          throw new Error(`Statement '${statementId}' was not found.`);
+        }
+
+        const form = await readRequestForm(request);
+        const status = parseSubmittedStatementStatus(form.get("status"));
+        const visibility = parseSubmittedStatementVisibility(form.get("visibility"));
+        const statementText = normalizeSubmittedText(form.get("statementText"));
+        const note = normalizeSubmittedText(form.get("note"));
+        const review: StatementReviewArtifact = {
+          statementId,
+          updatedAt: new Date().toISOString(),
+          actor: {
+            type: "human",
+            name: "local-admin"
+          },
+          moderationStatus: status,
+          visibilityStatus: visibility,
+          ...(statementText.length === 0 || statementText === statement.statementText
+            ? {}
+            : { statementText }),
+          ...(note.length === 0 ? {} : { note })
+        };
+
+        await writeStatementReviewArtifact(loaded.statementRunPaths.reviewDir, review);
+        await exportAcceptedStatements(
+          projectRoot,
+          await loadStatementBankWithReviews(projectRoot, statementRunId)
+        );
+
+        redirectResponse(response, `/statements/${encodeURIComponent(statementRunId)}`);
+        return;
+      }
+
       const dashboard = await loadProjectDashboard(projectRoot, config, options.watch === true);
 
       if (requestUrl.pathname === "/admin") {
@@ -557,6 +615,32 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end(renderPublishedReportPage(dashboard, runId, reportBundle, analysisRun, opinionLookup));
+        return;
+      }
+
+      if (requestUrl.pathname === "/statements") {
+        const statementRunId =
+          (await readCurrentRunId(projectPaths.statementsCurrentRunPath)) ??
+          (await findLatestStatementRunId(projectPaths.statementsDir));
+
+        if (statementRunId === null) {
+          response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          response.end("No statement bank found.\n");
+          return;
+        }
+
+        const loaded = await loadStatementBankWithReviews(projectRoot, statementRunId);
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderStatementsPage(dashboard, loaded));
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/statements/")) {
+        const statementRunId = decodeURIComponent(requestUrl.pathname.slice("/statements/".length));
+        const loaded = await loadStatementBankWithReviews(projectRoot, statementRunId);
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderStatementsPage(dashboard, loaded));
         return;
       }
 
@@ -1027,6 +1111,30 @@ function parseSubmittedReviewStatus(value: string | null): ReviewStatus {
   }
 
   throw new Error("A valid review status is required.");
+}
+
+function parseSubmittedStatementStatus(value: string | null): StatementModerationStatus {
+  const statuses: StatementModerationStatus[] = [
+    "pending",
+    "accepted",
+    "rejected",
+    "hidden_from_public",
+    "excluded_from_analysis"
+  ];
+
+  if (value !== null && statuses.includes(value as StatementModerationStatus)) {
+    return value as StatementModerationStatus;
+  }
+
+  throw new Error("A valid statement status is required.");
+}
+
+function parseSubmittedStatementVisibility(value: string | null): StatementVisibilityStatus {
+  if (value !== null && isStatementVisibilityStatus(value)) {
+    return value;
+  }
+
+  throw new Error("A valid statement visibility is required.");
 }
 
 function parseSubmittedReviewStatusList(values: string[], fieldLabel: string): ReviewStatus[] {
@@ -1813,6 +1921,64 @@ function renderReportPage(data: ProjectDashboardData): string {
                 )
                 .join("")}
             </section>`}
+      </section>
+    </main>`
+  );
+}
+
+function renderStatementsPage(data: ProjectDashboardData, loaded: LoadedStatementBank): string {
+  const summary = summarizeWebStatementStatuses(loaded.statements);
+  const sortedStatements = [...loaded.statements].sort((left, right) =>
+    left.statementId.localeCompare(right.statementId)
+  );
+
+  return renderPage(
+    data,
+    "Statements",
+    `<main class="shell">
+      ${renderHeader(data, "Statements")}
+      <section class="panel two-up">
+        <article class="card">
+          <p class="eyebrow">Statement Bank</p>
+          <h2>${escapeHtml(loaded.statementRunId)}</h2>
+          <p class="lede">${escapeHtml(loaded.bank.projectName)}</p>
+          ${renderKeyValueList([
+            ["Analysis run", loaded.bank.analysisRunId],
+            ["Report", loaded.bank.reportId],
+            ["Statement bank", toPortableRelativePath(data.projectRoot, loaded.statementRunPaths.statementBankPath)],
+            ["Accepted export", toPortableRelativePath(data.projectRoot, loaded.statementRunPaths.acceptedStatementsPath)]
+          ])}
+        </article>
+        <article class="card">
+          <p class="eyebrow">Review State</p>
+          <h2>${summary.accepted} accepted / ${loaded.statements.length} total</h2>
+          <div class="meta-row">
+            ${renderStatementStatusBadge("pending", summary.pending)}
+            ${renderStatementStatusBadge("accepted", summary.accepted)}
+            ${renderStatementStatusBadge("rejected", summary.rejected)}
+            ${renderStatementStatusBadge("hidden_from_public", summary.hidden_from_public)}
+            ${renderStatementStatusBadge("excluded_from_analysis", summary.excluded_from_analysis)}
+          </div>
+          <p class="meta">Accepted statements are exported automatically after web edits.</p>
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Review</p>
+            <h2>Generated statements</h2>
+          </div>
+          <p class="meta">Status edits are local review artifacts under statements/${escapeHtml(loaded.statementRunId)}/review/.</p>
+        </div>
+        ${
+          sortedStatements.length === 0
+            ? `<article class="card"><p>No statements found in this bank.</p></article>`
+            : `<section class="stack">
+                ${sortedStatements
+                  .map((statement) => renderStatementReviewCard(data, loaded, statement))
+                  .join("")}
+              </section>`
+        }
       </section>
     </main>`
   );
@@ -2752,6 +2918,7 @@ function renderHeader(data: ProjectDashboardData, activePage: string): string {
     { href: "/pipeline/opinions", label: "Extract Opinions", key: "Extract Opinions" },
     { href: "/pipeline/analysis", label: "Perform Analysis", key: "Perform Analysis" },
     { href: "/pipeline/report", label: "Create Report", key: "Create Report" },
+    { href: "/statements", label: "Statements", key: "Statements" },
     { href: "/admin", label: "Admin Review", key: "Admin Review" }
   ];
 
@@ -3355,6 +3522,148 @@ function formatIncludedStatuses(statuses: ReviewStatus[]): string {
 
 function renderReviewStatusBadge(status: ReviewStatus): string {
   return `<span class="status-badge ${reviewStatusClassName(status)}">${escapeHtml(status)}</span>`;
+}
+
+function renderStatementReviewCard(
+  data: ProjectDashboardData,
+  loaded: LoadedStatementBank,
+  statement: Statement
+): string {
+  const review = loaded.reviewByStatementId.get(statement.statementId);
+  const evidenceRefs = statement.evidenceRefs.filter(
+    (ref) => ref.refType === "opinion" || ref.refType === "cluster" || ref.refType === "theme"
+  );
+
+  return `<article class="card statement-card">
+    <div class="record-header">
+      <div>
+        <p class="eyebrow">${escapeHtml(statement.statementId)}</p>
+        <h3>${escapeHtml(statement.statementText)}</h3>
+        <div class="meta-row">
+          ${renderStatementStatusBadge(statement.moderationStatus)}
+          ${renderMetaChip(escapeHtml(statement.visibilityStatus))}
+          ${statement.duplicateOfStatementId === undefined ? "" : renderMetaChip(`Duplicate of ${escapeHtml(statement.duplicateOfStatementId)}`)}
+          ${renderMetaChip(`${evidenceRefs.length} evidence ref(s)`)}
+        </div>
+      </div>
+    </div>
+    <div class="columns">
+      <section class="stack">
+        <p>${escapeHtml(statement.generationRationale)}</p>
+        ${
+          statement.sourceClusterIds.length === 0
+            ? ""
+            : `<p class="meta">Clusters: ${escapeHtml(statement.sourceClusterIds.join(", "))}</p>`
+        }
+        ${
+          statement.sourceOpinionIds.length === 0
+            ? ""
+            : `<p class="meta">Opinions: ${escapeHtml(statement.sourceOpinionIds.slice(0, 8).join(", "))}${statement.sourceOpinionIds.length > 8 ? "..." : ""}</p>`
+        }
+        ${renderStatementEvidenceList(evidenceRefs)}
+      </section>
+      <form class="admin-form" method="post" action="/statements/${encodeURIComponent(loaded.statementRunId)}/${encodeURIComponent(statement.statementId)}/review">
+        <div class="field-grid">
+          <label class="field">
+            <span>Status</span>
+            <select name="status">
+              ${renderStatementStatusOptions(statement.moderationStatus)}
+            </select>
+          </label>
+          <label class="field">
+            <span>Visibility</span>
+            <select name="visibility">
+              ${renderStatementVisibilityOptions(statement.visibilityStatus)}
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Statement text</span>
+          <textarea name="statementText" rows="4">${escapeHtml(statement.statementText)}</textarea>
+        </label>
+        <label class="field">
+          <span>Review note</span>
+          <textarea name="note" rows="3">${escapeHtml(review?.note ?? "")}</textarea>
+        </label>
+        <button class="button-link" type="submit">Save statement review</button>
+        <p class="meta">Artifact ${escapeHtml(toPortableRelativePath(data.projectRoot, path.join(loaded.statementRunPaths.statementsDir, `${statement.statementId}.json`)))}</p>
+      </form>
+    </div>
+  </article>`;
+}
+
+function renderStatementEvidenceList(refs: Statement["evidenceRefs"]): string {
+  const visibleRefs = refs.slice(0, 6);
+
+  if (visibleRefs.length === 0) {
+    return `<p class="meta">No evidence references are attached.</p>`;
+  }
+
+  return `<div class="stack">
+    <p class="section-label">Evidence</p>
+    ${visibleRefs
+      .map(
+        (ref) => `<blockquote>
+          <strong>${escapeHtml(ref.refType)}</strong>
+          ${ref.clusterId === undefined ? "" : ` · Cluster ${escapeHtml(ref.clusterId)}`}
+          ${ref.themeId === undefined ? "" : ` · Theme ${escapeHtml(ref.themeId)}`}
+          ${ref.opinionId === undefined ? "" : ` · Opinion ${escapeHtml(ref.opinionId)}`}
+          ${ref.excerpt === undefined ? "" : `<br />${escapeHtml(truncateForUi(ref.excerpt, 280))}`}
+        </blockquote>`
+      )
+      .join("")}
+  </div>`;
+}
+
+function renderStatementStatusBadge(status: StatementModerationStatus, count?: number): string {
+  const label = count === undefined ? status : `${status}: ${count}`;
+  return `<span class="status-badge status-${escapeHtmlAttribute(status)}">${escapeHtml(label)}</span>`;
+}
+
+function renderStatementStatusOptions(selectedStatus: StatementModerationStatus): string {
+  const statuses: StatementModerationStatus[] = [
+    "pending",
+    "accepted",
+    "rejected",
+    "hidden_from_public",
+    "excluded_from_analysis"
+  ];
+
+  return statuses
+    .map(
+      (status) =>
+        `<option value="${escapeHtmlAttribute(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`
+    )
+    .join("");
+}
+
+function renderStatementVisibilityOptions(selectedStatus: StatementVisibilityStatus): string {
+  const statuses: StatementVisibilityStatus[] = ["private", "admin_only", "public"];
+
+  return statuses
+    .map(
+      (status) =>
+        `<option value="${escapeHtmlAttribute(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`
+    )
+    .join("");
+}
+
+function summarizeWebStatementStatuses(
+  statements: Statement[]
+): Record<StatementModerationStatus, number> {
+  const summary: Record<StatementModerationStatus, number> = {
+    pending: 0,
+    accepted: 0,
+    rejected: 0,
+    hidden_from_public: 0,
+    excluded_from_analysis: 0
+  };
+
+  for (const statement of statements) {
+    summary[statement.moderationStatus] += 1;
+  }
+
+  return summary;
 }
 
 function renderMetaChip(content: string): string {

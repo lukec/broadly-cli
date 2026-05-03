@@ -16,6 +16,7 @@ import { runQa } from "./commands/qa.js";
 import { runPipeline } from "./commands/run.js";
 import { runReview } from "./commands/review.js";
 import { showProjectStatus } from "./commands/status.js";
+import { generateStatements, reviewStatements, runStatementQa } from "./commands/statements.js";
 import { serveProjectWeb } from "./commands/web.js";
 
 const program = new Command();
@@ -237,6 +238,85 @@ program
         ...(options.view.length === 0 ? {} : { view: options.view }),
         ...(options.clusterLimit === undefined ? {} : { clusterLimit: options.clusterLimit }),
         ...(options.themeLimit === undefined ? {} : { themeLimit: options.themeLimit })
+      });
+    }
+  );
+
+const statementsCommand = program
+  .command("statements")
+  .description("Generate, QA, and locally review votable statement banks.");
+
+statementsCommand
+  .command("generate")
+  .description("Generate a pending statement bank from existing report artifacts.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <runId>", "Report/analysis run id to use; defaults to the latest report")
+  .option("--from-report", "Generate statements from reports/<run-id>/report-bundle.json", false)
+  .action(
+    async (options: {
+      project?: string;
+      run?: string;
+      fromReport: boolean;
+    }) => {
+      await generateStatements({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run }),
+        ...(options.fromReport === true ? { fromReport: true } : {})
+      });
+    }
+  );
+
+statementsCommand
+  .command("qa")
+  .description("Run deterministic QA checks over a statement bank.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <statementRunId>", "Statement run id; defaults to current, then latest")
+  .action(
+    async (options: {
+      project?: string;
+      run?: string;
+    }) => {
+      await runStatementQa({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run })
+      });
+    }
+  );
+
+statementsCommand
+  .command("review")
+  .description("Review statement statuses and export accepted statements.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <statementRunId>", "Statement run id; defaults to current, then latest")
+  .option("--statement <statementId>", "Statement id to update")
+  .option("--status <status>", "pending, accepted, rejected, hidden_from_public, or excluded_from_analysis")
+  .option("--text <text>", "Replacement statement text for --statement")
+  .option("--note <note>", "Reviewer note for changed statements")
+  .option("--accept <statementId>", "Accept a statement; repeatable", collectOptionValue, [])
+  .option("--reject <statementId>", "Reject a statement; repeatable", collectOptionValue, [])
+  .option("--export-accepted", "Write accepted-statements.json for the run", false)
+  .action(
+    async (options: {
+      accept: string[];
+      exportAccepted: boolean;
+      note?: string;
+      project?: string;
+      reject: string[];
+      run?: string;
+      statement?: string;
+      status?: string;
+      text?: string;
+    }) => {
+      await reviewStatements({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run }),
+        ...(options.statement === undefined ? {} : { statement: options.statement }),
+        ...(options.status === undefined ? {} : { status: options.status }),
+        ...(options.text === undefined ? {} : { text: options.text }),
+        ...(options.note === undefined ? {} : { note: options.note }),
+        ...(options.accept.length === 0 ? {} : { accept: options.accept }),
+        ...(options.reject.length === 0 ? {} : { reject: options.reject }),
+        ...(options.exportAccepted === true ? { exportAccepted: true } : {})
       });
     }
   );

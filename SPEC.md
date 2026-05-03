@@ -197,6 +197,9 @@ The current command surface is:
 | `broadly analysis` | Build embeddings, reductions, clusters, semantic hierarchies, and perspective artifacts. |
 | `broadly report` | Generate `reports/<run-id>/report-bundle.json` from analysis artifacts. |
 | `broadly qa` | Run structural and model-assisted QA over analysis/report artifacts. |
+| `broadly statements generate --from-report` | Generate a pending statement bank from a report bundle and highlighted report evidence. |
+| `broadly statements qa` | Run deterministic QA checks over generated statements. |
+| `broadly statements review` | Apply local statement review statuses, text edits, and accepted-statement exports. |
 | `broadly run` | Run review, opinions, analysis, and report as an end-to-end local pipeline. |
 | `broadly status` | Print the same pipeline state used by the web overview. |
 | `broadly web` | Serve the local project inspection, report, analysis, and review/admin UI. |
@@ -493,7 +496,7 @@ The current `report` command writes the JSON bundle only. It does not currently
 emit a standalone static HTML file. The active report reading experience is in
 `broadly web`, which renders the bundle together with analysis artifacts.
 
-## Statement Bank Contract
+## Statements
 
 The statement contract is implemented in `@broadly/report-model` and is ready
 for command workflows to write local artifacts. A statement bank is a durable
@@ -538,6 +541,69 @@ statements/
 The core project helpers expose `resolveStatementRunPaths`,
 `resolveVoteRoundPaths`, and `resolveAttestationPaths` so later local and
 hosted runners can write the same artifact layout.
+
+`broadly statements generate --from-report` reads:
+
+- `reports/<analysis-run-id>/report-bundle.json`
+- highlighted clusters, themes, and evidence quotes already carried in that
+  bundle
+
+The first implementation is deterministic and local. It does not spend on a new
+LLM call. The command records a generation prompt hash and generator id in the
+manifest so a later model-assisted generator can reuse the same artifact shape.
+
+Generation writes:
+
+- `statements/<statement-run-id>/manifest.json`
+- `statements/<statement-run-id>/statement-bank.json`
+- `statements/<statement-run-id>/statements/<statement-id>.json`
+- `statements/current-run.txt`
+
+The manifest records the source report hash, analysis run id, generator id,
+prompt hash, generated counts, duplicate counts, and failures. Compatible
+reruns reuse the existing statement run and update `current-run.txt`.
+
+All generated statements start as `pending` and `admin_only`. Deterministic
+duplicate detection flags exact or high-overlap near duplicates with
+`duplicateOfStatementId`.
+
+`broadly statements qa` writes deterministic scorecards under:
+
+```text
+statements/<statement-run-id>/qa/<qa-run-id>/
+  manifest.json
+  scorecard.json
+  statements/
+    <statement-id>.json
+```
+
+Statement QA checks:
+
+- evidence support
+- neutral wording
+- single-claim clarity
+- duplicate risk
+- scope fit
+- participant comprehensibility
+- usefulness for `agree` / `disagree` / `pass`
+
+`broadly statements review` writes human review overlays under:
+
+```text
+statements/<statement-run-id>/review/statements/<statement-id>.json
+```
+
+It can accept, reject, change moderation status, edit statement text, attach a
+note, and export accepted public statements to:
+
+```text
+statements/<statement-run-id>/accepted-statements.json
+```
+
+The `broadly web` local viewer includes a Statements page that shows pending,
+accepted, rejected, hidden, and excluded statements, evidence references,
+generation rationale, and basic local status/text edits. Web edits are review
+overlays and do not mutate the generated statement bank.
 
 ## QA
 
@@ -599,6 +665,7 @@ failures.
 - opinion extraction run summaries
 - analysis run summaries
 - report view with perspective switching
+- statement bank review with status and text edits
 - scatterplots for clustered reductions
 - theme and cluster exploration
 - cluster detail pages with assigned opinions
@@ -663,8 +730,9 @@ The implementation is useful but not finished.
   `@broadly/pipeline`.
 - `@broadly/report-site` has a placeholder renderer, while `broadly report`
   writes only `report-bundle.json`.
-- The statement bank contract exists, but the first statement generation and
-  review commands are still being layered on top of it.
+- Statement generation is deterministic and report-derived in the first pass;
+  it does not yet call a statement-specific LLM prompt.
+- Statement QA is heuristic and local. It does not yet use a model judge.
 - Config accepts dataset formats that the current ingest command does not yet
   import.
 - Raw and normalized source artifacts are content-addressed, but not every
