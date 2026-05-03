@@ -211,6 +211,45 @@ broadly web
 
 The web view is a local inspection surface for the same project state and artifacts used by the CLI.
 
+Generate and review votable statements from a completed report:
+
+```bash
+broadly statements generate --from-report
+broadly statements qa
+broadly statements review --accept <statement-id> --export-accepted
+```
+
+Run the local voting sandbox:
+
+```bash
+broadly vote init --statements statements/<statement-run-id>/statement-bank.json
+broadly vote web
+broadly vote analyze
+broadly vote report
+```
+
+Publish verifiable and static artifacts:
+
+```bash
+broadly attest report
+broadly attest statements
+broadly verify
+broadly report site
+```
+
+Contract docs:
+
+- [Statement bank format](./docs/statement-bank-format.md)
+- [Reaction event format](./docs/reaction-event-format.md)
+- [Attestation manifest](./docs/attestation-manifest.md)
+- [Local voting sandbox](./docs/local-voting-sandbox.md)
+
+Run the no-LLM open-contract smoke workflow:
+
+```bash
+npm run smoke:open-contracts
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md).

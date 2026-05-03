@@ -1,0 +1,30 @@
+# Local Voting Sandbox
+
+The voting sandbox is a local reference implementation for the open reaction
+contracts. It is not production civic infrastructure.
+
+Intentional limits:
+
+- no accounts
+- no email
+- no CRM
+- no hosted anti-abuse system
+- no production moderation console
+- no participant clustering or full Pol.is math yet
+
+Basic workflow:
+
+```bash
+broadly statements review --accept <statement-id> --export-accepted
+broadly vote init --statements statements/<statement-run-id>/statement-bank.json
+broadly vote web
+broadly vote analyze
+broadly vote report
+```
+
+For no-browser smoke testing, deterministic synthetic votes can be added with:
+
+```bash
+broadly vote seed --participants 6
+```
+

@@ -219,6 +219,7 @@ The current command surface is:
 | `broadly vote init` | Initialize a local voting round from accepted public statements. |
 | `broadly vote web` | Serve the local reference voting sandbox. |
 | `broadly vote export` | Export reaction state and statement-level vote results. |
+| `broadly vote seed` | Add deterministic synthetic reactions for no-browser smoke testing. |
 | `broadly vote analyze` | Summarize a local voting round. |
 | `broadly vote report` | Attach a vote summary to the matching report artifacts. |
 | `broadly attest report` | Write an unsigned hash manifest for a report bundle and supporting artifacts. |
@@ -705,6 +706,10 @@ production civic infrastructure.
 - `exports/statements.json`
 - `exports/statement-results.csv`
 
+`broadly vote seed` adds deterministic synthetic participant reactions for
+fixture and smoke testing. It uses the same append-only event stream and
+derived reaction state as the local web sandbox.
+
 `broadly vote analyze` writes `summary.json` with statement-level totals,
 agreement/disagreement/pass rates, high-consensus statements, high-contention
 statements, low-participation statements, and bridge-candidate placeholders
@@ -912,6 +917,18 @@ Repo-level verification remains:
 ```bash
 npm run build
 ```
+
+The no-LLM open-contract smoke workflow is:
+
+```bash
+npm run smoke:open-contracts
+```
+
+It creates an ignored throwaway project under
+`projects/open-contracts-fixture/` and exercises statement generation,
+statement QA, accepted-statement export, vote initialization, synthetic vote
+seeding, vote analysis/export/report attachment, report and statement
+attestation, verification, and static site export.
 
 Use a throwaway Broadly project for smoke tests that could trigger model calls.
 Do not use a user's active corpus as a test sandbox when LLM calls are involved.

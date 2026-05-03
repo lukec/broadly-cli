@@ -23,6 +23,7 @@ import {
   exportVoteRound,
   initVoteRound,
   publishVoteReport,
+  seedVoteRound,
   serveVoteWeb
 } from "./commands/vote.js";
 import { serveProjectWeb } from "./commands/web.js";
@@ -212,17 +213,28 @@ reportCommand
   .option("--statements <path>", "Optional statement bank JSON path to include")
   .option("--attestation <path>", "Optional attestation manifest path to include")
   .action(
-    async (options: {
-      attestation?: string;
-      project?: string;
-      run?: string;
-      statements?: string;
-    }) => {
+    async (
+      options: {
+        attestation?: string;
+        project?: string;
+        run?: string;
+        statements?: string;
+      },
+      command: Command
+    ) => {
+      const parentOptions = command.parent?.opts<{
+        project?: string;
+        run?: string;
+      }>() ?? {};
+      const mergedOptions = {
+        ...parentOptions,
+        ...options
+      };
       await generateReportSite({
-        ...(options.project === undefined ? {} : { project: options.project }),
-        ...(options.run === undefined ? {} : { run: options.run }),
-        ...(options.statements === undefined ? {} : { statements: options.statements }),
-        ...(options.attestation === undefined ? {} : { attestation: options.attestation })
+        ...(mergedOptions.project === undefined ? {} : { project: mergedOptions.project }),
+        ...(mergedOptions.run === undefined ? {} : { run: mergedOptions.run }),
+        ...(mergedOptions.statements === undefined ? {} : { statements: mergedOptions.statements }),
+        ...(mergedOptions.attestation === undefined ? {} : { attestation: mergedOptions.attestation })
       });
     }
   );
@@ -406,6 +418,26 @@ voteCommand
       await exportVoteRound({
         ...(options.project === undefined ? {} : { project: options.project }),
         ...(options.round === undefined ? {} : { round: options.round })
+      });
+    }
+  );
+
+voteCommand
+  .command("seed")
+  .description("Seed deterministic synthetic reactions into a local voting round.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--round <voteRoundId>", "Vote round id; defaults to current, then latest")
+  .option("--participants <count>", "Synthetic participant count", parsePositiveInteger)
+  .action(
+    async (options: {
+      participants?: number;
+      project?: string;
+      round?: string;
+    }) => {
+      await seedVoteRound({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.round === undefined ? {} : { round: options.round }),
+        ...(options.participants === undefined ? {} : { participants: options.participants })
       });
     }
   );

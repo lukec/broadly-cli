@@ -13,7 +13,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "ci": "npm run typecheck"
+    "ci": "npm run typecheck",
+    "smoke:open-contracts": "node scripts/open-contracts-smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

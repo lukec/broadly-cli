@@ -59,6 +59,12 @@ export interface VoteAnalyzeCommandOptions {
   round?: string;
 }
 
+export interface VoteSeedCommandOptions {
+  project?: string;
+  round?: string;
+  participants?: number;
+}
+
 export interface VoteReportCommandOptions {
   project?: string;
   round?: string;
@@ -262,6 +268,55 @@ export async function exportVoteRound(options: VoteExportCommandOptions): Promis
           `Vote round: ${round.voteRoundId}`,
           `Reaction state: ${toProjectRelativePath(projectRoot, path.join(round.paths.exportsDir, "reaction-state.json"))}`,
           `Statement results: ${toProjectRelativePath(projectRoot, csvPath)}`
+        ].join("\n") + "\n"
+      );
+    }
+  });
+}
+
+export async function seedVoteRound(options: VoteSeedCommandOptions): Promise<void> {
+  const projectRoot = await resolveCommandProjectRoot(options.project);
+
+  await withProjectActionLog({
+    projectRoot,
+    command: "vote seed",
+    details: {
+      round: options.round ?? "(current)",
+      participants: options.participants ?? 5
+    },
+    action: async () => {
+      const round = await requireVoteRound(projectRoot, options.round);
+      const participantCount = options.participants ?? 5;
+      const events: ReactionEvent[] = [];
+
+      for (let index = 1; index <= participantCount; index += 1) {
+        const participantId = `synthetic-${String(index).padStart(2, "0")}`;
+        const form = new URLSearchParams();
+        form.set("participantId", participantId);
+
+        for (const statement of round.statements) {
+          form.set(
+            `reaction:${statement.statementId}`,
+            deterministicSyntheticReaction(round.voteRoundId, participantId, statement.statementId)
+          );
+        }
+
+        events.push(...applyVoteForm(round, participantId, form));
+      }
+
+      for (const event of events) {
+        await appendJsonLine(round.paths.reactionEventsPath, event);
+      }
+
+      await writeJsonArtifact(round.paths.reactionStatePath, round.state);
+
+      process.stdout.write(
+        [
+          `Seeded synthetic votes for ${projectRoot}`,
+          "",
+          `Vote round: ${round.voteRoundId}`,
+          `Participants: ${participantCount}`,
+          `Events written: ${events.length}`
         ].join("\n") + "\n"
       );
     }
@@ -665,6 +720,27 @@ function parseReactionValue(value: string | null): ReactionValue | null {
   }
 
   return null;
+}
+
+function deterministicSyntheticReaction(
+  voteRoundId: string,
+  participantId: string,
+  statementId: string
+): ReactionValue {
+  const bucket = Number.parseInt(
+    sha256Hex(`${voteRoundId}:${participantId}:${statementId}`).slice(0, 2),
+    16
+  ) % 10;
+
+  if (bucket <= 4) {
+    return "agree";
+  }
+
+  if (bucket <= 7) {
+    return "disagree";
+  }
+
+  return "pass";
 }
 
 function normalizeParticipantId(value: string | null): string {
