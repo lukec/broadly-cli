@@ -131,6 +131,11 @@ analysisViews:
 report:
   reportDir: reports
   primaryView: fixture-view
+voting:
+  initialQuestions:
+    - questionId: works-in-government
+      questionText: I work in government.
+      responseKind: yes-no-skip
 `,
     "utf8"
   );

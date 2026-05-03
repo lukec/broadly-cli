@@ -22,9 +22,21 @@ broadly vote analyze
 broadly vote report
 ```
 
+Initial questions can be configured in `broadly.yaml`:
+
+```yaml
+voting:
+  initialQuestions:
+    - questionId: works-in-government
+      questionText: I work in government.
+      responseKind: yes-no-skip
+```
+
+Each local participant must answer `yes`, `no`, or `skip` for every initial
+question before the sandbox shows statement voting.
+
 For no-browser smoke testing, deterministic synthetic votes can be added with:
 
 ```bash
 broadly vote seed --participants 6
 ```
-

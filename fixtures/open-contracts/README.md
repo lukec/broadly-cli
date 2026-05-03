@@ -19,7 +19,7 @@ It avoids model calls and runs the open contract loop:
 3. accept generated statements
 4. run statement QA
 5. initialize a local vote round
-6. seed deterministic synthetic votes
+6. seed deterministic synthetic initial-question answers and votes
 7. analyze, export, and attach vote results
 8. attest report and statement artifacts
 9. verify hashes
@@ -30,4 +30,3 @@ The final site is written to:
 ```text
 projects/open-contracts-fixture/reports/demo-run/site/index.html
 ```
-

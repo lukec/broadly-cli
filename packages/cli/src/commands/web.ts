@@ -2024,11 +2024,29 @@ function renderVoteSummarySection(summary: VoteRoundSummary): string {
       <h2>${escapeHtml(summary.voteRoundId)}</h2>
       ${renderKeyValueList([
         ["Participants", String(summary.participantCount)],
+        ["Initial questions", String(summary.initialQuestions.length)],
         ["Statements", String(summary.statementCount)],
         ["High consensus", String(summary.highConsensusStatementIds.length)],
         ["High contention", String(summary.highContentionStatementIds.length)],
         ["Low participation", String(summary.lowParticipationStatementIds.length)]
       ])}
+      ${
+        summary.initialQuestions.length === 0
+          ? ""
+          : `<div class="stack">
+              <p class="section-label">Initial question results</p>
+              ${summary.initialQuestions
+                .map(
+                  (question) => `<blockquote>
+                    yes ${Math.round(question.rates.yes * 100)}%
+                    · no ${Math.round(question.rates.no * 100)}%
+                    · skip ${Math.round(question.rates.skip * 100)}%
+                    <br />${escapeHtml(question.questionText)}
+                  </blockquote>`
+                )
+                .join("")}
+            </div>`
+      }
       ${
         topStatements.length === 0
           ? `<p class="meta">No reactions have been recorded yet.</p>`

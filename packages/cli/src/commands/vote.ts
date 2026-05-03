@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import { parseProjectConfig } from "@broadly/config";
 import {
   resolveProjectPaths,
   resolveVoteRoundPaths,
@@ -10,11 +11,14 @@ import {
   type VoteRoundPaths
 } from "@broadly/core";
 import type {
+  InitialQuestionResponseEvent,
+  InitialQuestionResponseValue,
   ReactionEvent,
   ReactionState,
   ReactionValue,
   Statement,
   StatementBank,
+  VoteInitialQuestion,
   VoteRoundManifest,
   VoteRoundSummary,
   VoteStatementSummary
@@ -79,6 +83,7 @@ interface LoadedVoteRound {
 }
 
 const REACTION_VALUES: ReactionValue[] = ["agree", "disagree", "pass"];
+const INITIAL_QUESTION_RESPONSE_VALUES: InitialQuestionResponseValue[] = ["yes", "no", "skip"];
 
 export async function initVoteRound(options: VoteInitCommandOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
@@ -91,7 +96,13 @@ export async function initVoteRound(options: VoteInitCommandOptions): Promise<vo
     },
     action: async () => {
       const projectPaths = resolveProjectPaths(projectRoot);
+      const config = parseProjectConfig(await readFile(projectPaths.configPath, "utf8"));
       const bank = await loadStatementBankForVoting(projectRoot, options.statements);
+      const initialQuestions: VoteInitialQuestion[] = config.voting.initialQuestions.map((question) => ({
+        questionId: question.questionId,
+        questionText: question.questionText,
+        responseKind: question.responseKind
+      }));
       const acceptedStatements = bank.statements.filter(
         (statement) =>
           statement.moderationStatus === "accepted" &&
@@ -122,7 +133,9 @@ export async function initVoteRound(options: VoteInitCommandOptions): Promise<vo
           statementBankPath: sourceBankPath,
           statementBankSha256,
           statementRunId: bank.statementRunId,
-          acceptedStatementCount: acceptedStatements.length
+          acceptedStatementCount: acceptedStatements.length,
+          initialQuestionCount: initialQuestions.length,
+          initialQuestions
         },
         output: {
           statementsPath: paths.statementsPath,
@@ -139,11 +152,13 @@ export async function initVoteRound(options: VoteInitCommandOptions): Promise<vo
       const state: ReactionState = {
         voteRoundId,
         updatedAt: createdAt,
+        initialQuestions,
         statements: acceptedStatements.map((statement) => ({
           statementId: statement.statementId,
           statementText: statement.statementText
         })),
         participants: [],
+        initialQuestionResponses: {},
         reactions: {}
       };
 
@@ -152,6 +167,7 @@ export async function initVoteRound(options: VoteInitCommandOptions): Promise<vo
       await writeJsonArtifact(paths.statementsPath, {
         voteRoundId,
         statementRunId: bank.statementRunId,
+        initialQuestions,
         statements: acceptedStatements
       });
       await writeFile(paths.reactionEventsPath, "", "utf8");
@@ -163,6 +179,7 @@ export async function initVoteRound(options: VoteInitCommandOptions): Promise<vo
           `Initialized local voting round for ${projectRoot}`,
           "",
           `Vote round: ${voteRoundId}`,
+          `Initial questions: ${initialQuestions.length}`,
           `Statements: ${acceptedStatements.length}`,
           `Round dir: ${toProjectRelativePath(projectRoot, paths.roundDir)}`
         ].join("\n") + "\n"
@@ -246,15 +263,18 @@ export async function exportVoteRound(options: VoteExportCommandOptions): Promis
       const round = await requireVoteRound(projectRoot, options.round);
       const summary = summarizeVoteRound(round, await loadStatementBankForRound(projectRoot, round));
       const csvPath = path.join(round.paths.exportsDir, "statement-results.csv");
+      const initialQuestionsCsvPath = path.join(round.paths.exportsDir, "initial-question-results.csv");
 
       await mkdir(round.paths.exportsDir, { recursive: true });
       await writeJsonArtifact(path.join(round.paths.exportsDir, "reaction-state.json"), round.state);
       await writeJsonArtifact(path.join(round.paths.exportsDir, "statements.json"), {
         voteRoundId: round.voteRoundId,
         statementRunId: round.manifest.input.statementRunId,
+        initialQuestions: round.state.initialQuestions,
         statements: round.statements
       });
       await writeFile(csvPath, renderVoteSummaryCsv(summary), "utf8");
+      await writeFile(initialQuestionsCsvPath, renderInitialQuestionSummaryCsv(summary), "utf8");
       await writeJsonArtifact(round.paths.manifestPath, {
         ...round.manifest,
         status: "exported",
@@ -267,6 +287,7 @@ export async function exportVoteRound(options: VoteExportCommandOptions): Promis
           "",
           `Vote round: ${round.voteRoundId}`,
           `Reaction state: ${toProjectRelativePath(projectRoot, path.join(round.paths.exportsDir, "reaction-state.json"))}`,
+          `Initial questions: ${toProjectRelativePath(projectRoot, initialQuestionsCsvPath)}`,
           `Statement results: ${toProjectRelativePath(projectRoot, csvPath)}`
         ].join("\n") + "\n"
       );
@@ -287,7 +308,7 @@ export async function seedVoteRound(options: VoteSeedCommandOptions): Promise<vo
     action: async () => {
       const round = await requireVoteRound(projectRoot, options.round);
       const participantCount = options.participants ?? 5;
-      const events: ReactionEvent[] = [];
+      const events: Array<ReactionEvent | InitialQuestionResponseEvent> = [];
 
       for (let index = 1; index <= participantCount; index += 1) {
         const participantId = `synthetic-${String(index).padStart(2, "0")}`;
@@ -298,6 +319,17 @@ export async function seedVoteRound(options: VoteSeedCommandOptions): Promise<vo
           form.set(
             `reaction:${statement.statementId}`,
             deterministicSyntheticReaction(round.voteRoundId, participantId, statement.statementId)
+          );
+        }
+
+        for (const question of round.state.initialQuestions) {
+          form.set(
+            `initial-question:${question.questionId}`,
+            deterministicSyntheticInitialQuestionResponse(
+              round.voteRoundId,
+              participantId,
+              question.questionId
+            )
           );
         }
 
@@ -372,9 +404,14 @@ export async function publishVoteReport(options: VoteReportCommandOptions): Prom
     action: async () => {
       const round = await requireVoteRound(projectRoot, options.round);
       const bank = await loadStatementBankForRound(projectRoot, round);
+      const existingSummary = await readJsonArtifact<VoteRoundSummary>(round.paths.summaryPath);
       const summary =
-        (await readJsonArtifact<VoteRoundSummary>(round.paths.summaryPath)) ??
-        summarizeVoteRound(round, bank);
+        existingSummary === null
+          ? summarizeVoteRound(round, bank)
+          : {
+              ...existingSummary,
+              initialQuestions: existingSummary.initialQuestions ?? []
+            };
       const reportSummaryPath = path.join(
         resolveProjectPaths(projectRoot).reportsDir,
         bank.analysisRunId,
@@ -401,7 +438,18 @@ export async function loadVoteSummaryForReport(
   reportsDir: string,
   analysisRunId: string
 ): Promise<VoteRoundSummary | null> {
-  return readJsonArtifact<VoteRoundSummary>(path.join(reportsDir, analysisRunId, "vote-summary.json"));
+  const summary = await readJsonArtifact<VoteRoundSummary>(
+    path.join(reportsDir, analysisRunId, "vote-summary.json")
+  );
+
+  if (summary === null) {
+    return null;
+  }
+
+  return {
+    ...summary,
+    initialQuestions: summary.initialQuestions ?? []
+  };
 }
 
 async function loadStatementBankForVoting(
@@ -501,7 +549,10 @@ async function findLatestVoteRoundId(votesDir: string): Promise<string | null> {
 async function loadVoteRound(projectRoot: string, voteRoundId: string): Promise<LoadedVoteRound> {
   const paths = resolveVoteRoundPaths(projectRoot, voteRoundId);
   const manifest = await readJsonArtifact<VoteRoundManifest>(paths.manifestPath);
-  const statementsArtifact = await readJsonArtifact<{ statements?: Statement[] }>(paths.statementsPath);
+  const statementsArtifact = await readJsonArtifact<{
+    initialQuestions?: VoteInitialQuestion[];
+    statements?: Statement[];
+  }>(paths.statementsPath);
   const state = await readJsonArtifact<ReactionState>(paths.reactionStatePath);
 
   if (manifest === null || statementsArtifact?.statements === undefined || state === null) {
@@ -513,7 +564,7 @@ async function loadVoteRound(projectRoot: string, voteRoundId: string): Promise<
     paths,
     manifest,
     statements: statementsArtifact.statements,
-    state
+    state: normalizeReactionState(state, statementsArtifact.initialQuestions ?? manifest.input.initialQuestions ?? [])
   };
 }
 
@@ -521,14 +572,59 @@ function applyVoteForm(
   round: LoadedVoteRound,
   participantId: string,
   form: URLSearchParams
-): ReactionEvent[] {
+): Array<ReactionEvent | InitialQuestionResponseEvent> {
+  const initialQuestionResponses = round.state.initialQuestionResponses[participantId] ?? {};
   const participantReactions = round.state.reactions[participantId] ?? {};
-  const events: ReactionEvent[] = [];
+  const events: Array<ReactionEvent | InitialQuestionResponseEvent> = [];
   const createdAt = new Date().toISOString();
 
   if (!round.state.participants.includes(participantId)) {
     round.state.participants.push(participantId);
     round.state.participants.sort();
+  }
+
+  for (const question of round.state.initialQuestions) {
+    const response = parseInitialQuestionResponseValue(
+      form.get(`initial-question:${question.questionId}`)
+    );
+
+    if (response === null) {
+      continue;
+    }
+
+    const previousResponse = initialQuestionResponses[question.questionId];
+
+    if (previousResponse === response) {
+      continue;
+    }
+
+    initialQuestionResponses[question.questionId] = response;
+    events.push({
+      eventKind: "initial-question-response",
+      eventId: `event-${sha256Hex(
+        JSON.stringify({
+          voteRoundId: round.voteRoundId,
+          participantId,
+          questionId: question.questionId,
+          response,
+          createdAt
+        })
+      ).slice(0, 20)}`,
+      createdAt,
+      voteRoundId: round.voteRoundId,
+      participantId,
+      questionId: question.questionId,
+      response,
+      ...(previousResponse === undefined ? {} : { previousResponse })
+    });
+  }
+
+  round.state.initialQuestionResponses[participantId] = initialQuestionResponses;
+
+  if (!hasAnsweredAllInitialQuestions(round.state, participantId)) {
+    round.state.reactions[participantId] = participantReactions;
+    round.state.updatedAt = createdAt;
+    return events;
   }
 
   for (const statement of round.statements) {
@@ -546,6 +642,7 @@ function applyVoteForm(
 
     participantReactions[statement.statementId] = reaction;
     events.push({
+      eventKind: "statement-reaction",
       eventId: `event-${sha256Hex(
         JSON.stringify({
           voteRoundId: round.voteRoundId,
@@ -587,6 +684,7 @@ function summarizeVoteRound(round: LoadedVoteRound, bank: StatementBank): VoteRo
     analysisRunId: bank.analysisRunId,
     createdAt: new Date().toISOString(),
     participantCount: round.state.participants.length,
+    initialQuestions: summarizeInitialQuestions(round.state),
     statementCount: round.statements.length,
     statements,
     highConsensusStatementIds,
@@ -633,6 +731,41 @@ function summarizeStatementVote(statement: Statement, state: ReactionState): Vot
     rates,
     classification
   };
+}
+
+function summarizeInitialQuestions(
+  state: ReactionState
+): VoteRoundSummary["initialQuestions"] {
+  return state.initialQuestions.map((question) => {
+    const totals = {
+      yes: 0,
+      no: 0,
+      skip: 0,
+      total: 0
+    };
+
+    for (const participantId of state.participants) {
+      const response = state.initialQuestionResponses[participantId]?.[question.questionId];
+
+      if (response === undefined) {
+        continue;
+      }
+
+      totals[response] += 1;
+      totals.total += 1;
+    }
+
+    return {
+      questionId: question.questionId,
+      questionText: question.questionText,
+      totals,
+      rates: {
+        yes: totals.total === 0 ? 0 : totals.yes / totals.total,
+        no: totals.total === 0 ? 0 : totals.no / totals.total,
+        skip: totals.total === 0 ? 0 : totals.skip / totals.total
+      }
+    };
+  });
 }
 
 function classifyStatementVote(
@@ -688,6 +821,37 @@ function renderVoteSummaryCsv(summary: VoteRoundSummary): string {
   return `${[header.join(","), ...rows].join("\n")}\n`;
 }
 
+function renderInitialQuestionSummaryCsv(summary: VoteRoundSummary): string {
+  const header = [
+    "question_id",
+    "yes",
+    "no",
+    "skip",
+    "total",
+    "yes_rate",
+    "no_rate",
+    "skip_rate",
+    "question_text"
+  ];
+  const rows = summary.initialQuestions.map((question) =>
+    [
+      question.questionId,
+      String(question.totals.yes),
+      String(question.totals.no),
+      String(question.totals.skip),
+      String(question.totals.total),
+      question.rates.yes.toFixed(4),
+      question.rates.no.toFixed(4),
+      question.rates.skip.toFixed(4),
+      question.questionText
+    ]
+      .map(escapeCsvCell)
+      .join(",")
+  );
+
+  return `${[header.join(","), ...rows].join("\n")}\n`;
+}
+
 function escapeCsvCell(value: string): string {
   if (!/[",\n\r]/.test(value)) {
     return value;
@@ -722,6 +886,19 @@ function parseReactionValue(value: string | null): ReactionValue | null {
   return null;
 }
 
+function parseInitialQuestionResponseValue(
+  value: string | null
+): InitialQuestionResponseValue | null {
+  if (
+    value !== null &&
+    INITIAL_QUESTION_RESPONSE_VALUES.includes(value as InitialQuestionResponseValue)
+  ) {
+    return value as InitialQuestionResponseValue;
+  }
+
+  return null;
+}
+
 function deterministicSyntheticReaction(
   voteRoundId: string,
   participantId: string,
@@ -743,6 +920,43 @@ function deterministicSyntheticReaction(
   return "pass";
 }
 
+function deterministicSyntheticInitialQuestionResponse(
+  voteRoundId: string,
+  participantId: string,
+  questionId: string
+): InitialQuestionResponseValue {
+  const bucket = Number.parseInt(
+    sha256Hex(`${voteRoundId}:${participantId}:${questionId}:initial`).slice(0, 2),
+    16
+  ) % 10;
+
+  if (bucket <= 4) {
+    return "yes";
+  }
+
+  if (bucket <= 8) {
+    return "no";
+  }
+
+  return "skip";
+}
+
+function hasAnsweredAllInitialQuestions(state: ReactionState, participantId: string): boolean {
+  const responses = state.initialQuestionResponses[participantId] ?? {};
+  return state.initialQuestions.every((question) => responses[question.questionId] !== undefined);
+}
+
+function normalizeReactionState(
+  state: ReactionState,
+  initialQuestions: VoteInitialQuestion[]
+): ReactionState {
+  return {
+    ...state,
+    initialQuestions: state.initialQuestions ?? initialQuestions,
+    initialQuestionResponses: state.initialQuestionResponses ?? {}
+  };
+}
+
 function normalizeParticipantId(value: string | null): string {
   const normalized = (value ?? "").trim().replace(/\s+/g, "-").slice(0, 80);
   return normalized.length === 0 ? "local-participant" : normalized;
@@ -760,6 +974,8 @@ async function readRequestForm(request: AsyncIterable<Buffer | string>): Promise
 
 function renderVoteRoundPage(round: LoadedVoteRound, participantId: string): string {
   const participantReactions = round.state.reactions[participantId] ?? {};
+  const initialQuestionResponses = round.state.initialQuestionResponses[participantId] ?? {};
+  const initialQuestionsComplete = hasAnsweredAllInitialQuestions(round.state, participantId);
 
   return `<!doctype html>
 <html lang="en">
@@ -792,6 +1008,9 @@ function renderVoteRoundPage(round: LoadedVoteRound, participantId: string): str
       .participant {
         display: grid;
         gap: 8px;
+        margin: 18px 0;
+      }
+      .intro-section {
         margin: 18px 0;
       }
       input[type="text"] {
@@ -840,16 +1059,57 @@ function renderVoteRoundPage(round: LoadedVoteRound, participantId: string): str
           <span>Participant id</span>
           <input type="text" name="participantId" value="${escapeHtmlAttribute(participantId)}" />
         </label>
-        ${round.statements
-          .map((statement, index) =>
-            renderVoteStatementCard(statement, index + 1, participantReactions[statement.statementId])
-          )
-          .join("")}
-        <button type="submit">Save votes</button>
+        ${
+          round.state.initialQuestions.length === 0
+            ? ""
+            : `<section class="intro-section">
+                <p class="meta">Initial questions are asked before statement voting.</p>
+                ${round.state.initialQuestions
+                  .map((question, index) =>
+                    renderInitialQuestionCard(
+                      question,
+                      index + 1,
+                      initialQuestionResponses[question.questionId]
+                    )
+                  )
+                  .join("")}
+              </section>`
+        }
+        ${
+          initialQuestionsComplete
+            ? round.statements
+                .map((statement, index) =>
+                  renderVoteStatementCard(statement, index + 1, participantReactions[statement.statementId])
+                )
+                .join("")
+            : `<article>
+                <p class="meta">Answer yes, no, or skip for each initial question to continue to statement voting.</p>
+              </article>`
+        }
+        <button type="submit">${initialQuestionsComplete ? "Save votes" : "Continue"}</button>
       </form>
     </main>
   </body>
 </html>`;
+}
+
+function renderInitialQuestionCard(
+  question: VoteInitialQuestion,
+  index: number,
+  selectedResponse: InitialQuestionResponseValue | undefined
+): string {
+  return `<article>
+    <p class="meta">Initial question ${index}</p>
+    <h2>${escapeHtml(question.questionText)}</h2>
+    <div class="choices">
+      ${INITIAL_QUESTION_RESPONSE_VALUES.map(
+        (response) => `<label class="choice">
+          <input type="radio" name="initial-question:${escapeHtmlAttribute(question.questionId)}" value="${response}" ${selectedResponse === response ? "checked" : ""} />
+          <span>${response}</span>
+        </label>`
+      ).join("")}
+    </div>
+  </article>`;
 }
 
 function renderVoteStatementCard(

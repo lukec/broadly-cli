@@ -228,6 +228,9 @@ broadly vote analyze
 broadly vote report
 ```
 
+Projects can define `voting.initialQuestions` in `broadly.yaml`. Every local
+participant is asked those yes/no/skip questions before statement voting.
+
 Publish verifiable and static artifacts:
 
 ```bash

@@ -178,10 +178,23 @@ export function renderStaticReportHtml(
               <h2>${escapeHtml(options.voteSummary.voteRoundId)}</h2>
               <div class="stats">
                 <span class="stat">${options.voteSummary.participantCount} participant(s)</span>
+                <span class="stat">${options.voteSummary.initialQuestions.length} initial question(s)</span>
                 <span class="stat">${options.voteSummary.statementCount} statement(s)</span>
                 <span class="stat">${options.voteSummary.highConsensusStatementIds.length} high consensus</span>
                 <span class="stat">${options.voteSummary.highContentionStatementIds.length} high contention</span>
               </div>
+              ${
+                options.voteSummary.initialQuestions.length === 0
+                  ? ""
+                  : options.voteSummary.initialQuestions
+                      .map(
+                        (question) => `<section class="cluster">
+                          <h3>${escapeHtml(question.questionText)}</h3>
+                          <p class="meta">yes ${Math.round(question.rates.yes * 100)}% · no ${Math.round(question.rates.no * 100)}% · skip ${Math.round(question.rates.skip * 100)}%</p>
+                        </section>`
+                      )
+                      .join("")
+              }
               ${options.voteSummary.statements
                 .slice(0, 12)
                 .map(

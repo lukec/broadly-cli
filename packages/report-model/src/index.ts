@@ -208,8 +208,16 @@ export interface StatementReviewArtifact {
 }
 
 export type ReactionValue = "agree" | "disagree" | "pass";
+export type InitialQuestionResponseValue = "yes" | "no" | "skip";
+
+export interface VoteInitialQuestion {
+  questionId: string;
+  questionText: string;
+  responseKind: "yes-no-skip";
+}
 
 export interface ReactionEvent {
+  eventKind?: "statement-reaction";
   eventId: string;
   createdAt: string;
   voteRoundId: string;
@@ -219,14 +227,29 @@ export interface ReactionEvent {
   previousReaction?: ReactionValue;
 }
 
+export interface InitialQuestionResponseEvent {
+  eventKind: "initial-question-response";
+  eventId: string;
+  createdAt: string;
+  voteRoundId: string;
+  participantId: string;
+  questionId: string;
+  response: InitialQuestionResponseValue;
+  previousResponse?: InitialQuestionResponseValue;
+}
+
+export type VoteEvent = ReactionEvent | InitialQuestionResponseEvent;
+
 export interface ReactionState {
   voteRoundId: string;
   updatedAt: string;
+  initialQuestions: VoteInitialQuestion[];
   statements: Array<{
     statementId: string;
     statementText: string;
   }>;
   participants: string[];
+  initialQuestionResponses: Record<string, Record<string, InitialQuestionResponseValue>>;
   reactions: Record<string, Record<string, ReactionValue>>;
 }
 
@@ -240,6 +263,8 @@ export interface VoteRoundManifest {
     statementBankSha256: string;
     statementRunId: string;
     acceptedStatementCount: number;
+    initialQuestionCount: number;
+    initialQuestions: VoteInitialQuestion[];
   };
   output: {
     statementsPath: string;
@@ -278,6 +303,21 @@ export interface VoteRoundSummary {
   analysisRunId: string;
   createdAt: string;
   participantCount: number;
+  initialQuestions: Array<{
+    questionId: string;
+    questionText: string;
+    totals: {
+      yes: number;
+      no: number;
+      skip: number;
+      total: number;
+    };
+    rates: {
+      yes: number;
+      no: number;
+      skip: number;
+    };
+  }>;
   statementCount: number;
   statements: VoteStatementSummary[];
   highConsensusStatementIds: string[];

@@ -172,6 +172,7 @@ Top-level config sections are:
 - `opinionExtractions`: named extraction specs with model and prompt path.
 - `analysisViews`: named map/report view specs.
 - `report`: report directory and primary view.
+- `voting`: local voting configuration, currently `initialQuestions`.
 
 The schema validates internal references:
 
@@ -180,6 +181,7 @@ The schema validates internal references:
 - every analysis view must reference a registered embedding model
 - optional analysis models must be registered
 - `report.primaryView` must match a configured analysis view
+- `voting.initialQuestions[*].questionId` values must be unique
 
 Current analysis view options are:
 
@@ -187,6 +189,11 @@ Current analysis view options are:
 - reduction dimensions: `2`
 - clustering merge strategy: `semantic`
 - synthesis modes: `balanced`, `dissent`
+
+Current voting options are:
+
+- `initialQuestions`: ordered yes/no/skip questions that every local voting
+  participant must answer before statement voting
 
 The starter config contains placeholder model aliases such as
 `my-cheap-text-model`, `my-frontier-text-model`, and `my-embedding-model`.
@@ -663,10 +670,13 @@ flows, CRM records, production moderation queues, or anti-abuse operations.
 Vote contracts are implemented in `@broadly/report-model`:
 
 - `ReactionEvent`
+- `InitialQuestionResponseEvent`
 - `ReactionState`
+- `VoteInitialQuestion`
 - `VoteRoundManifest`
 - `VoteRoundSummary`
 - `VoteStatementSummary`
+- `VoteEvent`
 
 Reaction values are:
 
@@ -674,10 +684,18 @@ Reaction values are:
 - `disagree`
 - `pass`
 
+Initial question response values are:
+
+- `yes`
+- `no`
+- `skip`
+
 `broadly vote init --statements <path>` reads a statement bank or
 `accepted-statements.json`, applies local review overlays when the source is a
 generated `statement-bank.json`, and initializes a round from accepted
-non-private, non-duplicate statements.
+non-private, non-duplicate statements. It snapshots configured
+`voting.initialQuestions` into the vote round manifest and reaction state so
+later config edits do not rewrite historical rounds.
 
 Voting artifacts live under:
 
@@ -692,28 +710,33 @@ votes/
     exports/
 ```
 
-`reaction-events.jsonl` is append-only. `reaction-state.json` is the latest
-derived state by participant id and statement id.
+`reaction-events.jsonl` is append-only. It stores both statement reactions and
+initial-question responses. `reaction-state.json` is the latest derived state by
+participant id, initial question id, and statement id.
 
 `broadly vote web` serves a small local form for anonymous or named-local
 participant ids. Votes are persisted as reaction events and reflected in the
-derived state. The page labels itself as a local reference sandbox, not
-production civic infrastructure.
+derived state. If a round has initial questions, each participant must answer
+`yes`, `no`, or `skip` for all of them before the page shows statement voting.
+The page labels itself as a local reference sandbox, not production civic
+infrastructure.
 
 `broadly vote export` writes:
 
 - `exports/reaction-state.json`
 - `exports/statements.json`
+- `exports/initial-question-results.csv`
 - `exports/statement-results.csv`
 
-`broadly vote seed` adds deterministic synthetic participant reactions for
-fixture and smoke testing. It uses the same append-only event stream and
-derived reaction state as the local web sandbox.
+`broadly vote seed` adds deterministic synthetic initial-question answers and
+participant reactions for fixture and smoke testing. It uses the same
+append-only event stream and derived reaction state as the local web sandbox.
 
-`broadly vote analyze` writes `summary.json` with statement-level totals,
-agreement/disagreement/pass rates, high-consensus statements, high-contention
-statements, low-participation statements, and bridge-candidate placeholders
-when enough participants exist for future richer analysis.
+`broadly vote analyze` writes `summary.json` with initial-question totals,
+statement-level totals, agreement/disagreement/pass rates, high-consensus
+statements, high-contention statements, low-participation statements, and
+bridge-candidate placeholders when enough participants exist for future richer
+analysis.
 
 `broadly vote report` copies the current vote summary to:
 

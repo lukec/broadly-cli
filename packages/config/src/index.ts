@@ -6,6 +6,7 @@ const reductionMethodValues = ["umap", "pacmap"] as const;
 const analysisViewModeValues = ["balanced", "dissent"] as const;
 const mergeStrategyValues = ["semantic"] as const;
 const modelProviderValues = ["bedrock", "google-cloud", "openai"] as const;
+const initialQuestionResponseKindValues = ["yes-no-skip"] as const;
 
 const datasetFieldMapSchema = z.object({
   primaryText: z.array(z.string().min(1)).min(1),
@@ -52,6 +53,12 @@ const analysisViewConfigSchema = z.object({
   mode: z.enum(analysisViewModeValues)
 });
 
+const initialQuestionConfigSchema = z.object({
+  questionId: z.string().min(1).regex(/^[a-z0-9-]+$/),
+  questionText: z.string().min(1),
+  responseKind: z.enum(initialQuestionResponseKindValues).default("yes-no-skip")
+});
+
 export const projectConfigSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -88,12 +95,20 @@ export const projectConfigSchema = z
     report: z.object({
       reportDir: z.string().min(1).default("reports"),
       primaryView: z.string().min(1)
-    })
+    }),
+    voting: z
+      .object({
+        initialQuestions: z.array(initialQuestionConfigSchema).default([])
+      })
+      .default({
+        initialQuestions: []
+      })
   })
   .superRefine((value, context) => {
     const modelNames = new Set(value.models.map((model) => model.name));
     const extractionNames = new Set<string>();
     const analysisViewNames = new Set<string>();
+    const initialQuestionIds = new Set<string>();
 
     for (const [index, extraction] of value.opinionExtractions.entries()) {
       if (extractionNames.has(extraction.name)) {
@@ -158,12 +173,25 @@ export const projectConfigSchema = z
         message: `Report primaryView '${value.report.primaryView}' does not match any configured analysis view.`
       });
     }
+
+    for (const [index, question] of value.voting.initialQuestions.entries()) {
+      if (initialQuestionIds.has(question.questionId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["voting", "initialQuestions", index, "questionId"],
+          message: `Duplicate initial voting question id '${question.questionId}'.`
+        });
+      } else {
+        initialQuestionIds.add(question.questionId);
+      }
+    }
   });
 
 export type BroadlyProjectConfig = z.infer<typeof projectConfigSchema>;
 export type OpinionExtractionConfig = BroadlyProjectConfig["opinionExtractions"][number];
 export type AnalysisViewConfig = BroadlyProjectConfig["analysisViews"][number];
 export type RegisteredModelConfig = BroadlyProjectConfig["models"][number];
+export type InitialQuestionConfig = BroadlyProjectConfig["voting"]["initialQuestions"][number];
 
 export function parseProjectConfig(source: string): BroadlyProjectConfig {
   const parsed = YAML.parse(source);
@@ -177,6 +205,7 @@ export function serializeProjectConfig(config: BroadlyProjectConfig): string {
     "# Use `broadly models add` to register model aliases available to this project.",
     "# Opinion extractions define how comments become opinion artifacts.",
     "# Analysis views define the named map/report variants Broadly should build.",
+    "# Voting initial questions are asked before local statement voting.",
     "",
     YAML.stringify(config)
   ].join("\n");
@@ -295,6 +324,9 @@ export function createStarterProjectConfig(
     report: {
       reportDir: "reports",
       primaryView: "balanced-umap-frontier"
+    },
+    voting: {
+      initialQuestions: []
     }
   };
 }
