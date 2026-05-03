@@ -953,16 +953,5 @@ statement QA, accepted-statement export, vote initialization, synthetic vote
 seeding, vote analysis/export/report attachment, report and statement
 attestation, verification, and static site export.
 
-The guided no-LLM demo workflow is:
-
-```bash
-npm run demo:next
-```
-
-It creates an ignored project under `projects/open-contracts-demo/`, runs the
-same open-contract features with verbose section output, includes ordered
-initial voting questions, prints the generated artifact paths, and gives
-browser commands for `vote web`, `broadly web`, and the static report site.
-
 Use a throwaway Broadly project for smoke tests that could trigger model calls.
 Do not use a user's active corpus as a test sandbox when LLM calls are involved.

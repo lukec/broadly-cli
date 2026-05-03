@@ -6,12 +6,6 @@ This fixture path is exercised by:
 npm run smoke:open-contracts
 ```
 
-For a more verbose human walkthrough of the same open-contract features, run:
-
-```bash
-npm run demo:next
-```
-
 The script creates an ignored throwaway project at:
 
 ```text

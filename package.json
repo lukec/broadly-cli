@@ -14,7 +14,6 @@
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
     "ci": "npm run typecheck",
-    "demo:next": "node scripts/next-demo.mjs",
     "smoke:open-contracts": "node scripts/open-contracts-smoke.mjs"
   },
   "devDependencies": {
