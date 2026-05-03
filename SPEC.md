@@ -47,7 +47,7 @@ The repo is a workspace under `packages/*`.
 | `@broadly/ingest` | CSV/TSV source import, delimiter detection, raw file copy, normalized record creation, field-map derived fields, and ingest manifests. |
 | `@broadly/pipeline` | Early pipeline boundary and pass-through opinion-unit extraction helper. The richer LLM extraction and map analysis flow currently lives in `packages/cli`. |
 | `@broadly/report-model` | TypeScript interfaces for report bundles, views, clusters, evidence quotes, themes, review boundary summaries, statement banks, vote rounds, and attestation manifests. |
-| `@broadly/report-site` | Placeholder HTML renderer for a report bundle. The active local UI is currently served by `packages/cli/src/commands/web.ts`. |
+| `@broadly/report-site` | Static HTML renderer for report bundles plus optional statement, vote, and attestation data. The active local UI is served by `packages/cli/src/commands/web.ts`. |
 | `@broadly/cli` | User-facing commands, model runtime adapters, orchestration, local web server, review/admin UI, analysis, QA, and report bundle generation. |
 
 The package split is ahead of the implementation in a few places. The code is
@@ -113,6 +113,21 @@ project/
   reports/
     <analysis-run-id>/
       report-bundle.json
+      vote-summary.json
+      site/
+        index.html
+        assets/
+        data/
+          report-bundle.json
+          statements.json
+          vote-summary.json
+          attestation.json
+          analysis/
+            manifest.json
+            reductions/
+            clusters/
+            hierarchies/
+            perspectives/
   statements/
     current-run.txt
     <statement-run-id>/
@@ -196,6 +211,7 @@ The current command surface is:
 | `broadly extract-opinions` | Compatibility wrapper around the configured opinion extraction path. |
 | `broadly analysis` | Build embeddings, reductions, clusters, semantic hierarchies, and perspective artifacts. |
 | `broadly report` | Generate `reports/<run-id>/report-bundle.json` from analysis artifacts. |
+| `broadly report site` | Generate a self-contained static HTML report site under `reports/<run-id>/site/`. |
 | `broadly qa` | Run structural and model-assisted QA over analysis/report artifacts. |
 | `broadly statements generate --from-report` | Generate a pending statement bank from a report bundle and highlighted report evidence. |
 | `broadly statements qa` | Run deterministic QA checks over generated statements. |
@@ -500,9 +516,33 @@ The bundle contains:
 - optional semantic themes
 - highlighted clusters with evidence excerpts
 
-The current `report` command writes the JSON bundle only. It does not currently
-emit a standalone static HTML file. The active report reading experience is in
-`broadly web`, which renders the bundle together with analysis artifacts.
+`broadly report site` writes a standalone static site that can be opened from
+disk without the local CLI server. It reads `report-bundle.json`, copies the
+analysis JSON artifacts needed for drill-down, and includes optional statement
+bank, vote summary, and attestation data when present or explicitly supplied.
+
+Static site output:
+
+```text
+reports/<analysis-run-id>/site/
+  index.html
+  assets/
+  data/
+    report-bundle.json
+    statements.json
+    vote-summary.json
+    attestation.json
+    analysis/
+      manifest.json
+      reductions/
+      clusters/
+      hierarchies/
+      perspectives/
+```
+
+The active interactive report reading experience remains `broadly web`, which
+renders the bundle together with live local review, analysis, and statement
+artifacts.
 
 ## Statements
 
@@ -840,8 +880,8 @@ The implementation is useful but not finished.
 
 - The active analysis pipeline is still mostly in `@broadly/cli`, not in
   `@broadly/pipeline`.
-- `@broadly/report-site` has a placeholder renderer, while `broadly report`
-  writes only `report-bundle.json`.
+- The static report site is intentionally simple HTML; richer offline maps and
+  drill-down interactions can build on the copied JSON data.
 - Statement generation is deterministic and report-derived in the first pass;
   it does not yet call a statement-specific LLM prompt.
 - Statement QA is heuristic and local. It does not yet use a model judge.

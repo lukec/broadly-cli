@@ -1,6 +1,24 @@
-import type { ReportBundle } from "@broadly/report-model";
+import type {
+  AttestationManifest,
+  ReportBundle,
+  StatementBank,
+  VoteRoundSummary
+} from "@broadly/report-model";
 
-export function renderPlaceholderReportHtml(report: ReportBundle): string {
+export interface StaticReportRenderOptions {
+  statementBank?: StatementBank | null;
+  voteSummary?: VoteRoundSummary | null;
+  attestation?: AttestationManifest | null;
+}
+
+export function renderStaticReportHtml(
+  report: ReportBundle,
+  options: StaticReportRenderOptions = {}
+): string {
+  const acceptedStatements =
+    options.statementBank?.statements.filter((statement) => statement.moderationStatus === "accepted") ??
+    [];
+
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -32,7 +50,7 @@ export function renderPlaceholderReportHtml(report: ReportBundle): string {
       .hero, .card {
         background: var(--card);
         border: 1px solid var(--line);
-        border-radius: 18px;
+        border-radius: 8px;
         box-shadow: 0 10px 24px rgba(0,0,0,0.06);
       }
       .hero {
@@ -75,7 +93,23 @@ export function renderPlaceholderReportHtml(report: ReportBundle): string {
         padding: 12px 14px;
         border-left: 4px solid #b8def3;
         background: #f7fbfe;
-        border-radius: 10px;
+        border-radius: 6px;
+      }
+      .stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px 10px;
+        background: #fafbfc;
+        color: var(--muted);
+      }
+      .section {
+        margin-top: 24px;
       }
     </style>
   </head>
@@ -120,9 +154,61 @@ export function renderPlaceholderReportHtml(report: ReportBundle): string {
           )
           .join("")}
       </section>
+      ${
+        acceptedStatements.length === 0
+          ? ""
+          : `<section class="card section">
+              <p class="eyebrow">Statements</p>
+              <h2>Accepted Statement Bank</h2>
+              ${acceptedStatements
+                .map(
+                  (statement) => `<section class="cluster">
+                    <h3>${escapeHtml(statement.statementText)}</h3>
+                    <p class="meta">${escapeHtml(statement.generationRationale)}</p>
+                  </section>`
+                )
+                .join("")}
+            </section>`
+      }
+      ${
+        options.voteSummary === null || options.voteSummary === undefined
+          ? ""
+          : `<section class="card section">
+              <p class="eyebrow">Voting Round</p>
+              <h2>${escapeHtml(options.voteSummary.voteRoundId)}</h2>
+              <div class="stats">
+                <span class="stat">${options.voteSummary.participantCount} participant(s)</span>
+                <span class="stat">${options.voteSummary.statementCount} statement(s)</span>
+                <span class="stat">${options.voteSummary.highConsensusStatementIds.length} high consensus</span>
+                <span class="stat">${options.voteSummary.highContentionStatementIds.length} high contention</span>
+              </div>
+              ${options.voteSummary.statements
+                .slice(0, 12)
+                .map(
+                  (statement) => `<section class="cluster">
+                    <h3>${escapeHtml(statement.statementText)}</h3>
+                    <p class="meta">${escapeHtml(statement.classification)} · agree ${Math.round(statement.rates.agree * 100)}% · disagree ${Math.round(statement.rates.disagree * 100)}% · pass ${Math.round(statement.rates.pass * 100)}%</p>
+                  </section>`
+                )
+                .join("")}
+            </section>`
+      }
+      ${
+        options.attestation === null || options.attestation === undefined
+          ? ""
+          : `<section class="card section">
+              <p class="eyebrow">Attestation</p>
+              <h2>${escapeHtml(options.attestation.attestationId)}</h2>
+              <p class="meta">${options.attestation.artifacts.length} hashed artifact(s) · code ${escapeHtml(options.attestation.codeVersion)}</p>
+            </section>`
+      }
     </main>
   </body>
 </html>`;
+}
+
+export function renderPlaceholderReportHtml(report: ReportBundle): string {
+  return renderStaticReportHtml(report);
 }
 
 function escapeHtml(value: string): string {

@@ -4,13 +4,28 @@ import process from "node:process";
 
 import { parseProjectConfig, type BroadlyProjectConfig } from "@broadly/config";
 import { resolveProjectPaths } from "@broadly/core";
-import type { ReportBundle } from "@broadly/report-model";
+import type {
+  AttestationManifest,
+  ReportBundle,
+  StatementBank,
+  VoteRoundSummary
+} from "@broadly/report-model";
+import { renderStaticReportHtml } from "@broadly/report-site";
 import { readCurrentRunId } from "../projectArtifacts.js";
 import { withProjectActionLog } from "../projectLog.js";
+import { findLatestStatementRunId, loadStatementBankWithReviews } from "./statements.js";
+import { loadVoteSummaryForReport } from "./vote.js";
 
 export interface ReportCommandOptions {
   project?: string;
   run?: string;
+}
+
+export interface ReportSiteCommandOptions {
+  project?: string;
+  run?: string;
+  statements?: string;
+  attestation?: string;
 }
 
 interface ClusterArtifact {
@@ -233,6 +248,98 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
   });
 }
 
+export async function generateReportSite(options: ReportSiteCommandOptions): Promise<void> {
+  const projectRoot = await resolveCommandProjectRoot(options.project);
+
+  await withProjectActionLog({
+    projectRoot,
+    command: "report site",
+    details: {
+      run: options.run ?? "(latest)",
+      statements: options.statements ?? "(current matching statement bank)",
+      attestation: options.attestation ?? "(matching report attestation)"
+    },
+    action: async () => {
+      const projectPaths = resolveProjectPaths(projectRoot);
+      const runId =
+        options.run ??
+        (await readCurrentRunId(projectPaths.analysisCurrentRunPath)) ??
+        (await findLatestReportBundleRun(projectPaths.reportsDir));
+
+      if (runId === null) {
+        throw new Error("No report bundle was found. Run broadly report first.");
+      }
+
+      const reportDir = path.join(projectPaths.reportsDir, runId);
+      const reportBundlePath = path.join(reportDir, "report-bundle.json");
+      const reportBundle = await readJsonFile<ReportBundle>(reportBundlePath);
+
+      if (reportBundle === null) {
+        throw new Error(`Report bundle '${reportBundlePath}' could not be read.`);
+      }
+
+      const statementBank = await loadStatementBankForSite(projectRoot, reportBundle.analysisRunId, options.statements);
+      const voteSummary = await loadVoteSummaryForReport(projectPaths.reportsDir, reportBundle.analysisRunId);
+      const attestation = await loadAttestationForSite(projectRoot, runId, options.attestation);
+      const siteDir = path.join(reportDir, "site");
+      const dataDir = path.join(siteDir, "data");
+      const assetsDir = path.join(siteDir, "assets");
+      const analysisDataDir = path.join(dataDir, "analysis");
+      const html = renderStaticReportHtml(reportBundle, {
+        statementBank,
+        voteSummary,
+        attestation
+      });
+
+      await mkdir(assetsDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await writeFile(path.join(siteDir, "index.html"), html, "utf8");
+      await writeFile(path.join(assetsDir, ".gitkeep"), "", "utf8");
+      await writeFile(
+        path.join(dataDir, "report-bundle.json"),
+        `${JSON.stringify(reportBundle, null, 2)}\n`,
+        "utf8"
+      );
+
+      if (statementBank !== null) {
+        await writeFile(
+          path.join(dataDir, "statements.json"),
+          `${JSON.stringify(statementBank, null, 2)}\n`,
+          "utf8"
+        );
+      }
+
+      if (voteSummary !== null) {
+        await writeFile(
+          path.join(dataDir, "vote-summary.json"),
+          `${JSON.stringify(voteSummary, null, 2)}\n`,
+          "utf8"
+        );
+      }
+
+      if (attestation !== null) {
+        await writeFile(
+          path.join(dataDir, "attestation.json"),
+          `${JSON.stringify(attestation, null, 2)}\n`,
+          "utf8"
+        );
+      }
+
+      await copyAnalysisData(projectPaths.runsDir, reportBundle.analysisRunId, analysisDataDir);
+
+      process.stdout.write(
+        [
+          `Generated static report site for ${projectRoot}`,
+          "",
+          `Analysis run: ${reportBundle.analysisRunId}`,
+          `Site: ${toPortableRelativePath(projectRoot, path.join(siteDir, "index.html"))}`,
+          `Data: ${toPortableRelativePath(projectRoot, dataDir)}`
+        ].join("\n") + "\n"
+      );
+    }
+  });
+}
+
 async function loadProjectConfig(configPath: string): Promise<BroadlyProjectConfig> {
   const source = await readFile(configPath, "utf8");
   return parseProjectConfig(source);
@@ -263,6 +370,126 @@ async function findLatestAnalysisRun(runsDir: string): Promise<string | null> {
   return runs[0]?.name ?? null;
 }
 
+async function findLatestReportBundleRun(reportsDir: string): Promise<string | null> {
+  const entries = await readdir(reportsDir, { withFileTypes: true }).catch(() => []);
+  const runs: Array<{ name: string; createdAt: string }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const reportBundle = await readJsonFile<ReportBundle>(
+      path.join(reportsDir, entry.name, "report-bundle.json")
+    );
+
+    if (reportBundle?.createdAt !== undefined) {
+      runs.push({
+        name: entry.name,
+        createdAt: reportBundle.createdAt
+      });
+    }
+  }
+
+  runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return runs[0]?.name ?? null;
+}
+
+async function loadStatementBankForSite(
+  projectRoot: string,
+  analysisRunId: string,
+  statementsPath: string | undefined
+): Promise<StatementBank | null> {
+  if (statementsPath !== undefined) {
+    const resolvedPath = await resolveInputPath(projectRoot, statementsPath);
+    return readJsonFile<StatementBank>(resolvedPath);
+  }
+
+  const projectPaths = resolveProjectPaths(projectRoot);
+  const currentStatementRunId = await readCurrentRunId(projectPaths.statementsCurrentRunPath);
+  const candidateRunIds = [
+    ...(currentStatementRunId === null ? [] : [currentStatementRunId]),
+    ...((await findLatestStatementRunId(projectPaths.statementsDir)) === null
+      ? []
+      : [await findLatestStatementRunId(projectPaths.statementsDir)])
+  ];
+
+  for (const statementRunId of [...new Set(candidateRunIds)]) {
+    if (statementRunId === null) {
+      continue;
+    }
+
+    const loaded = await loadStatementBankWithReviews(projectRoot, statementRunId);
+
+    if (loaded.bank.analysisRunId === analysisRunId) {
+      return {
+        ...loaded.bank,
+        statements: loaded.statements
+      };
+    }
+  }
+
+  return null;
+}
+
+async function loadAttestationForSite(
+  projectRoot: string,
+  reportRunId: string,
+  attestationPath: string | undefined
+): Promise<AttestationManifest | null> {
+  const resolvedPath =
+    attestationPath === undefined
+      ? path.join(resolveProjectPaths(projectRoot).attestationsDir, "reports", `${reportRunId}.attestation.json`)
+      : await resolveInputPath(projectRoot, attestationPath);
+
+  return readJsonFile<AttestationManifest>(resolvedPath);
+}
+
+async function copyAnalysisData(
+  runsDir: string,
+  analysisRunId: string,
+  outputDir: string
+): Promise<void> {
+  const runDir = path.join(runsDir, analysisRunId);
+  const directories = ["reductions", "clusters", "hierarchies", "perspectives"];
+
+  await mkdir(outputDir, { recursive: true });
+
+  const manifest = await readJsonFile<unknown>(path.join(runDir, "manifest.json"));
+
+  if (manifest !== null) {
+    await writeFile(
+      path.join(outputDir, "manifest.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      "utf8"
+    );
+  }
+
+  for (const directory of directories) {
+    const sourceDir = path.join(runDir, directory);
+    const targetDir = path.join(outputDir, directory);
+    const entries = await readdir(sourceDir, { withFileTypes: true }).catch(() => []);
+
+    if (entries.length === 0) {
+      continue;
+    }
+
+    await mkdir(targetDir, { recursive: true });
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+
+      await writeFile(
+        path.join(targetDir, entry.name),
+        await readFile(path.join(sourceDir, entry.name), "utf8"),
+        "utf8"
+      );
+    }
+  }
+}
+
 async function loadSemanticMergeArtifacts(
   hierarchiesDir: string
 ): Promise<SemanticMergeArtifact[]> {
@@ -289,6 +516,33 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
     return JSON.parse(await readFile(filePath, "utf8")) as T;
   } catch {
     return null;
+  }
+}
+
+async function resolveInputPath(projectRoot: string, inputPath: string): Promise<string> {
+  const projectRelativePath = path.isAbsolute(inputPath)
+    ? inputPath
+    : path.resolve(projectRoot, inputPath);
+
+  if (await fileExists(projectRelativePath)) {
+    return projectRelativePath;
+  }
+
+  const cwdRelativePath = path.resolve(inputPath);
+
+  if (await fileExists(cwdRelativePath)) {
+    return cwdRelativePath;
+  }
+
+  return projectRelativePath;
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await readFile(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

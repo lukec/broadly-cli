@@ -12,7 +12,7 @@ import { initProject } from "./commands/init.js";
 import { runLlm } from "./commands/llm.js";
 import { addModel, checkModels, removeModel } from "./commands/models.js";
 import { extractOpinionsWithModel } from "./commands/opinions.js";
-import { generateReport } from "./commands/report.js";
+import { generateReport, generateReportSite } from "./commands/report.js";
 import { runQa } from "./commands/qa.js";
 import { runPipeline } from "./commands/run.js";
 import { runReview } from "./commands/review.js";
@@ -187,9 +187,9 @@ program
     }
   );
 
-program
+const reportCommand = program
   .command("report")
-  .description("Generate a report bundle and static site from an analysis run.")
+  .description("Generate a report bundle from an analysis run.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
   .option("--run <runId>", "Analysis run id to publish; defaults to the latest run")
   .action(
@@ -200,6 +200,29 @@ program
       await generateReport({
         ...(options.project === undefined ? {} : { project: options.project }),
         ...(options.run === undefined ? {} : { run: options.run })
+      });
+    }
+  );
+
+reportCommand
+  .command("site")
+  .description("Generate a self-contained static HTML report site.")
+  .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--run <runId>", "Report/analysis run id; defaults to current, then latest")
+  .option("--statements <path>", "Optional statement bank JSON path to include")
+  .option("--attestation <path>", "Optional attestation manifest path to include")
+  .action(
+    async (options: {
+      attestation?: string;
+      project?: string;
+      run?: string;
+      statements?: string;
+    }) => {
+      await generateReportSite({
+        ...(options.project === undefined ? {} : { project: options.project }),
+        ...(options.run === undefined ? {} : { run: options.run }),
+        ...(options.statements === undefined ? {} : { statements: options.statements }),
+        ...(options.attestation === undefined ? {} : { attestation: options.attestation })
       });
     }
   );
