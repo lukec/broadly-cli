@@ -73,12 +73,13 @@ export interface LoadedStatementBank {
 
 const STATEMENT_GENERATION_PROMPT = [
   "Generate short, neutral, evidence-grounded statements suitable for agree/disagree/pass voting.",
-  "Use highlighted report clusters and themes first.",
+  "Use extracted opinions referenced by highlighted report clusters first.",
   "Preserve evidence references to the report, cluster, theme, opinion, and source excerpt.",
+  "Prefer the participant's extracted opinion text over theme or cluster descriptions.",
   "Keep generated statements pending until local review accepts them."
 ].join("\n");
 
-const STATEMENT_GENERATOR_ID = "deterministic-report-highlights-v1";
+const STATEMENT_GENERATOR_ID = "deterministic-evidence-opinions-v2";
 
 const MODERATION_STATUS_VALUES = [
   "pending",
@@ -161,11 +162,16 @@ export async function generateStatements(options: StatementGenerateCommandOption
           modelId: STATEMENT_GENERATOR_ID
         }
       };
+      const opinionArtifacts = await loadOpinionArtifactsForAnalysisRun(
+        projectPaths,
+        reportBundle.analysisRunId
+      );
       const { statements, duplicateCount, failures } = buildStatementsFromReport(
         reportBundle,
         reportBundlePath,
         provenance,
-        createdAt
+        createdAt,
+        opinionArtifacts
       );
       const bank: StatementBank = {
         statementBankId: `bank-${sha256Hex(`${statementRunId}:${reportBundleSha256}`).slice(0, 16)}`,
@@ -502,7 +508,8 @@ function buildStatementsFromReport(
   reportBundle: ReportBundle,
   reportBundlePath: string,
   provenance: StatementGenerationProvenance,
-  createdAt: string
+  createdAt: string,
+  opinionArtifacts: Map<string, LoadedOpinionArtifact>
 ): {
   statements: Statement[];
   duplicateCount: number;
@@ -512,54 +519,48 @@ function buildStatementsFromReport(
   const failures: Array<{ source: string; message: string }> = [];
 
   for (const view of reportBundle.views) {
-    for (const theme of view.themes ?? []) {
-      const statementText = buildStatementText(theme.label, theme.summary);
-
-      if (statementText === null) {
-        failures.push({
-          source: `view:${view.viewId}:theme:${theme.themeId}`,
-          message: "Theme did not contain enough text to form a statement."
-        });
-        continue;
-      }
-
-      candidateStatements.push(
-        createStatement({
-          reportBundle,
-          reportBundlePath,
-          view,
-          theme,
-          statementText,
-          createdAt,
-          provenance,
-          rationale: "Generated from a report theme because it groups multiple highlighted clusters."
-        })
-      );
-    }
+    const themesByClusterId = groupThemesByClusterId(view.themes ?? []);
 
     for (const cluster of view.clusters) {
-      const statementText = buildStatementText(cluster.label, cluster.summary);
-
-      if (statementText === null) {
+      if (cluster.evidenceQuotes.length === 0) {
         failures.push({
           source: `view:${view.viewId}:cluster:${cluster.clusterId}`,
-          message: "Cluster did not contain enough text to form a statement."
+          message: "Cluster had no evidence quotes to turn into votable statements."
         });
         continue;
       }
 
-      candidateStatements.push(
-        createStatement({
-          reportBundle,
-          reportBundlePath,
-          view,
-          cluster,
-          statementText,
-          createdAt,
-          provenance,
-          rationale: "Generated from a highlighted report cluster with representative evidence quotes."
-        })
-      );
+      for (const quote of cluster.evidenceQuotes) {
+        const opinion = opinionArtifacts.get(quote.sourceId);
+        const statementText = buildVotableStatementText(opinion?.opinionText ?? quote.excerpt);
+
+        if (statementText === null) {
+          failures.push({
+            source: `view:${view.viewId}:cluster:${cluster.clusterId}:quote:${quote.quoteId}`,
+            message: "Evidence quote did not contain enough claim text to form a statement."
+          });
+          continue;
+        }
+
+        candidateStatements.push(
+          createStatement({
+            reportBundle,
+            reportBundlePath,
+            view,
+            themes: themesByClusterId.get(cluster.clusterId) ?? [],
+            cluster,
+            quote,
+            statementText,
+            createdAt,
+            provenance,
+            ...(opinion === undefined ? {} : { opinion }),
+            rationale:
+              opinion === undefined
+                ? "Generated from a report evidence quote because no extracted opinion artifact was available."
+                : "Generated from an extracted opinion referenced by a highlighted report cluster."
+          })
+        );
+      }
     }
   }
 
@@ -592,24 +593,26 @@ function createStatement(options: {
   reportBundle: ReportBundle;
   reportBundlePath: string;
   view: AnalysisViewReport;
-  theme?: ThemeSummary;
+  themes?: ThemeSummary[];
   cluster?: AnalysisViewReport["clusters"][number];
+  quote?: AnalysisViewReport["clusters"][number]["evidenceQuotes"][number];
+  opinion?: LoadedOpinionArtifact;
   statementText: string;
   createdAt: string;
   provenance: StatementGenerationProvenance;
   rationale: string;
 }): Statement {
   const sourceClusterIds =
-    options.cluster === undefined
-      ? [...(options.theme?.clusterIds ?? [])]
-      : [options.cluster.clusterId];
-  const sourceThemeIds = options.theme === undefined ? [] : [options.theme.themeId];
+    options.cluster === undefined ? [] : [options.cluster.clusterId];
+  const sourceThemeIds = options.themes?.map((theme) => theme.themeId) ?? [];
   const evidenceRefs = buildEvidenceRefs({
     reportBundle: options.reportBundle,
     reportBundlePath: options.reportBundlePath,
     view: options.view,
-    ...(options.theme === undefined ? {} : { theme: options.theme }),
-    ...(options.cluster === undefined ? {} : { cluster: options.cluster })
+    themes: options.themes ?? [],
+    ...(options.cluster === undefined ? {} : { cluster: options.cluster }),
+    ...(options.quote === undefined ? {} : { quote: options.quote }),
+    ...(options.opinion === undefined ? {} : { opinion: options.opinion })
   });
   const sourceOpinionIds = [
     ...new Set(
@@ -631,7 +634,7 @@ function createStatement(options: {
   return {
     statementId,
     statementText: options.statementText,
-    statementKind: "synthesized",
+    statementKind: options.opinion === undefined ? "synthesized" : "extracted",
     moderationStatus: "pending",
     visibilityStatus: "admin_only",
     sourceOpinionIds,
@@ -648,8 +651,10 @@ function buildEvidenceRefs(options: {
   reportBundle: ReportBundle;
   reportBundlePath: string;
   view: AnalysisViewReport;
-  theme?: ThemeSummary;
+  themes?: ThemeSummary[];
   cluster?: AnalysisViewReport["clusters"][number];
+  quote?: AnalysisViewReport["clusters"][number]["evidenceQuotes"][number];
+  opinion?: LoadedOpinionArtifact;
 }): StatementEvidenceRef[] {
   const refs: StatementEvidenceRef[] = [
     {
@@ -669,16 +674,16 @@ function buildEvidenceRefs(options: {
     }
   ];
 
-  if (options.theme !== undefined) {
+  for (const theme of options.themes ?? []) {
     refs.push({
-      refId: `theme:${options.view.viewId}:${options.theme.themeId}`,
+      refId: `theme:${options.view.viewId}:${theme.themeId}`,
       refType: "theme",
       analysisRunId: options.reportBundle.analysisRunId,
       reportId: options.reportBundle.reportId,
       viewId: options.view.viewId,
-      themeId: options.theme.themeId,
+      themeId: theme.themeId,
       artifactPath: options.reportBundlePath,
-      excerpt: options.theme.summary
+      excerpt: theme.summary
     });
   }
 
@@ -693,36 +698,123 @@ function buildEvidenceRefs(options: {
       artifactPath: options.reportBundlePath,
       excerpt: options.cluster.summary
     });
+  }
 
-    for (const quote of options.cluster.evidenceQuotes) {
-      refs.push({
-        refId: `opinion:${quote.sourceId}:${quote.quoteId}`,
-        refType: "opinion",
-        analysisRunId: options.reportBundle.analysisRunId,
-        reportId: options.reportBundle.reportId,
-        viewId: options.view.viewId,
-        clusterId: options.cluster.clusterId,
-        opinionId: quote.sourceId,
-        sourceId: quote.sourceId,
-        quoteId: quote.quoteId,
-        artifactPath: options.reportBundlePath,
-        excerpt: quote.excerpt
-      });
-    }
+  if (options.quote !== undefined) {
+    refs.push({
+      refId: `opinion:${options.quote.sourceId}:${options.quote.quoteId}`,
+      refType: "opinion",
+      analysisRunId: options.reportBundle.analysisRunId,
+      reportId: options.reportBundle.reportId,
+      viewId: options.view.viewId,
+      opinionId: options.quote.sourceId,
+      sourceId: options.opinion?.sourceId ?? options.quote.sourceId,
+      quoteId: options.quote.quoteId,
+      artifactPath: options.opinion?.artifactPath ?? options.reportBundlePath,
+      excerpt: options.opinion?.excerpt ?? options.quote.excerpt,
+      ...(options.cluster === undefined ? {} : { clusterId: options.cluster.clusterId })
+    });
   }
 
   return refs;
 }
 
-function buildStatementText(label: string, summary: string): string | null {
-  const summarySentence = firstSentence(summary);
-  const baseText = summarySentence ?? label.trim();
+interface LoadedOpinionArtifact {
+  opinionId: string;
+  sourceId?: string;
+  opinionText?: string;
+  excerpt?: string;
+  artifactPath: string;
+}
 
-  if (baseText.length < 8) {
+interface AnalysisRunManifestWithOpinionInput {
+  input?: {
+    opinionRunId?: string;
+    opinionsDir?: string;
+    groups?: Array<{
+      opinionRunId?: string;
+      opinionsDir?: string;
+    }>;
+  };
+}
+
+async function loadOpinionArtifactsForAnalysisRun(
+  projectPaths: ProjectPaths,
+  analysisRunId: string
+): Promise<Map<string, LoadedOpinionArtifact>> {
+  const manifest = await readJsonArtifact<AnalysisRunManifestWithOpinionInput>(
+    path.join(projectPaths.runsDir, analysisRunId, "manifest.json")
+  );
+  const opinionDirs = new Set<string>();
+
+  for (const opinionDir of [
+    manifest?.input?.opinionsDir,
+    ...(manifest?.input?.groups ?? []).map((group) => group.opinionsDir)
+  ]) {
+    if (opinionDir !== undefined) {
+      opinionDirs.add(resolveOpinionInputPath(projectPaths.rootDir, opinionDir));
+    }
+  }
+
+  if (manifest?.input?.opinionRunId !== undefined && opinionDirs.size === 0) {
+    opinionDirs.add(
+      path.join(projectPaths.dataDir, "opinions", manifest.input.opinionRunId, "opinions")
+    );
+  }
+
+  const opinions = new Map<string, LoadedOpinionArtifact>();
+
+  for (const opinionDir of opinionDirs) {
+    const entries = await readdir(opinionDir, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+
+      const artifactPath = path.join(opinionDir, entry.name);
+      const opinion = await readJsonArtifact<Omit<LoadedOpinionArtifact, "artifactPath">>(
+        artifactPath
+      );
+
+      if (opinion?.opinionId !== undefined) {
+        opinions.set(opinion.opinionId, {
+          ...opinion,
+          artifactPath
+        });
+      }
+    }
+  }
+
+  return opinions;
+}
+
+function resolveOpinionInputPath(projectRoot: string, inputPath: string): string {
+  return path.isAbsolute(inputPath) ? inputPath : path.resolve(projectRoot, inputPath);
+}
+
+function groupThemesByClusterId(themes: ThemeSummary[]): Map<string, ThemeSummary[]> {
+  const themesByClusterId = new Map<string, ThemeSummary[]>();
+
+  for (const theme of themes) {
+    for (const clusterId of theme.clusterIds) {
+      const existing = themesByClusterId.get(clusterId) ?? [];
+      existing.push(theme);
+      themesByClusterId.set(clusterId, existing);
+    }
+  }
+
+  return themesByClusterId;
+}
+
+function buildVotableStatementText(value: string | undefined): string | null {
+  const baseText = firstSentence(cleanStatementText(value ?? ""));
+
+  if (baseText === null || countWords(baseText) < 3) {
     return null;
   }
 
-  return ensureSentence(cleanStatementText(baseText));
+  return ensureSentence(baseText);
 }
 
 function firstSentence(value: string): string | null {
@@ -739,7 +831,12 @@ function firstSentence(value: string): string | null {
 }
 
 function cleanStatementText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+  return value
+    .replace(/\u0092/g, "'")
+    .replace(/\u0093|\u0094/g, '"')
+    .replace(/\u0096|\u0097/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function ensureSentence(value: string): string {

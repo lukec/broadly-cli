@@ -603,10 +603,16 @@ hosted runners can write the same artifact layout.
 - `reports/<analysis-run-id>/report-bundle.json`
 - highlighted clusters, themes, and evidence quotes already carried in that
   bundle
+- extracted opinion artifacts referenced by those evidence quotes, when the
+  analysis manifest points to an opinion run
 
 The first implementation is deterministic and local. It does not spend on a new
 LLM call. The command records a generation prompt hash and generator id in the
 manifest so a later model-assisted generator can reuse the same artifact shape.
+Generated statements prefer the extracted `opinionText` behind a report evidence
+quote, falling back to the quote excerpt only when the opinion artifact is not
+available. Theme and cluster references are preserved as provenance, but theme
+or cluster summaries are not used directly as votable statement text.
 
 Generation writes:
 
@@ -718,6 +724,9 @@ participant id, initial question id, and statement id.
 participant ids. Votes are persisted as reaction events and reflected in the
 derived state. If a round has initial questions, each participant must answer
 `yes`, `no`, or `skip` for all of them before the page shows statement voting.
+The participant id is fixed by the URL/query parameter and shown as a small
+header label. The web flow hides initial questions once answered and presents
+one unanswered statement at a time, advancing after each saved reaction.
 The page labels itself as a local reference sandbox, not production civic
 infrastructure.
 

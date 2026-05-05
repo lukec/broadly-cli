@@ -976,6 +976,29 @@ function renderVoteRoundPage(round: LoadedVoteRound, participantId: string): str
   const participantReactions = round.state.reactions[participantId] ?? {};
   const initialQuestionResponses = round.state.initialQuestionResponses[participantId] ?? {};
   const initialQuestionsComplete = hasAnsweredAllInitialQuestions(round.state, participantId);
+  const nextInitialQuestion = round.state.initialQuestions.find(
+    (question) => initialQuestionResponses[question.questionId] === undefined
+  );
+  const nextInitialQuestionIndex =
+    nextInitialQuestion === undefined
+      ? 0
+      : round.state.initialQuestions.findIndex(
+          (question) => question.questionId === nextInitialQuestion.questionId
+        ) + 1;
+  const answeredStatementCount = round.statements.filter(
+    (statement) => participantReactions[statement.statementId] !== undefined
+  ).length;
+  const nextStatementEntry = initialQuestionsComplete
+    ? round.statements
+        .map((statement, index) => ({ statement, index }))
+        .find((entry) => participantReactions[entry.statement.statementId] === undefined)
+    : undefined;
+  const actionLabel =
+    nextInitialQuestion !== undefined
+      ? "Continue"
+      : nextStatementEntry !== undefined
+        ? "Save answer"
+        : null;
 
   return `<!doctype html>
 <html lang="en">
@@ -1003,23 +1026,30 @@ function renderVoteRoundPage(round: LoadedVoteRound, participantId: string): str
         padding: 18px;
         margin-bottom: 14px;
       }
+      .topline {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
       h1, h2 { margin: 0 0 8px; }
       .meta { color: #5e6878; margin: 0; }
-      .participant {
-        display: grid;
-        gap: 8px;
-        margin: 18px 0;
+      .participant-badge {
+        color: #5e6878;
+        font-size: 12px;
+        line-height: 1.2;
+        text-align: right;
+        white-space: nowrap;
+      }
+      .participant-badge strong {
+        display: block;
+        color: #18202f;
+        font-size: 13px;
+        font-weight: 700;
+        margin-top: 2px;
       }
       .intro-section {
         margin: 18px 0;
-      }
-      input[type="text"] {
-        width: 100%;
-        min-height: 42px;
-        border: 1px solid #c7d1df;
-        border-radius: 6px;
-        padding: 8px 10px;
-        font: inherit;
       }
       .choices {
         display: flex;
@@ -1051,42 +1081,41 @@ function renderVoteRoundPage(round: LoadedVoteRound, participantId: string): str
   <body>
     <main>
       <header>
-        <h1>Broadly Vote Sandbox</h1>
-        <p class="meta">Local reference round ${escapeHtml(round.voteRoundId)}. This is not production civic infrastructure.</p>
+        <div class="topline">
+          <div>
+            <h1>Broadly Vote Sandbox</h1>
+            <p class="meta">Local reference round ${escapeHtml(round.voteRoundId)}. This is not production civic infrastructure.</p>
+          </div>
+          <p class="participant-badge">Participant<strong>${escapeHtml(participantId)}</strong></p>
+        </div>
       </header>
       <form method="post" action="/vote">
-        <label class="participant">
-          <span>Participant id</span>
-          <input type="text" name="participantId" value="${escapeHtmlAttribute(participantId)}" />
-        </label>
+        <input type="hidden" name="participantId" value="${escapeHtmlAttribute(participantId)}" />
         ${
-          round.state.initialQuestions.length === 0
+          nextInitialQuestion === undefined
             ? ""
             : `<section class="intro-section">
                 <p class="meta">Initial questions are asked before statement voting.</p>
-                ${round.state.initialQuestions
-                  .map((question, index) =>
-                    renderInitialQuestionCard(
-                      question,
-                      index + 1,
-                      initialQuestionResponses[question.questionId]
-                    )
-                  )
-                  .join("")}
+                ${renderInitialQuestionCard(nextInitialQuestion, nextInitialQuestionIndex)}
               </section>`
         }
         ${
-          initialQuestionsComplete
-            ? round.statements
-                .map((statement, index) =>
-                  renderVoteStatementCard(statement, index + 1, participantReactions[statement.statementId])
-                )
-                .join("")
-            : `<article>
+          nextInitialQuestion !== undefined
+            ? `<article>
                 <p class="meta">Answer yes, no, or skip for each initial question to continue to statement voting.</p>
               </article>`
+            : nextStatementEntry !== undefined
+              ? renderVoteStatementCard(
+                  nextStatementEntry.statement,
+                  nextStatementEntry.index + 1,
+                  round.statements.length
+                )
+              : `<article>
+                  <h2>All done.</h2>
+                  <p class="meta">You answered ${answeredStatementCount} statement(s) in this local round.</p>
+                </article>`
         }
-        <button type="submit">${initialQuestionsComplete ? "Save votes" : "Continue"}</button>
+        ${actionLabel === null ? "" : `<button type="submit">${actionLabel}</button>`}
       </form>
     </main>
   </body>
@@ -1095,8 +1124,7 @@ function renderVoteRoundPage(round: LoadedVoteRound, participantId: string): str
 
 function renderInitialQuestionCard(
   question: VoteInitialQuestion,
-  index: number,
-  selectedResponse: InitialQuestionResponseValue | undefined
+  index: number
 ): string {
   return `<article>
     <p class="meta">Initial question ${index}</p>
@@ -1104,7 +1132,7 @@ function renderInitialQuestionCard(
     <div class="choices">
       ${INITIAL_QUESTION_RESPONSE_VALUES.map(
         (response) => `<label class="choice">
-          <input type="radio" name="initial-question:${escapeHtmlAttribute(question.questionId)}" value="${response}" ${selectedResponse === response ? "checked" : ""} />
+          <input type="radio" name="initial-question:${escapeHtmlAttribute(question.questionId)}" value="${response}" required />
           <span>${response}</span>
         </label>`
       ).join("")}
@@ -1115,15 +1143,15 @@ function renderInitialQuestionCard(
 function renderVoteStatementCard(
   statement: Statement,
   index: number,
-  selectedReaction: ReactionValue | undefined
+  total: number
 ): string {
   return `<article>
-    <p class="meta">Statement ${index}</p>
+    <p class="meta">Statement ${index} of ${total}</p>
     <h2>${escapeHtml(statement.statementText)}</h2>
     <div class="choices">
       ${REACTION_VALUES.map(
         (reaction) => `<label class="choice">
-          <input type="radio" name="reaction:${escapeHtmlAttribute(statement.statementId)}" value="${reaction}" ${selectedReaction === reaction ? "checked" : ""} />
+          <input type="radio" name="reaction:${escapeHtmlAttribute(statement.statementId)}" value="${reaction}" required />
           <span>${reaction}</span>
         </label>`
       ).join("")}

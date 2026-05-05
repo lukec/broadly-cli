@@ -33,7 +33,9 @@ voting:
 ```
 
 Each local participant must answer `yes`, `no`, or `skip` for every initial
-question before the sandbox shows statement voting.
+question before the sandbox shows statement voting. The local web UI fixes the
+participant id from the URL, hides answered initial questions, and shows one
+unanswered statement at a time.
 
 For no-browser smoke testing, deterministic synthetic votes can be added with:
 
