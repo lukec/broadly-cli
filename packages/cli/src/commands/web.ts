@@ -242,6 +242,67 @@ interface AnalysisClusteringSurfaceEvaluationArtifact {
   observations?: string[];
 }
 
+interface AnalysisGraphBuilderEvaluationArtifact {
+  createdAt?: string;
+  runId?: string;
+  method?: string;
+  parameters?: {
+    neighborK?: number;
+  };
+  corpus?: {
+    embeddingCount?: number;
+    graphCount?: number;
+    graphSurfaceCount?: number;
+    embeddingSurfaceCount?: number;
+    projectionSurfaceCount?: number;
+    comparableOpinionCount?: number;
+  };
+  graphs?: Array<{
+    graphId?: string;
+    method?: string;
+    label?: string;
+    neighborK?: number;
+    nodeCount?: number;
+    edgeCount?: number;
+    density?: number;
+    isolatedNodeCount?: number;
+    averageWeightedDegree?: number;
+  }>;
+  surfaces?: Array<{
+    surfaceId?: string;
+    surfaceKind?: string;
+    label?: string;
+    method?: string;
+    status?: string;
+    requestedClusterCount?: number;
+    effectiveClusterCount?: number;
+    comparableOpinionCount?: number;
+    singletonClusterCount?: number;
+    largestClusterShare?: number;
+    embeddingNeighborPurityAtK?: number | null;
+    embeddingSilhouette?: number | null;
+  }>;
+  comparisons?: Array<{
+    leftSurfaceId?: string;
+    rightSurfaceId?: string;
+    leftLabel?: string;
+    rightLabel?: string;
+    comparableOpinionCount?: number;
+    adjustedRandIndex?: number | null;
+    largestMembershipShifts?: Array<{
+      sourceClusterId?: number;
+      sourceClusterSize?: number;
+      fragmentationRate?: number;
+      topDestinationClusters?: Array<{
+        clusterId?: number;
+        count?: number;
+        share?: number;
+      }>;
+    }>;
+  }>;
+  observations?: string[];
+}
+
 interface LoadedAnalysisRun {
   manifest: {
     runId?: string;
@@ -288,6 +349,7 @@ interface LoadedAnalysisRun {
   perspectives: Array<{ path: string; artifact: AnalysisPerspectiveArtifact }>;
   reducerEvaluation: AnalysisReducerEvaluationArtifact | null;
   clusteringSurfaceEvaluation: AnalysisClusteringSurfaceEvaluationArtifact | null;
+  graphBuilderEvaluation: AnalysisGraphBuilderEvaluationArtifact | null;
 }
 
 interface LoadedOpinionArtifact {
@@ -977,6 +1039,9 @@ async function loadAnalysisRun(
     await readJsonFile<AnalysisClusteringSurfaceEvaluationArtifact>(
       path.join(runDir, "cluster-surface-eval", "summary.json")
     );
+  const graphBuilderEvaluation = await readJsonFile<AnalysisGraphBuilderEvaluationArtifact>(
+    path.join(runDir, "graph-eval", "summary.json")
+  );
 
   return {
     manifest,
@@ -984,7 +1049,8 @@ async function loadAnalysisRun(
     clusters,
     perspectives,
     reducerEvaluation,
-    clusteringSurfaceEvaluation
+    clusteringSurfaceEvaluation,
+    graphBuilderEvaluation
   };
 }
 
@@ -3198,7 +3264,8 @@ function renderAnalysisDiagnosticsSummarySection(
 ): string {
   const reducer = run.reducerEvaluation;
   const clustering = run.clusteringSurfaceEvaluation;
-  const hasDiagnostics = reducer !== null || clustering !== null;
+  const graph = run.graphBuilderEvaluation;
+  const hasDiagnostics = reducer !== null || clustering !== null || graph !== null;
 
   return `<section class="panel">
     <article class="card">
@@ -3214,12 +3281,14 @@ function renderAnalysisDiagnosticsSummarySection(
           ? `<div class="meta-chip-row">
               ${renderMetaChip(`Reducer ${escapeHtml(reducer?.method ?? "missing")}`)}
               ${renderMetaChip(`Clustering ${escapeHtml(clustering?.method ?? "missing")}`)}
-              ${renderMetaChip(`${escapeHtml(String(reducer?.corpus?.comparableOpinionCount ?? clustering?.corpus?.comparableOpinionCount ?? 0))} comparable opinions`)}
+              ${renderMetaChip(`Graph ${escapeHtml(graph?.method ?? "missing")}`)}
+              ${renderMetaChip(`${escapeHtml(String(reducer?.corpus?.comparableOpinionCount ?? clustering?.corpus?.comparableOpinionCount ?? graph?.corpus?.comparableOpinionCount ?? 0))} comparable opinions`)}
             </div>
-            ${renderDiagnosticObservationPreview(reducer, clustering)}`
+            ${renderDiagnosticObservationPreview(reducer, clustering, graph)}`
           : `<p class="meta">No reducer or clustering-surface diagnostics exist for this run yet. Generate them from the CLI, then reload this page.</p>
             <pre>node packages/cli/dist/index.js analysis --evaluate-reducers --run ${escapeHtml(runId)}
-node packages/cli/dist/index.js analysis --evaluate-clustering-surfaces --run ${escapeHtml(runId)}</pre>`
+node packages/cli/dist/index.js analysis --evaluate-clustering-surfaces --run ${escapeHtml(runId)}
+node packages/cli/dist/index.js analysis --evaluate-graph-builders --run ${escapeHtml(runId)}</pre>`
       }
     </article>
   </section>`;
@@ -3227,11 +3296,13 @@ node packages/cli/dist/index.js analysis --evaluate-clustering-surfaces --run ${
 
 function renderDiagnosticObservationPreview(
   reducer: AnalysisReducerEvaluationArtifact | null,
-  clustering: AnalysisClusteringSurfaceEvaluationArtifact | null
+  clustering: AnalysisClusteringSurfaceEvaluationArtifact | null,
+  graph: AnalysisGraphBuilderEvaluationArtifact | null = null
 ): string {
   const observations = [
     ...(reducer?.observations ?? []),
-    ...(clustering?.observations ?? [])
+    ...(clustering?.observations ?? []),
+    ...(graph?.observations ?? [])
   ].slice(0, 4);
 
   return observations.length === 0
@@ -3246,6 +3317,7 @@ function renderAnalysisDiagnosticsPage(
 ): string {
   const reducer = run.reducerEvaluation;
   const clustering = run.clusteringSurfaceEvaluation;
+  const graph = run.graphBuilderEvaluation;
 
   return renderPage(
     data,
@@ -3258,13 +3330,18 @@ function renderAnalysisDiagnosticsPage(
         <p class="lede">${escapeHtml(runId)}</p>
         <p class="meta">These checks reuse existing embeddings, reductions, and cluster artifacts. They do not make model calls.</p>
       </section>
-      <section class="panel two-up">
-        ${renderReducerDiagnosticOverviewCard(reducer)}
-        ${renderClusteringSurfaceDiagnosticOverviewCard(clustering)}
+      <section class="panel">
+        <section class="grid">
+          ${renderReducerDiagnosticOverviewCard(reducer)}
+          ${renderClusteringSurfaceDiagnosticOverviewCard(clustering)}
+          ${renderGraphBuilderDiagnosticOverviewCard(graph)}
+        </section>
       </section>
       ${renderReducerDiagnosticSection(reducer)}
       ${renderClusteringSurfaceDiagnosticSection(clustering)}
+      ${renderGraphBuilderDiagnosticSection(graph)}
       ${renderClusteringComparisonSection(clustering)}
+      ${renderGraphComparisonSection(graph)}
     </main>`
   );
 }
@@ -3328,6 +3405,42 @@ function renderClusteringSurfaceDiagnosticOverviewCard(
       ["Best purity", formatDiagnosticMetric(bestSurface?.embeddingNeighborPurityAtK ?? null)]
     ])}
     ${renderDiagnosticObservationPreview(null, clustering)}
+  </article>`;
+}
+
+function renderGraphBuilderDiagnosticOverviewCard(
+  graph: AnalysisGraphBuilderEvaluationArtifact | null
+): string {
+  if (graph === null) {
+    return `<article class="card">
+      <p class="eyebrow">Graph Builders</p>
+      <h2>Not generated</h2>
+      <p class="meta">Run <code>broadly analysis --evaluate-graph-builders</code> for this analysis run.</p>
+    </article>`;
+  }
+
+  const bestGraphSurface = [...(graph.surfaces ?? [])]
+    .filter(
+      (item) =>
+        item.surfaceKind === "graph" &&
+        item.embeddingNeighborPurityAtK !== null &&
+        item.embeddingNeighborPurityAtK !== undefined
+    )
+    .sort(
+      (left, right) =>
+        (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1)
+    )[0];
+
+  return `<article class="card">
+    <p class="eyebrow">Graph Builders</p>
+    <h2>${escapeHtml(bestGraphSurface?.label ?? "No ready graph surfaces")}</h2>
+    ${renderKeyValueList([
+      ["Created", graph.createdAt ?? "unknown"],
+      ["Comparable opinions", String(graph.corpus?.comparableOpinionCount ?? 0)],
+      ["Graphs", `${graph.corpus?.graphCount ?? 0} builders · ${graph.corpus?.graphSurfaceCount ?? 0} surfaces`],
+      ["Best graph purity", formatDiagnosticMetric(bestGraphSurface?.embeddingNeighborPurityAtK ?? null)]
+    ])}
+    ${renderDiagnosticObservationPreview(null, null, graph)}
   </article>`;
 }
 
@@ -3406,6 +3519,65 @@ function renderClusteringSurfaceDiagnosticSection(
   </section>`;
 }
 
+function renderGraphBuilderDiagnosticSection(
+  graph: AnalysisGraphBuilderEvaluationArtifact | null
+): string {
+  if (graph === null) {
+    return "";
+  }
+
+  return `<section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Graph Builders</p>
+        <h2>Neighborhood graph variants</h2>
+      </div>
+    </div>
+    <section class="grid">
+      ${(graph.graphs ?? [])
+        .map(
+          (item) => `<article class="card">
+            <p class="eyebrow">${escapeHtml(item.method ?? "graph")}</p>
+            <h3>${escapeHtml(item.label ?? item.graphId ?? "unknown")}</h3>
+            ${renderKeyValueList([
+              ["Nodes", String(item.nodeCount ?? 0)],
+              ["Edges", String(item.edgeCount ?? 0)],
+              ["Density", formatDiagnosticMetric(item.density ?? null)],
+              ["Isolated nodes", String(item.isolatedNodeCount ?? 0)],
+              ["Avg weighted degree", formatDiagnosticMetric(item.averageWeightedDegree ?? null)]
+            ])}
+          </article>`
+        )
+        .join("")}
+    </section>
+    <div class="stack">
+      <p class="section-label">Graph clustering surfaces</p>
+      <section class="grid">
+        ${(graph.surfaces ?? [])
+          .filter((surface) => surface.surfaceKind === "graph")
+          .map(
+            (surface) => `<article class="card">
+              <p class="eyebrow">${escapeHtml(surface.method ?? "graph surface")}</p>
+              <h3>${escapeHtml(surface.label ?? surface.surfaceId ?? "unknown")}</h3>
+              <div class="meta-chip-row">
+                ${renderMetaChip(`k=${escapeHtml(String(surface.effectiveClusterCount ?? "?"))}`)}
+                ${renderMetaChip(escapeHtml(surface.status ?? "unknown"))}
+              </div>
+              ${renderKeyValueList([
+                ["Embedding-neighbor purity", formatDiagnosticMetric(surface.embeddingNeighborPurityAtK ?? null)],
+                ["Embedding silhouette", formatDiagnosticMetric(surface.embeddingSilhouette ?? null)],
+                ["Largest cluster share", formatDiagnosticRatio(surface.largestClusterShare ?? null)],
+                ["Singleton clusters", String(surface.singletonClusterCount ?? 0)],
+                ["Comparable opinions", String(surface.comparableOpinionCount ?? 0)]
+              ])}
+            </article>`
+          )
+          .join("")}
+      </section>
+    </div>
+  </section>`;
+}
+
 function renderClusteringComparisonSection(
   clustering: AnalysisClusteringSurfaceEvaluationArtifact | null
 ): string {
@@ -3446,8 +3618,69 @@ function renderClusteringComparisonSection(
   </section>`;
 }
 
+function renderGraphComparisonSection(
+  graph: AnalysisGraphBuilderEvaluationArtifact | null
+): string {
+  if (graph === null) {
+    return "";
+  }
+
+  const graphSurfaceIds = new Set(
+    (graph.surfaces ?? [])
+      .filter((surface) => surface.surfaceKind === "graph")
+      .map((surface) => surface.surfaceId)
+      .filter((surfaceId): surfaceId is string => surfaceId !== undefined)
+  );
+  const comparisons = (graph.comparisons ?? []).filter(
+    (comparison) =>
+      graphSurfaceIds.has(comparison.leftSurfaceId ?? "") ||
+      graphSurfaceIds.has(comparison.rightSurfaceId ?? "")
+  );
+
+  return `<section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Graph Agreement</p>
+        <h2>Graph memberships vs baselines</h2>
+      </div>
+    </div>
+    ${
+      comparisons.length === 0
+        ? `<article class="card"><p>No graph comparisons were available.</p></article>`
+        : `<section class="record-list">
+            ${comparisons
+              .slice(0, 12)
+              .map(
+                (comparison) => `<article class="card">
+                  <div class="section-head">
+                    <div>
+                      <p class="eyebrow">Adjusted Rand ${escapeHtml(formatDiagnosticMetric(comparison.adjustedRandIndex ?? null))}</p>
+                      <h3>${escapeHtml(comparison.leftLabel ?? comparison.leftSurfaceId ?? "left")} vs ${escapeHtml(comparison.rightLabel ?? comparison.rightSurfaceId ?? "right")}</h3>
+                    </div>
+                    ${renderMetaChip(`${escapeHtml(String(comparison.comparableOpinionCount ?? 0))} opinions`)}
+                  </div>
+                  ${renderMembershipShiftList(comparison.largestMembershipShifts ?? [])}
+                </article>`
+              )
+              .join("")}
+          </section>`
+    }
+  </section>`;
+}
+
+type DiagnosticMembershipShiftList = Array<{
+  sourceClusterId?: number;
+  sourceClusterSize?: number;
+  fragmentationRate?: number;
+  topDestinationClusters?: Array<{
+    clusterId?: number;
+    count?: number;
+    share?: number;
+  }>;
+}>;
+
 function renderMembershipShiftList(
-  shifts: NonNullable<AnalysisClusteringSurfaceEvaluationArtifact["comparisons"]>[number]["largestMembershipShifts"]
+  shifts: DiagnosticMembershipShiftList | undefined
 ): string {
   if (shifts === undefined || shifts.length === 0) {
     return `<p class="meta">No membership shift detail was available.</p>`;

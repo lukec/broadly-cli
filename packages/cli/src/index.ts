@@ -133,6 +133,7 @@ program
   .option("--offset <count>", "Skip the first N opinion artifacts from the selected run", parsePositiveInteger)
   .option("--evaluate-reducers", "Evaluate existing reducer artifacts for local-neighbor preservation and cluster agreement", false)
   .option("--evaluate-clustering-surfaces", "Compare embedding-space clustering against existing reduction-based cluster artifacts", false)
+  .option("--evaluate-graph-builders", "Compare cheap neighborhood-graph clustering variants against existing cluster artifacts", false)
   .option("--run <runId>", "Analysis run id to evaluate; defaults to current, then latest")
   .option("--neighbor-k <count>", "Neighbor count for analysis evaluation metrics", parsePositiveInteger)
   .action(
@@ -143,6 +144,7 @@ program
       offset?: number;
       evaluateReducers: boolean;
       evaluateClusteringSurfaces: boolean;
+      evaluateGraphBuilders: boolean;
       run?: string;
       neighborK?: number;
     }) => {
@@ -155,6 +157,7 @@ program
         ...(options.offset === undefined ? {} : { offset: options.offset }),
         evaluateReducers: options.evaluateReducers,
         evaluateClusteringSurfaces: options.evaluateClusteringSurfaces,
+        evaluateGraphBuilders: options.evaluateGraphBuilders,
         ...(options.run === undefined ? {} : { run: options.run }),
         ...(options.neighborK === undefined ? {} : { neighborK: options.neighborK })
       });

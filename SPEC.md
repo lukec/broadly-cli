@@ -219,6 +219,7 @@ The current command surface is:
 | `broadly analysis` | Build embeddings, reductions, clusters, semantic hierarchies, and perspective artifacts. |
 | `broadly analysis --evaluate-reducers` | Evaluate existing reduction/cluster artifacts without new model calls. |
 | `broadly analysis --evaluate-clustering-surfaces` | Compare embedding-space clustering against projection-space cluster artifacts. |
+| `broadly analysis --evaluate-graph-builders` | Compare cheap neighborhood-graph clustering variants against existing surfaces. |
 | `broadly report` | Generate `reports/<run-id>/report-bundle.json` from analysis artifacts. |
 | `broadly report site` | Generate a self-contained static HTML report site under `reports/<run-id>/site/`. |
 | `broadly qa` | Run structural and model-assisted QA over analysis/report artifacts. |
@@ -521,6 +522,36 @@ The current evaluator reports:
 - adjusted Rand agreement between embedding-space and projection-space
   clusterings
 - largest cluster membership shifts between compared surfaces
+
+`broadly analysis --evaluate-graph-builders` is a third no-new-model-calls
+diagnostic path. It builds cheap neighborhood graph variants from existing
+embeddings, clusters adjacency-vector representations of those graphs for each
+configured cluster count, then compares graph clusterings against embedding and
+projection surfaces. It writes:
+
+```text
+runs/<run-id>/graph-eval/summary.json
+runs/<run-id>/graph-eval/graphs/<graph-id>.json
+runs/<run-id>/graph-eval/surfaces/<surface-id>.json
+```
+
+The current graph builders are:
+
+- plain kNN
+- mutual kNN
+- shared-neighbor weighted
+
+The current evaluator reports:
+
+- graph edge counts, density, weighted degree, and isolated-node counts
+- embedding-neighbor purity for each graph clustering surface
+- embedding-space silhouette for each graph clustering surface
+- adjusted Rand agreement against embedding and projection baselines
+- largest cluster membership shifts between compared surfaces
+
+The per-graph artifacts preserve graph edges and weights. The per-surface
+artifacts preserve graph-clustering assignments so later repair experiments can
+reuse the graph-builder boundary without regenerating the graph.
 
 Configured views are the durable unit for report variants. A view combines:
 
@@ -893,7 +924,7 @@ failures.
 - statement bank review with status and text edits
 - follow-up voting summary when `vote-summary.json` is attached to a report
 - scatterplots for clustered reductions
-- reducer and clustering-surface diagnostics for analysis runs
+- reducer, clustering-surface, and graph-builder diagnostics for analysis runs
 - theme and cluster exploration
 - cluster detail pages with assigned opinions
 - admin views for comments and opinions

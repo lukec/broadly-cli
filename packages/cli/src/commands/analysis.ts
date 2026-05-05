@@ -47,6 +47,7 @@ export interface AnalysisCommandOptions {
   offset?: number;
   evaluateReducers?: boolean;
   evaluateClusteringSurfaces?: boolean;
+  evaluateGraphBuilders?: boolean;
   run?: string;
   neighborK?: number;
 }
@@ -366,7 +367,7 @@ interface ClusteringSurfaceEvaluationArtifact {
 
 interface ClusteringSurfaceSummary {
   surfaceId: string;
-  surfaceKind: "embedding" | "projection";
+  surfaceKind: "embedding" | "projection" | "graph";
   label: string;
   method: string;
   status: "ready" | "skipped" | "failed";
@@ -406,6 +407,58 @@ interface MembershipShiftSummary {
 interface ClusteringSurfaceWorkingSet {
   summary: ClusteringSurfaceSummary;
   clusterById: Map<string, number>;
+}
+
+interface GraphBuilderEvaluationArtifact {
+  createdAt: string;
+  runId: string;
+  method: "graph-builder-evaluation-v1";
+  parameters: {
+    neighborK: number;
+    silhouetteMaxPoints: number;
+  };
+  source: {
+    manifestPath: string;
+    embeddingsDirs: string[];
+    reductionsDir: string;
+    clustersDir: string;
+    graphsDir: string;
+    graphSurfacesDir: string;
+  };
+  corpus: {
+    embeddingCount: number;
+    graphCount: number;
+    graphSurfaceCount: number;
+    embeddingSurfaceCount: number;
+    projectionSurfaceCount: number;
+    comparableOpinionCount: number;
+  };
+  graphs: GraphBuilderSummary[];
+  surfaces: ClusteringSurfaceSummary[];
+  comparisons: ClusteringSurfaceComparisonSummary[];
+  observations: string[];
+}
+
+interface GraphBuilderSummary {
+  graphId: string;
+  method: "plain-knn" | "mutual-knn" | "shared-neighbor";
+  label: string;
+  neighborK: number;
+  nodeCount: number;
+  edgeCount: number;
+  density: number;
+  isolatedNodeCount: number;
+  averageWeightedDegree: number;
+}
+
+interface GraphBuilderArtifact {
+  graphId: string;
+  method: GraphBuilderSummary["method"];
+  label: string;
+  neighborK: number;
+  opinionIds: string[];
+  adjacency: Map<string, Map<string, number>>;
+  summary: GraphBuilderSummary;
 }
 
 interface AnalysisRunManifest {
@@ -584,13 +637,21 @@ interface AnalysisViewGroup {
 type ReviewStatusCounts = Record<ReviewStatus, number>;
 
 export async function runAnalysis(options: AnalysisCommandOptions): Promise<void> {
-  if (options.evaluateReducers === true || options.evaluateClusteringSurfaces === true) {
+  if (
+    options.evaluateReducers === true ||
+    options.evaluateClusteringSurfaces === true ||
+    options.evaluateGraphBuilders === true
+  ) {
     if (options.evaluateReducers === true) {
       await evaluateAnalysisReducers(options);
     }
 
     if (options.evaluateClusteringSurfaces === true) {
       await evaluateAnalysisClusteringSurfaces(options);
+    }
+
+    if (options.evaluateGraphBuilders === true) {
+      await evaluateAnalysisGraphBuilders(options);
     }
 
     return;
@@ -2415,7 +2476,7 @@ function buildProjectionClusteringSurface(
 
 function summarizeClusteringSurface(options: {
   surfaceId: string;
-  surfaceKind: "embedding" | "projection";
+  surfaceKind: "embedding" | "projection" | "graph";
   label: string;
   method: string;
   status: "ready" | "skipped" | "failed";
@@ -2697,6 +2758,645 @@ function renderClusteringSurfaceConsoleSummary(
   ];
 
   return `\n${lines.join("\n")}\n`;
+}
+
+async function evaluateAnalysisGraphBuilders(options: AnalysisCommandOptions): Promise<void> {
+  const projectRoot = await resolveCommandProjectRoot(options.project);
+  const neighborK = options.neighborK ?? DEFAULT_REDUCER_EVALUATION_NEIGHBOR_K;
+
+  await withProjectActionLog({
+    projectRoot,
+    command: "analysis evaluate-graph-builders",
+    details: {
+      run: options.run ?? "(current/latest)",
+      neighborK
+    },
+    action: async () => {
+      const projectPaths = resolveProjectPaths(projectRoot);
+      const resolvedRun = await resolveReducerEvaluationRun(projectPaths, options.run);
+      const manifestPath = path.join(resolvedRun.runDir, "manifest.json");
+      const manifest = await readJsonFile<AnalysisRunManifest>(manifestPath);
+
+      if (manifest === null) {
+        throw new Error(`Analysis run '${resolvedRun.runId}' does not have a readable manifest.`);
+      }
+
+      const reductionsDir = manifest.output.reductionsDir || path.join(resolvedRun.runDir, "reductions");
+      const clustersDir = manifest.output.clustersDir || path.join(resolvedRun.runDir, "clusters");
+      const embeddingsDirs = resolveReducerEvaluationEmbeddingDirs(manifest);
+      const embeddingsById = await loadReducerEvaluationEmbeddings(embeddingsDirs);
+      const clusterEntries = await loadReducerEvaluationClusters(clustersDir);
+      const comparableOpinionIds = sortedUnique([...embeddingsById.keys()]);
+      const clusterCounts = uniqueNumberList(
+        clusterEntries
+          .map((entry) => entry.artifact.requestedClusterCount)
+          .filter((value) => Number.isFinite(value) && value > 0)
+      );
+      const graphArtifacts = buildGraphBuilderArtifacts({
+        opinionIds: comparableOpinionIds,
+        embeddingsById,
+        neighborK
+      });
+      const graphSurfaces = graphArtifacts.flatMap((graph) =>
+        clusterCounts.map((clusterCount) =>
+          buildGraphClusteringSurface({
+            graph,
+            clusterCount,
+            embeddingsById,
+            neighborK,
+            runId: resolvedRun.runId
+          })
+        )
+      );
+      const embeddingSurfaces = clusterCounts.map((clusterCount) =>
+        buildEmbeddingClusteringSurface({
+          runId: resolvedRun.runId,
+          clusterCount,
+          opinionIds: comparableOpinionIds,
+          embeddingsById,
+          neighborK
+        })
+      );
+      const projectionSurfaces = clusterEntries.map((entry) =>
+        buildProjectionClusteringSurface(entry, embeddingsById, neighborK)
+      );
+      const surfaces = [...embeddingSurfaces, ...projectionSurfaces, ...graphSurfaces];
+      const comparisons = compareClusteringSurfaces(surfaces);
+      const surfaceOpinionIds = new Set<string>();
+      const graphEvalDir = path.join(resolvedRun.runDir, "graph-eval");
+      const graphsDir = path.join(graphEvalDir, "graphs");
+      const graphSurfacesDir = path.join(graphEvalDir, "surfaces");
+
+      for (const surface of surfaces) {
+        for (const opinionId of surface.clusterById.keys()) {
+          surfaceOpinionIds.add(opinionId);
+        }
+      }
+
+      for (const graph of graphArtifacts) {
+        await writeJsonFile(
+          path.join(graphsDir, `${graph.graphId}.json`),
+          serializeGraphBuilderArtifact(graph)
+        );
+      }
+
+      for (const surface of graphSurfaces) {
+        await writeJsonFile(
+          path.join(graphSurfacesDir, `${surface.summary.surfaceId}.json`),
+          serializeClusteringSurfaceAssignments(surface)
+        );
+      }
+
+      const summary: GraphBuilderEvaluationArtifact = {
+        createdAt: new Date().toISOString(),
+        runId: resolvedRun.runId,
+        method: "graph-builder-evaluation-v1",
+        parameters: {
+          neighborK,
+          silhouetteMaxPoints: REDUCER_EVALUATION_SILHOUETTE_MAX_POINTS
+        },
+        source: {
+          manifestPath,
+          embeddingsDirs,
+          reductionsDir,
+          clustersDir,
+          graphsDir,
+          graphSurfacesDir
+        },
+        corpus: {
+          embeddingCount: embeddingsById.size,
+          graphCount: graphArtifacts.length,
+          graphSurfaceCount: graphSurfaces.length,
+          embeddingSurfaceCount: embeddingSurfaces.length,
+          projectionSurfaceCount: projectionSurfaces.length,
+          comparableOpinionCount: surfaceOpinionIds.size
+        },
+        graphs: graphArtifacts.map((graph) => graph.summary),
+        surfaces: surfaces.map((surface) => surface.summary),
+        comparisons,
+        observations: []
+      };
+
+      summary.observations = buildGraphBuilderObservations(summary);
+
+      const outputPath = path.join(graphEvalDir, "summary.json");
+      await writeJsonFile(outputPath, summary);
+
+      process.stdout.write(renderGraphBuilderConsoleSummary(projectRoot, outputPath, summary));
+    }
+  });
+}
+
+function buildGraphBuilderArtifacts(options: {
+  opinionIds: string[];
+  embeddingsById: Map<string, EmbeddingArtifact>;
+  neighborK: number;
+}): GraphBuilderArtifact[] {
+  const neighborCandidates = buildEmbeddingNeighborCandidates(
+    options.opinionIds,
+    options.embeddingsById,
+    options.neighborK
+  );
+
+  return [
+    buildPlainKnnGraph(options.opinionIds, neighborCandidates, options.neighborK),
+    buildMutualKnnGraph(options.opinionIds, neighborCandidates, options.neighborK),
+    buildSharedNeighborGraph(options.opinionIds, neighborCandidates, options.neighborK)
+  ];
+}
+
+function buildEmbeddingNeighborCandidates(
+  opinionIds: string[],
+  embeddingsById: Map<string, EmbeddingArtifact>,
+  neighborK: number
+): Map<string, Array<{ opinionId: string; distance: number; weight: number }>> {
+  const candidatesById = new Map<string, Array<{ opinionId: string; distance: number; weight: number }>>();
+
+  for (const opinionId of opinionIds) {
+    const embedding = embeddingsById.get(opinionId);
+
+    if (embedding === undefined) {
+      candidatesById.set(opinionId, []);
+      continue;
+    }
+
+    const candidates = opinionIds
+      .filter((candidateId) => candidateId !== opinionId)
+      .map((candidateId) => {
+        const candidateEmbedding = embeddingsById.get(candidateId);
+        const distance =
+          candidateEmbedding === undefined
+            ? Number.POSITIVE_INFINITY
+            : cosineDistance(embedding.vector, candidateEmbedding.vector);
+
+        return {
+          opinionId: candidateId,
+          distance,
+          weight: cosineDistanceToGraphWeight(distance)
+        };
+      })
+      .filter((candidate) => Number.isFinite(candidate.distance))
+      .sort(
+        (left, right) =>
+          left.distance - right.distance || left.opinionId.localeCompare(right.opinionId)
+      )
+      .slice(0, neighborK);
+
+    candidatesById.set(opinionId, candidates);
+  }
+
+  return candidatesById;
+}
+
+function buildPlainKnnGraph(
+  opinionIds: string[],
+  neighborCandidates: Map<string, Array<{ opinionId: string; weight: number }>>,
+  neighborK: number
+): GraphBuilderArtifact {
+  const adjacency = createEmptyGraphAdjacency(opinionIds);
+
+  for (const [opinionId, candidates] of neighborCandidates.entries()) {
+    for (const candidate of candidates) {
+      addUndirectedGraphEdge(adjacency, opinionId, candidate.opinionId, candidate.weight);
+    }
+  }
+
+  return finalizeGraphBuilderArtifact({
+    graphId: "plain-knn",
+    method: "plain-knn",
+    label: "Plain kNN",
+    neighborK,
+    opinionIds,
+    adjacency
+  });
+}
+
+function buildMutualKnnGraph(
+  opinionIds: string[],
+  neighborCandidates: Map<string, Array<{ opinionId: string; weight: number }>>,
+  neighborK: number
+): GraphBuilderArtifact {
+  const adjacency = createEmptyGraphAdjacency(opinionIds);
+  const neighborSets = new Map(
+    [...neighborCandidates.entries()].map(([opinionId, candidates]) => [
+      opinionId,
+      new Set(candidates.map((candidate) => candidate.opinionId))
+    ])
+  );
+
+  for (const [opinionId, candidates] of neighborCandidates.entries()) {
+    for (const candidate of candidates) {
+      if (neighborSets.get(candidate.opinionId)?.has(opinionId) === true) {
+        addUndirectedGraphEdge(adjacency, opinionId, candidate.opinionId, candidate.weight);
+      }
+    }
+  }
+
+  return finalizeGraphBuilderArtifact({
+    graphId: "mutual-knn",
+    method: "mutual-knn",
+    label: "Mutual kNN",
+    neighborK,
+    opinionIds,
+    adjacency
+  });
+}
+
+function buildSharedNeighborGraph(
+  opinionIds: string[],
+  neighborCandidates: Map<string, Array<{ opinionId: string; weight: number }>>,
+  neighborK: number
+): GraphBuilderArtifact {
+  const adjacency = createEmptyGraphAdjacency(opinionIds);
+  const neighborSets = new Map(
+    [...neighborCandidates.entries()].map(([opinionId, candidates]) => [
+      opinionId,
+      new Set(candidates.map((candidate) => candidate.opinionId))
+    ])
+  );
+  const directWeights = new Map<string, number>();
+
+  for (const [opinionId, candidates] of neighborCandidates.entries()) {
+    for (const candidate of candidates) {
+      directWeights.set(
+        graphEdgeKey(opinionId, candidate.opinionId),
+        Math.max(directWeights.get(graphEdgeKey(opinionId, candidate.opinionId)) ?? 0, candidate.weight)
+      );
+    }
+  }
+
+  for (let leftIndex = 0; leftIndex < opinionIds.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < opinionIds.length; rightIndex += 1) {
+      const leftId = opinionIds[leftIndex];
+      const rightId = opinionIds[rightIndex];
+
+      if (leftId === undefined || rightId === undefined) {
+        continue;
+      }
+
+      const leftNeighbors = neighborSets.get(leftId) ?? new Set<string>();
+      const rightNeighbors = neighborSets.get(rightId) ?? new Set<string>();
+      const sharedCount = countSetIntersection(leftNeighbors, rightNeighbors);
+      const sharedUnionCount = leftNeighbors.size + rightNeighbors.size - sharedCount;
+      const sharedWeight = sharedUnionCount === 0 ? 0 : sharedCount / sharedUnionCount;
+      const directWeight = directWeights.get(graphEdgeKey(leftId, rightId)) ?? 0;
+      const weight = sharedWeight + directWeight * 0.25;
+
+      if (weight > 0) {
+        addUndirectedGraphEdge(adjacency, leftId, rightId, weight);
+      }
+    }
+  }
+
+  return finalizeGraphBuilderArtifact({
+    graphId: "shared-neighbor",
+    method: "shared-neighbor",
+    label: "Shared-neighbor weighted",
+    neighborK,
+    opinionIds,
+    adjacency
+  });
+}
+
+function createEmptyGraphAdjacency(opinionIds: string[]): Map<string, Map<string, number>> {
+  return new Map(opinionIds.map((opinionId) => [opinionId, new Map<string, number>()]));
+}
+
+function addUndirectedGraphEdge(
+  adjacency: Map<string, Map<string, number>>,
+  leftId: string,
+  rightId: string,
+  weight: number
+): void {
+  if (leftId === rightId || !Number.isFinite(weight) || weight <= 0) {
+    return;
+  }
+
+  const leftEdges = adjacency.get(leftId);
+  const rightEdges = adjacency.get(rightId);
+
+  if (leftEdges === undefined || rightEdges === undefined) {
+    return;
+  }
+
+  leftEdges.set(rightId, Math.max(leftEdges.get(rightId) ?? 0, weight));
+  rightEdges.set(leftId, Math.max(rightEdges.get(leftId) ?? 0, weight));
+}
+
+function finalizeGraphBuilderArtifact(options: {
+  graphId: string;
+  method: GraphBuilderSummary["method"];
+  label: string;
+  neighborK: number;
+  opinionIds: string[];
+  adjacency: Map<string, Map<string, number>>;
+}): GraphBuilderArtifact {
+  const edgeCount =
+    [...options.adjacency.values()].reduce((sum, edges) => sum + edges.size, 0) / 2;
+  const possibleEdgeCount = chooseTwo(options.opinionIds.length);
+  const weightedDegreeSum = [...options.adjacency.values()].reduce(
+    (sum, edges) =>
+      sum + [...edges.values()].reduce((edgeSum, weight) => edgeSum + weight, 0),
+    0
+  );
+  const summary: GraphBuilderSummary = {
+    graphId: options.graphId,
+    method: options.method,
+    label: options.label,
+    neighborK: options.neighborK,
+    nodeCount: options.opinionIds.length,
+    edgeCount,
+    density: roundMetric(safeRatio(edgeCount, possibleEdgeCount)),
+    isolatedNodeCount: [...options.adjacency.values()].filter((edges) => edges.size === 0).length,
+    averageWeightedDegree: roundMetric(safeRatio(weightedDegreeSum, Math.max(1, options.opinionIds.length)))
+  };
+
+  return {
+    graphId: options.graphId,
+    method: options.method,
+    label: options.label,
+    neighborK: options.neighborK,
+    opinionIds: [...options.opinionIds],
+    adjacency: options.adjacency,
+    summary
+  };
+}
+
+function buildGraphClusteringSurface(options: {
+  graph: GraphBuilderArtifact;
+  clusterCount: number;
+  embeddingsById: Map<string, EmbeddingArtifact>;
+  neighborK: number;
+  runId: string;
+}): ClusteringSurfaceWorkingSet {
+  const opinionIds = options.graph.opinionIds.filter((opinionId) =>
+    options.embeddingsById.has(opinionId)
+  );
+  const effectiveClusterCount = Math.max(1, Math.min(options.clusterCount, opinionIds.length));
+  const clusterById = new Map<string, number>();
+
+  if (opinionIds.length === 1) {
+    const onlyOpinionId = opinionIds[0];
+
+    if (onlyOpinionId !== undefined) {
+      clusterById.set(onlyOpinionId, 0);
+    }
+  } else if (opinionIds.length > 1) {
+    const vectors = buildGraphFeatureVectors(opinionIds, options.graph.adjacency);
+    const result = kmeans(vectors, effectiveClusterCount, {
+      seed: positiveIntegerSeed(
+        `graph-surface:${options.runId}:${options.graph.graphId}:k${options.clusterCount}`
+      ),
+      initialization: "kmeans++",
+      maxIterations: 100
+    });
+
+    opinionIds.forEach((opinionId, index) => {
+      clusterById.set(opinionId, result.clusters[index] ?? 0);
+    });
+  }
+
+  return {
+    summary: summarizeClusteringSurface({
+      surfaceId: `graph-${options.graph.graphId}-k${options.clusterCount}`,
+      surfaceKind: "graph",
+      label: `${options.graph.label} k=${options.clusterCount}`,
+      method: "graph-adjacency-kmeans",
+      status: opinionIds.length === 0 ? "failed" : "ready",
+      requestedClusterCount: options.clusterCount,
+      effectiveClusterCount,
+      clusterById,
+      embeddingsById: options.embeddingsById,
+      neighborK: options.neighborK
+    }),
+    clusterById
+  };
+}
+
+function buildGraphFeatureVectors(
+  opinionIds: string[],
+  adjacency: Map<string, Map<string, number>>
+): number[][] {
+  const indexByOpinionId = new Map(opinionIds.map((opinionId, index) => [opinionId, index]));
+
+  return opinionIds.map((opinionId, rowIndex) => {
+    const vector = new Array(opinionIds.length).fill(0) as number[];
+    vector[rowIndex] = 1;
+
+    for (const [neighborId, weight] of adjacency.get(opinionId)?.entries() ?? []) {
+      const neighborIndex = indexByOpinionId.get(neighborId);
+
+      if (neighborIndex !== undefined) {
+        vector[neighborIndex] = weight;
+      }
+    }
+
+    return vector;
+  });
+}
+
+function serializeGraphBuilderArtifact(graph: GraphBuilderArtifact): {
+  graphId: string;
+  method: GraphBuilderSummary["method"];
+  label: string;
+  neighborK: number;
+  summary: GraphBuilderSummary;
+  nodes: string[];
+  edges: Array<{ leftOpinionId: string; rightOpinionId: string; weight: number }>;
+} {
+  const edges: Array<{ leftOpinionId: string; rightOpinionId: string; weight: number }> = [];
+
+  for (const [leftOpinionId, neighbors] of graph.adjacency.entries()) {
+    for (const [rightOpinionId, weight] of neighbors.entries()) {
+      if (leftOpinionId < rightOpinionId) {
+        edges.push({
+          leftOpinionId,
+          rightOpinionId,
+          weight: roundMetric(weight)
+        });
+      }
+    }
+  }
+
+  edges.sort(
+    (left, right) =>
+      left.leftOpinionId.localeCompare(right.leftOpinionId) ||
+      left.rightOpinionId.localeCompare(right.rightOpinionId)
+  );
+
+  return {
+    graphId: graph.graphId,
+    method: graph.method,
+    label: graph.label,
+    neighborK: graph.neighborK,
+    summary: graph.summary,
+    nodes: [...graph.opinionIds],
+    edges
+  };
+}
+
+function serializeClusteringSurfaceAssignments(surface: ClusteringSurfaceWorkingSet): {
+  surface: ClusteringSurfaceSummary;
+  assignments: Array<{ opinionId: string; clusterId: number }>;
+} {
+  return {
+    surface: surface.summary,
+    assignments: [...surface.clusterById.entries()]
+      .map(([opinionId, clusterId]) => ({
+        opinionId,
+        clusterId
+      }))
+      .sort(
+        (left, right) =>
+          left.clusterId - right.clusterId || left.opinionId.localeCompare(right.opinionId)
+      )
+  };
+}
+
+function buildGraphBuilderObservations(summary: GraphBuilderEvaluationArtifact): string[] {
+  const observations: string[] = [];
+  const graphSurfaces = summary.surfaces.filter(
+    (surface) => surface.surfaceKind === "graph" && surface.embeddingNeighborPurityAtK !== null
+  );
+  const bestGraphSurface = [...graphSurfaces].sort(
+    (left, right) =>
+      (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1)
+  )[0];
+  const nonGraphSurfaces = summary.surfaces.filter(
+    (surface) => surface.surfaceKind !== "graph" && surface.embeddingNeighborPurityAtK !== null
+  );
+  const bestNonGraphSurface = [...nonGraphSurfaces].sort(
+    (left, right) =>
+      (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1)
+  )[0];
+
+  if (bestGraphSurface !== undefined) {
+    observations.push(
+      `${bestGraphSurface.label} was the strongest graph clustering surface at embedding-neighbor purity ${formatMetric(bestGraphSurface.embeddingNeighborPurityAtK)}.`
+    );
+  }
+
+  if (bestGraphSurface !== undefined && bestNonGraphSurface !== undefined) {
+    const graphPurity = bestGraphSurface.embeddingNeighborPurityAtK ?? 0;
+    const baselinePurity = bestNonGraphSurface.embeddingNeighborPurityAtK ?? 0;
+
+    observations.push(
+      graphPurity > baselinePurity
+        ? `Best graph clustering beat the best existing non-graph surface (${formatMetric(graphPurity)} vs ${formatMetric(baselinePurity)}).`
+        : `Best graph clustering did not beat the best existing non-graph surface (${formatMetric(graphPurity)} vs ${formatMetric(baselinePurity)}).`
+    );
+  }
+
+  const disconnectedGraphs = summary.graphs.filter((graph) => graph.isolatedNodeCount > 0);
+
+  if (disconnectedGraphs.length > 0) {
+    observations.push(
+      `${disconnectedGraphs.map((graph) => graph.label).join(", ")} produced isolated nodes; this can make graph clustering brittle.`
+    );
+  }
+
+  const surfaceById = new Map(summary.surfaces.map((surface) => [surface.surfaceId, surface]));
+  const lowAgreementGraphComparisons = summary.comparisons.filter((comparison) => {
+    const left = surfaceById.get(comparison.leftSurfaceId);
+    const right = surfaceById.get(comparison.rightSurfaceId);
+
+    return (
+      left !== undefined &&
+      right !== undefined &&
+      (left.surfaceKind === "graph" || right.surfaceKind === "graph") &&
+      left.surfaceKind !== right.surfaceKind &&
+      left.requestedClusterCount === right.requestedClusterCount &&
+      comparison.adjustedRandIndex !== null &&
+      comparison.adjustedRandIndex < 0.5
+    );
+  });
+
+  if (lowAgreementGraphComparisons.length > 0) {
+    observations.push(
+      `${lowAgreementGraphComparisons.length} graph-vs-baseline comparison(s) with matching cluster counts had ARI below 0.5.`
+    );
+  }
+
+  return observations;
+}
+
+function renderGraphBuilderConsoleSummary(
+  projectRoot: string,
+  outputPath: string,
+  summary: GraphBuilderEvaluationArtifact
+): string {
+  const surfaceById = new Map(summary.surfaces.map((surface) => [surface.surfaceId, surface]));
+  const graphComparisons = summary.comparisons.filter((comparison) => {
+    const left = surfaceById.get(comparison.leftSurfaceId);
+    const right = surfaceById.get(comparison.rightSurfaceId);
+
+    return (
+      left !== undefined &&
+      right !== undefined &&
+      (left.surfaceKind === "graph" || right.surfaceKind === "graph") &&
+      left.surfaceKind !== right.surfaceKind &&
+      left.requestedClusterCount === right.requestedClusterCount
+    );
+  });
+  const lines = [
+    color.heading("Broadly Graph Builder Evaluation"),
+    color.muted(rule("=")),
+    formatDetailLine("Project", projectRoot),
+    formatDetailLine("Run", summary.runId),
+    formatDetailLine(
+      "Corpus",
+      `${summary.corpus.comparableOpinionCount} comparable opinions · ${summary.corpus.embeddingCount} embeddings`
+    ),
+    formatDetailLine(
+      "Graphs",
+      `${summary.corpus.graphCount} builders · ${summary.corpus.graphSurfaceCount} graph surfaces`
+    ),
+    ...summary.graphs.map((graph) =>
+      formatDetailLine(
+        graph.label,
+        `${graph.edgeCount} edges · density ${formatMetric(graph.density)} · isolated ${graph.isolatedNodeCount}`
+      )
+    ),
+    ...summary.surfaces
+      .filter((surface) => surface.surfaceKind === "graph")
+      .map((surface) =>
+        formatDetailLine(
+          surface.label,
+          `purity ${formatMetric(surface.embeddingNeighborPurityAtK)} · silhouette ${formatMetric(surface.embeddingSilhouette)}`
+        )
+      ),
+    ...graphComparisons.slice(0, 6).map((comparison) =>
+      formatDetailLine(
+        "Compare",
+        `${comparison.leftLabel} vs ${comparison.rightLabel}: ARI ${formatMetric(comparison.adjustedRandIndex)}`
+      )
+    ),
+    ...summary.observations.map((observation) => formatDetailLine("Note", observation)),
+    formatDetailLine("Output", toPortableRelativePath(projectRoot, outputPath))
+  ];
+
+  return `\n${lines.join("\n")}\n`;
+}
+
+function cosineDistanceToGraphWeight(distance: number): number {
+  return Number.isFinite(distance) ? 1 / (1 + Math.max(0, distance)) : 0;
+}
+
+function graphEdgeKey(leftId: string, rightId: string): string {
+  return leftId < rightId ? `${leftId}:${rightId}` : `${rightId}:${leftId}`;
+}
+
+function countSetIntersection<T>(left: Set<T>, right: Set<T>): number {
+  let count = 0;
+  const [smaller, larger] = left.size <= right.size ? [left, right] : [right, left];
+
+  for (const value of smaller) {
+    if (larger.has(value)) {
+      count += 1;
+    }
+  }
+
+  return count;
 }
 
 function sortedUnique(values: string[]): string[] {
