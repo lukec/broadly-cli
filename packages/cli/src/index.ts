@@ -131,12 +131,18 @@ program
   .option("--embedding-model <name>", "Project model alias to use for embeddings")
   .option("--limit <count>", "Only process the first N opinion artifacts from the selected run", parsePositiveInteger)
   .option("--offset <count>", "Skip the first N opinion artifacts from the selected run", parsePositiveInteger)
+  .option("--evaluate-reducers", "Evaluate existing reducer artifacts for local-neighbor preservation and cluster agreement", false)
+  .option("--run <runId>", "Analysis run id to evaluate; defaults to current, then latest")
+  .option("--neighbor-k <count>", "Neighbor count for reducer evaluation metrics", parsePositiveInteger)
   .action(
     async (options: {
       project?: string;
       embeddingModel?: string;
       limit?: number;
       offset?: number;
+      evaluateReducers: boolean;
+      run?: string;
+      neighborK?: number;
     }) => {
       await runAnalysis({
         ...(options.project === undefined ? {} : { project: options.project }),
@@ -144,7 +150,10 @@ program
           ? {}
           : { embeddingModel: options.embeddingModel }),
         ...(options.limit === undefined ? {} : { limit: options.limit }),
-        ...(options.offset === undefined ? {} : { offset: options.offset })
+        ...(options.offset === undefined ? {} : { offset: options.offset }),
+        evaluateReducers: options.evaluateReducers,
+        ...(options.run === undefined ? {} : { run: options.run }),
+        ...(options.neighborK === undefined ? {} : { neighborK: options.neighborK })
       });
     }
   );

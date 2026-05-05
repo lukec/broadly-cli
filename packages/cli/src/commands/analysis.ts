@@ -45,6 +45,9 @@ export interface AnalysisCommandOptions {
   embeddingModel?: string;
   limit?: number;
   offset?: number;
+  evaluateReducers?: boolean;
+  run?: string;
+  neighborK?: number;
 }
 
 interface OpinionArtifact {
@@ -254,6 +257,86 @@ interface ClusterHierarchyArtifact {
   }>;
 }
 
+interface ReducerEvaluationArtifact {
+  createdAt: string;
+  runId: string;
+  method: "reducer-evaluation-v1";
+  parameters: {
+    neighborK: number;
+    silhouetteMaxPoints: number;
+  };
+  source: {
+    manifestPath: string;
+    embeddingsDirs: string[];
+    reductionsDir: string;
+    clustersDir: string;
+  };
+  corpus: {
+    embeddingCount: number;
+    reductionCount: number;
+    readyReductionCount: number;
+    clusterArtifactCount: number;
+    comparableOpinionCount: number;
+  };
+  reductions: ReductionEvaluationSummary[];
+  clusters: ClusterEvaluationSummary[];
+  clusterAgreement: ClusterAgreementSummary[];
+  observations: string[];
+}
+
+interface ReductionEvaluationSummary {
+  method: string;
+  artifactPath: string;
+  status: ReductionArtifact["status"];
+  pointCount: number;
+  comparableOpinionCount: number;
+  neighborRecallAtK: {
+    k: number;
+    mean: number | null;
+    median: number | null;
+  };
+  projection: ProjectionDiagnostics;
+}
+
+interface ProjectionDiagnostics {
+  finiteCoordinateRate: number;
+  xRange: number;
+  yRange: number;
+  area: number;
+  duplicateCoordinateCount: number;
+  duplicateCoordinateRate: number;
+  maxDistanceFromCentroid: number;
+  outlierCount: number;
+  outlierRate: number;
+}
+
+interface ClusterEvaluationSummary {
+  viewName: string;
+  method: string;
+  artifactPath: string;
+  status: ClusterArtifact["status"];
+  requestedClusterCount: number;
+  effectiveClusterCount: number;
+  memberCount: number;
+  comparableOpinionCount: number;
+  singletonClusterCount: number;
+  largestClusterSize: number;
+  largestClusterShare: number;
+  embeddingNeighborPurityAtK: number | null;
+  projectionNeighborPurityAtK: number | null;
+  projectionSilhouette: number | null;
+  embeddingSilhouette: number | null;
+}
+
+interface ClusterAgreementSummary {
+  leftViewName: string;
+  rightViewName: string;
+  leftMethod: string;
+  rightMethod: string;
+  comparableOpinionCount: number;
+  adjustedRandIndex: number | null;
+}
+
 interface AnalysisRunManifest {
   runId: string;
   createdAt: string;
@@ -430,6 +513,11 @@ interface AnalysisViewGroup {
 type ReviewStatusCounts = Record<ReviewStatus, number>;
 
 export async function runAnalysis(options: AnalysisCommandOptions): Promise<void> {
+  if (options.evaluateReducers === true) {
+    await evaluateAnalysisReducers(options);
+    return;
+  }
+
   const projectRoot = await resolveCommandProjectRoot(options.project);
   await withProjectActionLog({
     projectRoot,
@@ -1250,6 +1338,892 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
       process.stdout.write(`\n${lines.join("\n")}\n`);
     }
   });
+}
+
+const DEFAULT_REDUCER_EVALUATION_NEIGHBOR_K = 10;
+const REDUCER_EVALUATION_SILHOUETTE_MAX_POINTS = 1500;
+
+async function evaluateAnalysisReducers(options: AnalysisCommandOptions): Promise<void> {
+  const projectRoot = await resolveCommandProjectRoot(options.project);
+  const neighborK = options.neighborK ?? DEFAULT_REDUCER_EVALUATION_NEIGHBOR_K;
+
+  await withProjectActionLog({
+    projectRoot,
+    command: "analysis evaluate-reducers",
+    details: {
+      run: options.run ?? "(current/latest)",
+      neighborK
+    },
+    action: async () => {
+      const projectPaths = resolveProjectPaths(projectRoot);
+      const resolvedRun = await resolveReducerEvaluationRun(projectPaths, options.run);
+      const manifestPath = path.join(resolvedRun.runDir, "manifest.json");
+      const manifest = await readJsonFile<AnalysisRunManifest>(manifestPath);
+
+      if (manifest === null) {
+        throw new Error(`Analysis run '${resolvedRun.runId}' does not have a readable manifest.`);
+      }
+
+      const reductionsDir = manifest.output.reductionsDir || path.join(resolvedRun.runDir, "reductions");
+      const clustersDir = manifest.output.clustersDir || path.join(resolvedRun.runDir, "clusters");
+      const embeddingsDirs = resolveReducerEvaluationEmbeddingDirs(manifest);
+      const embeddingsById = await loadReducerEvaluationEmbeddings(embeddingsDirs);
+      const reductions = await loadReducerEvaluationReductions(reductionsDir);
+      const clusters = await loadReducerEvaluationClusters(clustersDir);
+      const reductionSummaries = reductions.map((entry) =>
+        evaluateReductionArtifact(entry, embeddingsById, neighborK)
+      );
+      const clusterSummaries = clusters.map((entry) =>
+        evaluateClusterArtifact(entry, embeddingsById, neighborK)
+      );
+      const clusterAgreement = evaluateClusterAgreement(clusters);
+      const comparableOpinionIds = new Set<string>();
+
+      for (const reduction of reductions) {
+        if (reduction.artifact.status !== "ready") {
+          continue;
+        }
+
+        for (const point of reduction.artifact.points) {
+          if (embeddingsById.has(point.opinionId)) {
+            comparableOpinionIds.add(point.opinionId);
+          }
+        }
+      }
+
+      const summary: ReducerEvaluationArtifact = {
+        createdAt: new Date().toISOString(),
+        runId: resolvedRun.runId,
+        method: "reducer-evaluation-v1",
+        parameters: {
+          neighborK,
+          silhouetteMaxPoints: REDUCER_EVALUATION_SILHOUETTE_MAX_POINTS
+        },
+        source: {
+          manifestPath,
+          embeddingsDirs,
+          reductionsDir,
+          clustersDir
+        },
+        corpus: {
+          embeddingCount: embeddingsById.size,
+          reductionCount: reductions.length,
+          readyReductionCount: reductions.filter((entry) => entry.artifact.status === "ready").length,
+          clusterArtifactCount: clusters.length,
+          comparableOpinionCount: comparableOpinionIds.size
+        },
+        reductions: reductionSummaries,
+        clusters: clusterSummaries,
+        clusterAgreement,
+        observations: []
+      };
+
+      summary.observations = buildReducerEvaluationObservations(summary);
+
+      const outputPath = path.join(resolvedRun.runDir, "reducer-eval", "summary.json");
+      await writeJsonFile(outputPath, summary);
+
+      process.stdout.write(renderReducerEvaluationConsoleSummary(projectRoot, outputPath, summary));
+    }
+  });
+}
+
+async function resolveReducerEvaluationRun(
+  projectPaths: ReturnType<typeof resolveProjectPaths>,
+  explicitRunId: string | undefined
+): Promise<{ runId: string; runDir: string }> {
+  if (explicitRunId !== undefined) {
+    const explicitRunDir = path.join(projectPaths.runsDir, explicitRunId);
+    const manifest = await readJsonFile<AnalysisRunManifest>(path.join(explicitRunDir, "manifest.json"));
+
+    if (manifest === null) {
+      throw new Error(`Analysis run '${explicitRunId}' was not found or has no manifest.`);
+    }
+
+    return {
+      runId: explicitRunId,
+      runDir: explicitRunDir
+    };
+  }
+
+  const currentRunId = await readCurrentRunId(projectPaths.analysisCurrentRunPath);
+
+  if (currentRunId !== null) {
+    const currentRunDir = path.join(projectPaths.runsDir, currentRunId);
+    const manifest = await readJsonFile<AnalysisRunManifest>(path.join(currentRunDir, "manifest.json"));
+
+    if (manifest !== null) {
+      return {
+        runId: currentRunId,
+        runDir: currentRunDir
+      };
+    }
+  }
+
+  const entries = await readdir(projectPaths.runsDir, { withFileTypes: true }).catch(() => []);
+  const runs: Array<{ runId: string; runDir: string; createdAt: string }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const runDir = path.join(projectPaths.runsDir, entry.name);
+    const manifest = await readJsonFile<{ createdAt?: string }>(path.join(runDir, "manifest.json"));
+
+    if (manifest?.createdAt !== undefined) {
+      runs.push({
+        runId: entry.name,
+        runDir,
+        createdAt: manifest.createdAt
+      });
+    }
+  }
+
+  runs.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+  const latest = runs[0];
+
+  if (latest === undefined) {
+    throw new Error("No analysis runs were found. Run broadly analysis first.");
+  }
+
+  return {
+    runId: latest.runId,
+    runDir: latest.runDir
+  };
+}
+
+function resolveReducerEvaluationEmbeddingDirs(manifest: AnalysisRunManifest): string[] {
+  const groupDirs = (manifest.input.groups ?? [])
+    .map((group) => group.embeddingsDir)
+    .filter((value) => value.trim().length > 0);
+  const dirs = groupDirs.length === 0 ? [manifest.output.embeddingsDir] : groupDirs;
+  return uniqueList(dirs.filter((value) => value.trim().length > 0));
+}
+
+async function loadReducerEvaluationEmbeddings(
+  embeddingsDirs: string[]
+): Promise<Map<string, EmbeddingArtifact>> {
+  const embeddingsById = new Map<string, EmbeddingArtifact>();
+
+  for (const embeddingsDir of embeddingsDirs) {
+    const entries = await readdir(embeddingsDir, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === "manifest.json") {
+        continue;
+      }
+
+      const artifact = await readJsonFile<EmbeddingArtifact>(path.join(embeddingsDir, entry.name));
+
+      if (isReducerEvaluationEmbeddingArtifact(artifact)) {
+        embeddingsById.set(artifact.opinionId, artifact);
+      }
+    }
+  }
+
+  return embeddingsById;
+}
+
+function isReducerEvaluationEmbeddingArtifact(
+  artifact: EmbeddingArtifact | null
+): artifact is EmbeddingArtifact {
+  return (
+    artifact !== null &&
+    typeof artifact.opinionId === "string" &&
+    artifact.opinionId.length > 0 &&
+    Array.isArray(artifact.vector) &&
+    artifact.vector.length > 0 &&
+    artifact.vector.every((value) => Number.isFinite(value))
+  );
+}
+
+async function loadReducerEvaluationReductions(
+  reductionsDir: string
+): Promise<Array<{ artifactPath: string; artifact: ReductionArtifact }>> {
+  const entries = await readdir(reductionsDir, { withFileTypes: true }).catch(() => []);
+  const reductions: Array<{ artifactPath: string; artifact: ReductionArtifact }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      continue;
+    }
+
+    const artifactPath = path.join(reductionsDir, entry.name);
+    const artifact = await readJsonFile<ReductionArtifact>(artifactPath);
+
+    if (artifact !== null && typeof artifact.method === "string") {
+      reductions.push({ artifactPath, artifact });
+    }
+  }
+
+  return reductions.sort((left, right) => left.artifactPath.localeCompare(right.artifactPath));
+}
+
+async function loadReducerEvaluationClusters(
+  clustersDir: string
+): Promise<Array<{ viewName: string; artifactPath: string; artifact: ClusterArtifact }>> {
+  const entries = await readdir(clustersDir, { withFileTypes: true }).catch(() => []);
+  const clusters: Array<{ viewName: string; artifactPath: string; artifact: ClusterArtifact }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      continue;
+    }
+
+    const artifactPath = path.join(clustersDir, entry.name);
+    const artifact = await readJsonFile<ClusterArtifact>(artifactPath);
+
+    if (artifact !== null && typeof artifact.method === "string") {
+      clusters.push({
+        viewName: path.basename(entry.name, ".json"),
+        artifactPath,
+        artifact
+      });
+    }
+  }
+
+  return clusters.sort((left, right) => left.viewName.localeCompare(right.viewName));
+}
+
+function evaluateReductionArtifact(
+  entry: { artifactPath: string; artifact: ReductionArtifact },
+  embeddingsById: Map<string, EmbeddingArtifact>,
+  neighborK: number
+): ReductionEvaluationSummary {
+  const points = entry.artifact.points ?? [];
+  const comparableOpinionIds = sortedUnique(
+    points
+      .filter((point) => embeddingsById.has(point.opinionId))
+      .map((point) => point.opinionId)
+  );
+  const effectiveK = Math.min(neighborK, Math.max(0, comparableOpinionIds.length - 1));
+  const pointById = new Map(points.map((point) => [point.opinionId, point]));
+  const neighborRecallAtK =
+    entry.artifact.status !== "ready" || effectiveK === 0
+      ? { k: effectiveK, mean: null, median: null }
+      : calculateNeighborRecallAtK({
+          baseNeighbors: buildEmbeddingNeighborIndex(comparableOpinionIds, embeddingsById, effectiveK),
+          candidateNeighbors: buildProjectionNeighborIndex(comparableOpinionIds, pointById, effectiveK),
+          k: effectiveK
+        });
+
+  return {
+    method: entry.artifact.method,
+    artifactPath: entry.artifactPath,
+    status: entry.artifact.status,
+    pointCount: points.length,
+    comparableOpinionCount: comparableOpinionIds.length,
+    neighborRecallAtK,
+    projection: computeProjectionDiagnostics(points)
+  };
+}
+
+function evaluateClusterArtifact(
+  entry: { viewName: string; artifactPath: string; artifact: ClusterArtifact },
+  embeddingsById: Map<string, EmbeddingArtifact>,
+  neighborK: number
+): ClusterEvaluationSummary {
+  const members = (entry.artifact.members ?? []).filter(
+    (member) =>
+      typeof member.opinionId === "string" &&
+      Number.isFinite(member.clusterId) &&
+      Number.isFinite(member.x) &&
+      Number.isFinite(member.y) &&
+      embeddingsById.has(member.opinionId)
+  );
+  const comparableOpinionIds = sortedUnique(members.map((member) => member.opinionId));
+  const effectiveK = Math.min(neighborK, Math.max(0, comparableOpinionIds.length - 1));
+  const memberById = new Map(members.map((member) => [member.opinionId, member]));
+  const clusterById = new Map(members.map((member) => [member.opinionId, member.clusterId]));
+  const clusterSizes = new Map<number, number>();
+
+  for (const member of members) {
+    clusterSizes.set(member.clusterId, (clusterSizes.get(member.clusterId) ?? 0) + 1);
+  }
+
+  const largestClusterSize = Math.max(0, ...clusterSizes.values());
+  const singletonClusterCount = [...clusterSizes.values()].filter((value) => value === 1).length;
+  const embeddingNeighborIndex =
+    effectiveK === 0
+      ? new Map<string, string[]>()
+      : buildEmbeddingNeighborIndex(comparableOpinionIds, embeddingsById, effectiveK);
+  const projectionNeighborIndex =
+    effectiveK === 0
+      ? new Map<string, string[]>()
+      : buildProjectionNeighborIndex(comparableOpinionIds, memberById, effectiveK);
+
+  return {
+    viewName: entry.viewName,
+    method: entry.artifact.method,
+    artifactPath: entry.artifactPath,
+    status: entry.artifact.status,
+    requestedClusterCount: entry.artifact.requestedClusterCount,
+    effectiveClusterCount: entry.artifact.effectiveClusterCount,
+    memberCount: entry.artifact.members.length,
+    comparableOpinionCount: comparableOpinionIds.length,
+    singletonClusterCount,
+    largestClusterSize,
+    largestClusterShare: roundMetric(safeRatio(largestClusterSize, Math.max(1, members.length))),
+    embeddingNeighborPurityAtK: calculateNeighborPurityAtK(embeddingNeighborIndex, clusterById),
+    projectionNeighborPurityAtK: calculateNeighborPurityAtK(projectionNeighborIndex, clusterById),
+    projectionSilhouette: computeAverageSilhouette(
+      comparableOpinionIds,
+      clusterById,
+      (leftId, rightId) => {
+        const left = memberById.get(leftId);
+        const right = memberById.get(rightId);
+
+        if (left === undefined || right === undefined) {
+          return Number.POSITIVE_INFINITY;
+        }
+
+        return Math.hypot(left.x - right.x, left.y - right.y);
+      }
+    ),
+    embeddingSilhouette: computeAverageSilhouette(
+      comparableOpinionIds,
+      clusterById,
+      (leftId, rightId) => {
+        const left = embeddingsById.get(leftId);
+        const right = embeddingsById.get(rightId);
+
+        if (left === undefined || right === undefined) {
+          return Number.POSITIVE_INFINITY;
+        }
+
+        return cosineDistance(left.vector, right.vector);
+      }
+    )
+  };
+}
+
+function evaluateClusterAgreement(
+  entries: Array<{ viewName: string; artifactPath: string; artifact: ClusterArtifact }>
+): ClusterAgreementSummary[] {
+  const comparisons: ClusterAgreementSummary[] = [];
+
+  for (let leftIndex = 0; leftIndex < entries.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < entries.length; rightIndex += 1) {
+      const left = entries[leftIndex];
+      const right = entries[rightIndex];
+
+      if (left === undefined || right === undefined) {
+        continue;
+      }
+
+      const leftLabels = new Map(left.artifact.members.map((member) => [member.opinionId, member.clusterId]));
+      const rightLabels = new Map(right.artifact.members.map((member) => [member.opinionId, member.clusterId]));
+      const commonIds = [...leftLabels.keys()].filter((opinionId) => rightLabels.has(opinionId));
+
+      comparisons.push({
+        leftViewName: left.viewName,
+        rightViewName: right.viewName,
+        leftMethod: left.artifact.method,
+        rightMethod: right.artifact.method,
+        comparableOpinionCount: commonIds.length,
+        adjustedRandIndex: computeAdjustedRandIndex(commonIds, leftLabels, rightLabels)
+      });
+    }
+  }
+
+  return comparisons.sort(
+    (left, right) =>
+      (right.adjustedRandIndex ?? -1) - (left.adjustedRandIndex ?? -1) ||
+      left.leftViewName.localeCompare(right.leftViewName) ||
+      left.rightViewName.localeCompare(right.rightViewName)
+  );
+}
+
+function calculateNeighborRecallAtK(options: {
+  baseNeighbors: Map<string, string[]>;
+  candidateNeighbors: Map<string, string[]>;
+  k: number;
+}): { k: number; mean: number | null; median: number | null } {
+  const recalls: number[] = [];
+
+  for (const [opinionId, baseNeighbors] of options.baseNeighbors.entries()) {
+    const candidateNeighbors = options.candidateNeighbors.get(opinionId);
+
+    if (candidateNeighbors === undefined || baseNeighbors.length === 0) {
+      continue;
+    }
+
+    const candidateSet = new Set(candidateNeighbors);
+    const overlap = baseNeighbors.filter((neighborId) => candidateSet.has(neighborId)).length;
+    recalls.push(overlap / Math.min(options.k, baseNeighbors.length));
+  }
+
+  return {
+    k: options.k,
+    mean: roundNullable(mean(recalls)),
+    median: roundNullable(median(recalls))
+  };
+}
+
+function buildEmbeddingNeighborIndex(
+  opinionIds: string[],
+  embeddingsById: Map<string, EmbeddingArtifact>,
+  neighborK: number
+): Map<string, string[]> {
+  return buildNeighborIndex(opinionIds, neighborK, (leftId, rightId) => {
+    const left = embeddingsById.get(leftId);
+    const right = embeddingsById.get(rightId);
+
+    if (left === undefined || right === undefined) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return cosineDistance(left.vector, right.vector);
+  });
+}
+
+function buildProjectionNeighborIndex(
+  opinionIds: string[],
+  pointById: Map<string, { x: number; y: number }>,
+  neighborK: number
+): Map<string, string[]> {
+  return buildNeighborIndex(opinionIds, neighborK, (leftId, rightId) => {
+    const left = pointById.get(leftId);
+    const right = pointById.get(rightId);
+
+    if (left === undefined || right === undefined) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return Math.hypot(left.x - right.x, left.y - right.y);
+  });
+}
+
+function buildNeighborIndex(
+  opinionIds: string[],
+  neighborK: number,
+  distanceForPair: (leftId: string, rightId: string) => number
+): Map<string, string[]> {
+  const neighborsById = new Map<string, string[]>();
+
+  for (const opinionId of opinionIds) {
+    const neighbors = opinionIds
+      .filter((candidateId) => candidateId !== opinionId)
+      .map((candidateId) => ({
+        opinionId: candidateId,
+        distance: distanceForPair(opinionId, candidateId)
+      }))
+      .filter((candidate) => Number.isFinite(candidate.distance))
+      .sort(
+        (left, right) =>
+          left.distance - right.distance || left.opinionId.localeCompare(right.opinionId)
+      )
+      .slice(0, neighborK)
+      .map((candidate) => candidate.opinionId);
+
+    neighborsById.set(opinionId, neighbors);
+  }
+
+  return neighborsById;
+}
+
+function computeProjectionDiagnostics(points: ReductionPoint[]): ProjectionDiagnostics {
+  const finitePoints = points.filter(
+    (point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+  );
+
+  if (finitePoints.length === 0) {
+    return {
+      finiteCoordinateRate: 0,
+      xRange: 0,
+      yRange: 0,
+      area: 0,
+      duplicateCoordinateCount: 0,
+      duplicateCoordinateRate: 0,
+      maxDistanceFromCentroid: 0,
+      outlierCount: 0,
+      outlierRate: 0
+    };
+  }
+
+  const xValues = finitePoints.map((point) => point.x);
+  const yValues = finitePoints.map((point) => point.y);
+  const xRange = Math.max(...xValues) - Math.min(...xValues);
+  const yRange = Math.max(...yValues) - Math.min(...yValues);
+  const centroid = [
+    xValues.reduce((sum, value) => sum + value, 0) / xValues.length,
+    yValues.reduce((sum, value) => sum + value, 0) / yValues.length
+  ] as const;
+  const distances = finitePoints
+    .map((point) => Math.hypot(point.x - centroid[0], point.y - centroid[1]))
+    .sort((left, right) => left - right);
+  const q1 = quantile(distances, 0.25) ?? 0;
+  const q3 = quantile(distances, 0.75) ?? 0;
+  const outlierThreshold = q3 + 3 * Math.max(0, q3 - q1);
+  const outlierCount = distances.filter((distance) => distance > outlierThreshold).length;
+  const coordinateCounts = new Map<string, number>();
+
+  for (const point of finitePoints) {
+    const coordinateKey = `${point.x.toFixed(6)}:${point.y.toFixed(6)}`;
+    coordinateCounts.set(coordinateKey, (coordinateCounts.get(coordinateKey) ?? 0) + 1);
+  }
+
+  const duplicateCoordinateCount = [...coordinateCounts.values()]
+    .filter((count) => count > 1)
+    .reduce((sum, count) => sum + count - 1, 0);
+
+  return {
+    finiteCoordinateRate: roundMetric(safeRatio(finitePoints.length, Math.max(1, points.length))),
+    xRange: roundMetric(xRange),
+    yRange: roundMetric(yRange),
+    area: roundMetric(xRange * yRange),
+    duplicateCoordinateCount,
+    duplicateCoordinateRate: roundMetric(safeRatio(duplicateCoordinateCount, finitePoints.length)),
+    maxDistanceFromCentroid: roundMetric(Math.max(...distances)),
+    outlierCount,
+    outlierRate: roundMetric(safeRatio(outlierCount, finitePoints.length))
+  };
+}
+
+function calculateNeighborPurityAtK(
+  neighborIndex: Map<string, string[]>,
+  clusterById: Map<string, number>
+): number | null {
+  const purities: number[] = [];
+
+  for (const [opinionId, neighbors] of neighborIndex.entries()) {
+    const clusterId = clusterById.get(opinionId);
+
+    if (clusterId === undefined || neighbors.length === 0) {
+      continue;
+    }
+
+    const sameClusterCount = neighbors.filter((neighborId) => clusterById.get(neighborId) === clusterId).length;
+    purities.push(sameClusterCount / neighbors.length);
+  }
+
+  return roundNullable(mean(purities));
+}
+
+function computeAverageSilhouette(
+  opinionIds: string[],
+  clusterById: Map<string, number>,
+  distanceForPair: (leftId: string, rightId: string) => number
+): number | null {
+  if (
+    opinionIds.length < 2 ||
+    opinionIds.length > REDUCER_EVALUATION_SILHOUETTE_MAX_POINTS
+  ) {
+    return null;
+  }
+
+  const idsByCluster = new Map<number, string[]>();
+
+  for (const opinionId of opinionIds) {
+    const clusterId = clusterById.get(opinionId);
+
+    if (clusterId === undefined) {
+      continue;
+    }
+
+    const group = idsByCluster.get(clusterId) ?? [];
+    group.push(opinionId);
+    idsByCluster.set(clusterId, group);
+  }
+
+  if (idsByCluster.size < 2) {
+    return null;
+  }
+
+  const silhouettes: number[] = [];
+
+  for (const opinionId of opinionIds) {
+    const clusterId = clusterById.get(opinionId);
+    const sameClusterIds = clusterId === undefined ? undefined : idsByCluster.get(clusterId);
+
+    if (clusterId === undefined || sameClusterIds === undefined) {
+      continue;
+    }
+
+    const sameNeighborIds = sameClusterIds.filter((candidateId) => candidateId !== opinionId);
+    const withinDistance = averageDistance(opinionId, sameNeighborIds, distanceForPair) ?? 0;
+    let nearestOtherClusterDistance = Number.POSITIVE_INFINITY;
+
+    for (const [otherClusterId, otherIds] of idsByCluster.entries()) {
+      if (otherClusterId === clusterId) {
+        continue;
+      }
+
+      const otherDistance = averageDistance(opinionId, otherIds, distanceForPair);
+
+      if (otherDistance !== null) {
+        nearestOtherClusterDistance = Math.min(nearestOtherClusterDistance, otherDistance);
+      }
+    }
+
+    if (!Number.isFinite(nearestOtherClusterDistance)) {
+      continue;
+    }
+
+    const denominator = Math.max(withinDistance, nearestOtherClusterDistance);
+    silhouettes.push(
+      denominator === 0 ? 0 : (nearestOtherClusterDistance - withinDistance) / denominator
+    );
+  }
+
+  return roundNullable(mean(silhouettes));
+}
+
+function averageDistance(
+  opinionId: string,
+  otherIds: string[],
+  distanceForPair: (leftId: string, rightId: string) => number
+): number | null {
+  const distances = otherIds
+    .map((otherId) => distanceForPair(opinionId, otherId))
+    .filter((distance) => Number.isFinite(distance));
+
+  return mean(distances);
+}
+
+function computeAdjustedRandIndex(
+  opinionIds: string[],
+  leftLabels: Map<string, number>,
+  rightLabels: Map<string, number>
+): number | null {
+  if (opinionIds.length < 2) {
+    return null;
+  }
+
+  const contingency = new Map<string, number>();
+  const leftCounts = new Map<number, number>();
+  const rightCounts = new Map<number, number>();
+
+  for (const opinionId of opinionIds) {
+    const leftLabel = leftLabels.get(opinionId);
+    const rightLabel = rightLabels.get(opinionId);
+
+    if (leftLabel === undefined || rightLabel === undefined) {
+      continue;
+    }
+
+    contingency.set(`${leftLabel}:${rightLabel}`, (contingency.get(`${leftLabel}:${rightLabel}`) ?? 0) + 1);
+    leftCounts.set(leftLabel, (leftCounts.get(leftLabel) ?? 0) + 1);
+    rightCounts.set(rightLabel, (rightCounts.get(rightLabel) ?? 0) + 1);
+  }
+
+  const comparableCount = [...leftCounts.values()].reduce((sum, value) => sum + value, 0);
+  const totalPairs = chooseTwo(comparableCount);
+
+  if (totalPairs === 0) {
+    return null;
+  }
+
+  const contingencyPairs = [...contingency.values()].reduce(
+    (sum, value) => sum + chooseTwo(value),
+    0
+  );
+  const leftPairs = [...leftCounts.values()].reduce((sum, value) => sum + chooseTwo(value), 0);
+  const rightPairs = [...rightCounts.values()].reduce((sum, value) => sum + chooseTwo(value), 0);
+  const expectedPairs = (leftPairs * rightPairs) / totalPairs;
+  const maxPairs = (leftPairs + rightPairs) / 2;
+  const denominator = maxPairs - expectedPairs;
+
+  if (denominator === 0) {
+    return contingencyPairs === maxPairs ? 1 : 0;
+  }
+
+  return roundMetric((contingencyPairs - expectedPairs) / denominator);
+}
+
+function buildReducerEvaluationObservations(summary: ReducerEvaluationArtifact): string[] {
+  const observations: string[] = [];
+  const readyReductions = summary.reductions.filter(
+    (item) => item.status === "ready" && item.neighborRecallAtK.mean !== null
+  );
+  const bestReduction = [...readyReductions].sort(
+    (left, right) =>
+      (right.neighborRecallAtK.mean ?? -1) - (left.neighborRecallAtK.mean ?? -1)
+  )[0];
+  const weakestReduction = [...readyReductions].sort(
+    (left, right) =>
+      (left.neighborRecallAtK.mean ?? 1) - (right.neighborRecallAtK.mean ?? 1)
+  )[0];
+
+  if (bestReduction !== undefined) {
+    observations.push(
+      `${bestReduction.method} had the strongest local-neighbor preservation among evaluated reductions at recall@${bestReduction.neighborRecallAtK.k}=${formatMetric(bestReduction.neighborRecallAtK.mean)}.`
+    );
+  }
+
+  if (
+    bestReduction !== undefined &&
+    weakestReduction !== undefined &&
+    bestReduction.method !== weakestReduction.method
+  ) {
+    observations.push(
+      `${weakestReduction.method} was weakest on local-neighbor preservation at recall@${weakestReduction.neighborRecallAtK.k}=${formatMetric(weakestReduction.neighborRecallAtK.mean)}.`
+    );
+  }
+
+  const collapsedReductions = summary.reductions.filter(
+    (item) =>
+      item.status === "ready" &&
+      (item.projection.xRange === 0 ||
+        item.projection.yRange === 0 ||
+        item.projection.duplicateCoordinateRate > 0.05)
+  );
+
+  if (collapsedReductions.length > 0) {
+    observations.push(
+      `Potential projection collapse detected in ${collapsedReductions.map((item) => item.method).join(", ")}.`
+    );
+  }
+
+  const outlierHeavyReductions = summary.reductions.filter(
+    (item) => item.status === "ready" && item.projection.outlierRate > 0.05
+  );
+
+  if (outlierHeavyReductions.length > 0) {
+    observations.push(
+      `Projection outliers exceeded 5% in ${outlierHeavyReductions
+        .map((item) => `${item.method} (${formatMetric(item.projection.outlierRate)})`)
+        .join(", ")}.`
+    );
+  }
+
+  const bestCluster = [...summary.clusters]
+    .filter((item) => item.embeddingNeighborPurityAtK !== null)
+    .sort(
+      (left, right) =>
+        (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1)
+    )[0];
+
+  if (bestCluster !== undefined) {
+    observations.push(
+      `${bestCluster.viewName} had the strongest embedding-neighbor cluster purity at ${formatMetric(bestCluster.embeddingNeighborPurityAtK)}.`
+    );
+  }
+
+  const lowAgreement = summary.clusterAgreement.filter(
+    (item) => item.adjustedRandIndex !== null && item.adjustedRandIndex < 0.35
+  );
+
+  if (lowAgreement.length > 0) {
+    observations.push(
+      `${lowAgreement.length} cluster comparison(s) had low adjusted Rand agreement, which means reducer or cluster-count choices materially change group membership.`
+    );
+  }
+
+  return observations;
+}
+
+function renderReducerEvaluationConsoleSummary(
+  projectRoot: string,
+  outputPath: string,
+  summary: ReducerEvaluationArtifact
+): string {
+  const lines = [
+    color.heading("Broadly Reducer Evaluation"),
+    color.muted(rule("=")),
+    formatDetailLine("Project", projectRoot),
+    formatDetailLine("Run", summary.runId),
+    formatDetailLine(
+      "Corpus",
+      `${summary.corpus.comparableOpinionCount} comparable opinions · ${summary.corpus.embeddingCount} embeddings`
+    ),
+    formatDetailLine(
+      "Artifacts",
+      `${summary.corpus.readyReductionCount}/${summary.corpus.reductionCount} ready reductions · ${summary.corpus.clusterArtifactCount} cluster artifacts`
+    ),
+    ...summary.reductions.map((reduction) =>
+      formatDetailLine(
+        reduction.method,
+        reduction.status === "ready"
+          ? `recall@${reduction.neighborRecallAtK.k} ${formatMetric(reduction.neighborRecallAtK.mean)} · ${reduction.comparableOpinionCount} comparable`
+          : reduction.status
+      )
+    ),
+    ...summary.clusters.map((cluster) =>
+      formatDetailLine(
+        cluster.viewName,
+        `purity ${formatMetric(cluster.embeddingNeighborPurityAtK)} · silhouette ${formatMetric(cluster.embeddingSilhouette)} · largest ${formatMetric(cluster.largestClusterShare)}`
+      )
+    ),
+    ...summary.observations.map((observation) => formatDetailLine("Note", observation)),
+    formatDetailLine("Output", toPortableRelativePath(projectRoot, outputPath))
+  ];
+
+  return `\n${lines.join("\n")}\n`;
+}
+
+function sortedUnique(values: string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function mean(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const sorted = [...values].sort((left, right) => left - right);
+  const midpoint = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 1) {
+    return sorted[midpoint] ?? null;
+  }
+
+  const left = sorted[midpoint - 1];
+  const right = sorted[midpoint];
+
+  return left === undefined || right === undefined ? null : (left + right) / 2;
+}
+
+function quantile(values: number[], percentile: number): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  if (values.length === 1) {
+    return values[0] ?? null;
+  }
+
+  const position = (values.length - 1) * percentile;
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  const lower = values[lowerIndex];
+  const upper = values[upperIndex];
+
+  if (lower === undefined || upper === undefined) {
+    return null;
+  }
+
+  return lower + (upper - lower) * (position - lowerIndex);
+}
+
+function chooseTwo(value: number): number {
+  return value < 2 ? 0 : (value * (value - 1)) / 2;
+}
+
+function safeRatio(numerator: number, denominator: number): number {
+  return denominator === 0 ? 0 : numerator / denominator;
+}
+
+function roundNullable(value: number | null): number | null {
+  return value === null || !Number.isFinite(value) ? null : roundMetric(value);
+}
+
+function roundMetric(value: number): number {
+  return Number(value.toFixed(6));
+}
+
+function formatMetric(value: number | null): string {
+  return value === null ? "n/a" : value.toFixed(3);
 }
 
 function resolveConfiguredEmbeddingModel(

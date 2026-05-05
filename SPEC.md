@@ -217,6 +217,7 @@ The current command surface is:
 | `broadly opinions` | Run configured LLM opinion extraction specs. |
 | `broadly extract-opinions` | Compatibility wrapper around the configured opinion extraction path. |
 | `broadly analysis` | Build embeddings, reductions, clusters, semantic hierarchies, and perspective artifacts. |
+| `broadly analysis --evaluate-reducers` | Evaluate existing reduction/cluster artifacts without new model calls. |
 | `broadly report` | Generate `reports/<run-id>/report-bundle.json` from analysis artifacts. |
 | `broadly report site` | Generate a self-contained static HTML report site under `reports/<run-id>/site/`. |
 | `broadly qa` | Run structural and model-assisted QA over analysis/report artifacts. |
@@ -486,6 +487,22 @@ The current analysis stages are:
 6. Perspectives
    - LLM summary artifacts per configured view
    - includes title, summary, highlighted clusters, and rationale
+
+`broadly analysis --evaluate-reducers` is a no-new-model-calls diagnostic path
+over an existing analysis run. It reads existing embedding, reduction, and
+cluster artifacts, then writes:
+
+```text
+runs/<run-id>/reducer-eval/summary.json
+```
+
+The current evaluator reports:
+
+- local-neighbor preservation from embedding space into 2D
+- projection spread, duplicate-coordinate, and outlier diagnostics
+- embedding-neighbor and projection-neighbor cluster purity
+- embedding-space and projection-space silhouette scores
+- adjusted Rand agreement between configured cluster views
 
 Configured views are the durable unit for report variants. A view combines:
 
