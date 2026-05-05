@@ -372,8 +372,9 @@ machine updates.
 - suggestion artifacts for lower-confidence machine suggestions
 - a review manifest with counts, model/prompt fingerprints, and thresholds
 
-The web admin UI can edit individual comment/opinion review artifacts, perform
-bulk status updates, and edit the review config.
+The web admin UI can edit individual comment/opinion review artifacts, accept
+or reject stored machine suggestions from detail pages, perform bulk status
+updates, and edit the review config.
 
 ## Opinion Extraction
 
@@ -527,7 +528,8 @@ The bundle contains:
 `broadly report site` writes a standalone static site that can be opened from
 disk without the local CLI server. It reads `report-bundle.json`, copies the
 analysis JSON artifacts needed for drill-down, and includes optional statement
-bank, vote summary, and attestation data when present or explicitly supplied.
+bank, vote summary, attestation data, and the captured review boundary when
+present or explicitly supplied.
 
 Static site output:
 
@@ -918,7 +920,8 @@ The implementation is useful but not finished.
 - The active analysis pipeline is still mostly in `@broadly/cli`, not in
   `@broadly/pipeline`.
 - The static report site is intentionally simple HTML; richer offline maps and
-  drill-down interactions can build on the copied JSON data.
+  drill-down interactions can build on the copied JSON data and visible review
+  boundary summary.
 - Statement generation is deterministic and report-derived in the first pass;
   it does not yet call a statement-specific LLM prompt.
 - Statement QA is heuristic and local. It does not yet use a model judge.

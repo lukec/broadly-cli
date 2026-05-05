@@ -12,6 +12,7 @@ import {
   type CommentReviewSuggestionArtifact,
   type OpinionReviewArtifact,
   type OpinionReviewSuggestionArtifact,
+  type ProjectPaths,
   type ReviewConfig,
   type ReviewStatus
 } from "@broadly/core";
@@ -48,7 +49,9 @@ import {
   loadOpinionReviewSuggestion,
   resolveEffectiveOpinionReviewStatus,
   upsertCommentReview,
+  upsertCommentReviewSuggestion,
   upsertOpinionReview,
+  upsertOpinionReviewSuggestion,
   writeReviewConfig
 } from "../reviewState.js";
 import {
@@ -281,6 +284,9 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
       const adminReviewPostMatch = requestUrl.pathname.match(
         /^\/admin\/(comments|opinions)\/([^/]+)\/review$/
       );
+      const adminSuggestionPostMatch = requestUrl.pathname.match(
+        /^\/admin\/(comments|opinions)\/([^/]+)\/suggestion$/
+      );
       const statementReviewPostMatch = requestUrl.pathname.match(
         /^\/statements\/([^/]+)\/([^/]+)\/review$/
       );
@@ -345,6 +351,38 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
                   ""
                 : path.join(projectPaths.dataDir, "normalized", `${opinion.sourceRecord.sourceId}.json`)
           });
+        }
+
+        redirectResponse(response, nextLocation);
+        return;
+      }
+
+      if (request.method === "POST" && adminSuggestionPostMatch !== null) {
+        const adminCorpus = await loadAdminCorpus(projectPaths);
+        const form = await readRequestForm(request);
+        const subjectKind = adminSuggestionPostMatch[1];
+        const subjectId = decodeURIComponent(adminSuggestionPostMatch[2] ?? "");
+        const decision = parseSubmittedSuggestionDecision(form.get("decision"));
+        const nextLocation =
+          normalizeSubmittedText(form.get("next")) ||
+          `/admin/${subjectKind}/${encodeURIComponent(subjectId)}`;
+
+        if (subjectKind === "comments") {
+          const comment = adminCorpus.comments.find((entry) => entry.sourceId === subjectId);
+
+          if (comment === undefined) {
+            throw new Error(`Comment '${subjectId}' was not found.`);
+          }
+
+          await applyCommentSuggestionDecision(projectPaths, comment, decision);
+        } else {
+          const opinion = adminCorpus.opinions.find((entry) => entry.opinionId === subjectId);
+
+          if (opinion === undefined) {
+            throw new Error(`Opinion '${subjectId}' was not found.`);
+          }
+
+          await applyOpinionSuggestionDecision(projectPaths, opinion, decision);
         }
 
         redirectResponse(response, nextLocation);
@@ -1133,6 +1171,128 @@ function redirectResponse(response: ServerResponse, location: string): void {
   response.end();
 }
 
+type SuggestionDecision = "accept" | "reject";
+
+function parseSubmittedSuggestionDecision(value: string | null): SuggestionDecision {
+  if (value === "accept" || value === "reject") {
+    return value;
+  }
+
+  throw new Error("A valid suggestion decision is required.");
+}
+
+async function applyCommentSuggestionDecision(
+  projectPaths: ProjectPaths,
+  comment: AdminCommentEntry,
+  decision: SuggestionDecision
+): Promise<void> {
+  const suggestion = comment.suggestion;
+
+  if (suggestion === null) {
+    throw new Error(`Comment '${comment.sourceId}' has no stored machine suggestion.`);
+  }
+
+  if (decision === "accept") {
+    await upsertCommentReview(projectPaths, {
+      subjectId: comment.sourceId,
+      status: suggestion.suggestedStatus,
+      reasonCode: suggestion.reasonCode,
+      note: buildAcceptedSuggestionReviewNote(suggestion),
+      actor: { type: "human", name: "local-admin" },
+      normalizedRecordPath: suggestion.provenance.normalizedRecordPath || comment.recordPath
+    });
+  }
+
+  await upsertCommentReviewSuggestion(projectPaths, {
+    subjectId: suggestion.subjectId,
+    suggestedStatus: suggestion.suggestedStatus,
+    reasonCode: suggestion.reasonCode,
+    note: suggestion.note,
+    confidence: suggestion.confidence,
+    state: decision === "accept" ? "accepted" : "rejected",
+    actor: suggestion.actor,
+    normalizedRecordPath: suggestion.provenance.normalizedRecordPath || comment.recordPath
+  });
+}
+
+async function applyOpinionSuggestionDecision(
+  projectPaths: ProjectPaths,
+  opinion: AdminOpinionEntry,
+  decision: SuggestionDecision
+): Promise<void> {
+  const suggestion = opinion.suggestion;
+
+  if (suggestion === null) {
+    throw new Error(`Opinion '${opinion.opinionId}' has no stored machine suggestion.`);
+  }
+
+  const opinionArtifactPath =
+    suggestion.provenance.opinionArtifactPath || opinion.artifactPath;
+  const sourceId = suggestion.provenance.sourceId || resolveOpinionSourceId(opinion);
+  const normalizedRecordPath =
+    suggestion.provenance.normalizedRecordPath ||
+    resolveOpinionNormalizedRecordPath(projectPaths, opinion);
+
+  if (decision === "accept") {
+    await upsertOpinionReview(projectPaths, {
+      subjectId: opinion.opinionId,
+      status: suggestion.suggestedStatus,
+      reasonCode: suggestion.reasonCode,
+      note: buildAcceptedSuggestionReviewNote(suggestion),
+      actor: { type: "human", name: "local-admin" },
+      opinionArtifactPath,
+      sourceId,
+      normalizedRecordPath
+    });
+  }
+
+  await upsertOpinionReviewSuggestion(projectPaths, {
+    subjectId: suggestion.subjectId,
+    suggestedStatus: suggestion.suggestedStatus,
+    reasonCode: suggestion.reasonCode,
+    note: suggestion.note,
+    confidence: suggestion.confidence,
+    state: decision === "accept" ? "accepted" : "rejected",
+    actor: suggestion.actor,
+    opinionArtifactPath,
+    sourceId,
+    normalizedRecordPath
+  });
+}
+
+function buildAcceptedSuggestionReviewNote(
+  suggestion: CommentReviewSuggestionArtifact | OpinionReviewSuggestionArtifact
+): string {
+  return suggestion.note.length === 0
+    ? `Accepted machine suggestion: ${suggestion.reasonCode}`
+    : suggestion.note;
+}
+
+function resolveOpinionSourceId(opinion: AdminOpinionEntry): string {
+  return (
+    opinion.artifact.sourceId ??
+    opinion.sourceRecord?.sourceId ??
+    opinion.opinionReview?.provenance.sourceId ??
+    opinion.commentReview?.subjectId ??
+    ""
+  );
+}
+
+function resolveOpinionNormalizedRecordPath(
+  projectPaths: ProjectPaths,
+  opinion: AdminOpinionEntry
+): string {
+  if (opinion.sourceRecord !== null) {
+    return path.join(projectPaths.dataDir, "normalized", `${opinion.sourceRecord.sourceId}.json`);
+  }
+
+  return (
+    opinion.opinionReview?.provenance.normalizedRecordPath ??
+    opinion.commentReview?.provenance.normalizedRecordPath ??
+    ""
+  );
+}
+
 function parseSubmittedReviewStatus(value: string | null): ReviewStatus {
   if (value !== null && isReviewStatusValue(value)) {
     return value;
@@ -1513,7 +1673,10 @@ function renderAdminCommentDetailPage(
             ["Related opinions", String(relatedOpinions.length)]
           ])}
           ${renderReviewArtifactSummary(comment.review, "comment")}
-          ${renderReviewSuggestionSummary(comment.suggestion, "comment")}
+          ${renderReviewSuggestionSummary(comment.suggestion, "comment", {
+            actionPath: `/admin/comments/${encodeURIComponent(comment.sourceId)}/suggestion`,
+            nextPath: `/admin/comments/${encodeURIComponent(comment.sourceId)}`
+          })}
           ${
             getNormalizedCommentPrimaryText(comment.record) === comment.record.contentText
               ? ""
@@ -1601,7 +1764,10 @@ function renderAdminOpinionDetailPage(
           ])}
           ${renderReviewArtifactSummary(opinion.opinionReview, "opinion")}
           ${renderReviewArtifactSummary(opinion.commentReview, "comment")}
-          ${renderReviewSuggestionSummary(opinion.suggestion, "opinion")}
+          ${renderReviewSuggestionSummary(opinion.suggestion, "opinion", {
+            actionPath: `/admin/opinions/${encodeURIComponent(opinion.opinionId)}/suggestion`,
+            nextPath: `/admin/opinions/${encodeURIComponent(opinion.opinionId)}`
+          })}
           <div class="stack">
             <p class="section-label">Opinion</p>
             <p>${escapeHtml(opinion.artifact.opinionText ?? "")}</p>
@@ -3840,7 +4006,8 @@ function renderReviewArtifactSummary(
 
 function renderReviewSuggestionSummary(
   artifact: CommentReviewSuggestionArtifact | OpinionReviewSuggestionArtifact | null,
-  kind: "comment" | "opinion"
+  kind: "comment" | "opinion",
+  actions?: { actionPath: string; nextPath: string }
 ): string {
   if (artifact === null) {
     return `<div class="stack">
@@ -3863,6 +4030,36 @@ function renderReviewSuggestionSummary(
         ? ""
         : `<p class="meta">${escapeHtml(artifact.note)}</p>`
     }
+    ${renderSuggestionDecisionControls(artifact, actions)}
+  </div>`;
+}
+
+function renderSuggestionDecisionControls(
+  artifact: CommentReviewSuggestionArtifact | OpinionReviewSuggestionArtifact,
+  actions?: { actionPath: string; nextPath: string }
+): string {
+  if (artifact.state !== "proposed") {
+    return `<p class="meta">This suggestion has been ${escapeHtml(artifact.state)}.</p>`;
+  }
+
+  if (actions === undefined) {
+    return "";
+  }
+
+  const actionPath = escapeHtmlAttribute(actions.actionPath);
+  const nextPath = escapeHtmlAttribute(actions.nextPath);
+
+  return `<div class="button-row suggestion-actions">
+    <form method="post" action="${actionPath}">
+      <input type="hidden" name="decision" value="accept" />
+      <input type="hidden" name="next" value="${nextPath}" />
+      <button class="button-link button-link-small" type="submit">Accept suggestion</button>
+    </form>
+    <form method="post" action="${actionPath}">
+      <input type="hidden" name="decision" value="reject" />
+      <input type="hidden" name="next" value="${nextPath}" />
+      <button class="button-link button-link-secondary button-link-small" type="submit">Reject suggestion</button>
+    </form>
   </div>`;
 }
 
@@ -4296,9 +4493,11 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         align-items: center;
         justify-content: center;
         padding: 12px 18px;
+        border: 0;
         border-radius: 12px;
         background: linear-gradient(135deg, var(--bl-primary-800), var(--bl-primary-600));
         color: white;
+        cursor: pointer;
         font: 700 14px/1.2 ui-monospace, monospace;
         box-shadow: 0 10px 24px rgba(8,38,64,0.18);
       }
@@ -4363,6 +4562,9 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
+      }
+      .button-row form {
+        margin: 0;
       }
       .admin-form {
         display: grid;

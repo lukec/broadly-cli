@@ -128,6 +128,7 @@ export function renderStaticReportHtml(
           ${report.questions.map((question) => `<li>${escapeHtml(question)}</li>`).join("")}
         </ul>
       </section>
+      ${renderStaticReviewBoundarySection(report)}
       <section class="grid perspectives">
         ${report.views
           .map(
@@ -222,6 +223,54 @@ export function renderStaticReportHtml(
 
 export function renderPlaceholderReportHtml(report: ReportBundle): string {
   return renderStaticReportHtml(report);
+}
+
+function renderStaticReviewBoundarySection(report: ReportBundle): string {
+  const review = report.review;
+
+  if (review === undefined) {
+    return "";
+  }
+
+  const excludedStatuses = Object.entries(review.excludedByStatus)
+    .filter(([, count]) => count > 0)
+    .sort(([leftStatus], [rightStatus]) => leftStatus.localeCompare(rightStatus));
+
+  return `<section class="card section">
+    <p class="eyebrow">Review Boundary</p>
+    <h2>What evidence this report included</h2>
+    <p class="meta">This report reflects the review config captured by the analysis run. Excluded content still exists in the project; it was outside this report's inclusion boundary.</p>
+    <div class="stats">
+      <span class="stat">${review.includedOpinions} of ${review.totalOpinionsAvailable} opinion(s) included</span>
+      <span class="stat">${review.excludedOpinions} opinion(s) excluded</span>
+      <span class="stat">comment statuses: ${escapeHtml(renderStatusSummary(review.includeCommentStatuses))}</span>
+      <span class="stat">opinion statuses: ${escapeHtml(renderStatusSummary(review.includeOpinionStatuses))}</span>
+      <span class="stat">config: ${escapeHtml(renderPortableReviewConfigPath(review.configPath))}</span>
+    </div>
+    <section class="cluster">
+      <h3>Excluded by status</h3>
+      ${
+        excludedStatuses.length === 0
+          ? `<p class="meta">No opinions were excluded by status.</p>`
+          : `<ul class="quote-list">
+              ${excludedStatuses
+                .map(
+                  ([status, count]) => `<li>${escapeHtml(status)}: ${count}</li>`
+                )
+                .join("")}
+            </ul>`
+      }
+    </section>
+  </section>`;
+}
+
+function renderStatusSummary(statuses: string[]): string {
+  return statuses.length === 0 ? "none" : statuses.join(", ");
+}
+
+function renderPortableReviewConfigPath(configPath: string): string {
+  const dataIndex = configPath.lastIndexOf("/data/");
+  return dataIndex === -1 ? configPath : configPath.slice(dataIndex + 1);
 }
 
 function escapeHtml(value: string): string {
