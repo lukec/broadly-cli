@@ -46,6 +46,7 @@ export interface AnalysisCommandOptions {
   limit?: number;
   offset?: number;
   evaluateReducers?: boolean;
+  evaluateClusteringSurfaces?: boolean;
   run?: string;
   neighborK?: number;
 }
@@ -337,6 +338,76 @@ interface ClusterAgreementSummary {
   adjustedRandIndex: number | null;
 }
 
+interface ClusteringSurfaceEvaluationArtifact {
+  createdAt: string;
+  runId: string;
+  method: "clustering-surface-evaluation-v1";
+  parameters: {
+    neighborK: number;
+    silhouetteMaxPoints: number;
+  };
+  source: {
+    manifestPath: string;
+    embeddingsDirs: string[];
+    reductionsDir: string;
+    clustersDir: string;
+  };
+  corpus: {
+    embeddingCount: number;
+    clusterArtifactCount: number;
+    embeddingSurfaceCount: number;
+    projectionSurfaceCount: number;
+    comparableOpinionCount: number;
+  };
+  surfaces: ClusteringSurfaceSummary[];
+  comparisons: ClusteringSurfaceComparisonSummary[];
+  observations: string[];
+}
+
+interface ClusteringSurfaceSummary {
+  surfaceId: string;
+  surfaceKind: "embedding" | "projection";
+  label: string;
+  method: string;
+  status: "ready" | "skipped" | "failed";
+  viewName?: string;
+  requestedClusterCount: number;
+  effectiveClusterCount: number;
+  memberCount: number;
+  comparableOpinionCount: number;
+  singletonClusterCount: number;
+  largestClusterSize: number;
+  largestClusterShare: number;
+  embeddingNeighborPurityAtK: number | null;
+  embeddingSilhouette: number | null;
+}
+
+interface ClusteringSurfaceComparisonSummary {
+  leftSurfaceId: string;
+  rightSurfaceId: string;
+  leftLabel: string;
+  rightLabel: string;
+  comparableOpinionCount: number;
+  adjustedRandIndex: number | null;
+  largestMembershipShifts: MembershipShiftSummary[];
+}
+
+interface MembershipShiftSummary {
+  sourceClusterId: number;
+  sourceClusterSize: number;
+  fragmentationRate: number;
+  topDestinationClusters: Array<{
+    clusterId: number;
+    count: number;
+    share: number;
+  }>;
+}
+
+interface ClusteringSurfaceWorkingSet {
+  summary: ClusteringSurfaceSummary;
+  clusterById: Map<string, number>;
+}
+
 interface AnalysisRunManifest {
   runId: string;
   createdAt: string;
@@ -513,8 +584,15 @@ interface AnalysisViewGroup {
 type ReviewStatusCounts = Record<ReviewStatus, number>;
 
 export async function runAnalysis(options: AnalysisCommandOptions): Promise<void> {
-  if (options.evaluateReducers === true) {
-    await evaluateAnalysisReducers(options);
+  if (options.evaluateReducers === true || options.evaluateClusteringSurfaces === true) {
+    if (options.evaluateReducers === true) {
+      await evaluateAnalysisReducers(options);
+    }
+
+    if (options.evaluateClusteringSurfaces === true) {
+      await evaluateAnalysisClusteringSurfaces(options);
+    }
+
     return;
   }
 
@@ -2147,6 +2225,473 @@ function renderReducerEvaluationConsoleSummary(
         `purity ${formatMetric(cluster.embeddingNeighborPurityAtK)} · silhouette ${formatMetric(cluster.embeddingSilhouette)} · largest ${formatMetric(cluster.largestClusterShare)}`
       )
     ),
+    ...summary.observations.map((observation) => formatDetailLine("Note", observation)),
+    formatDetailLine("Output", toPortableRelativePath(projectRoot, outputPath))
+  ];
+
+  return `\n${lines.join("\n")}\n`;
+}
+
+async function evaluateAnalysisClusteringSurfaces(
+  options: AnalysisCommandOptions
+): Promise<void> {
+  const projectRoot = await resolveCommandProjectRoot(options.project);
+  const neighborK = options.neighborK ?? DEFAULT_REDUCER_EVALUATION_NEIGHBOR_K;
+
+  await withProjectActionLog({
+    projectRoot,
+    command: "analysis evaluate-clustering-surfaces",
+    details: {
+      run: options.run ?? "(current/latest)",
+      neighborK
+    },
+    action: async () => {
+      const projectPaths = resolveProjectPaths(projectRoot);
+      const resolvedRun = await resolveReducerEvaluationRun(projectPaths, options.run);
+      const manifestPath = path.join(resolvedRun.runDir, "manifest.json");
+      const manifest = await readJsonFile<AnalysisRunManifest>(manifestPath);
+
+      if (manifest === null) {
+        throw new Error(`Analysis run '${resolvedRun.runId}' does not have a readable manifest.`);
+      }
+
+      const reductionsDir = manifest.output.reductionsDir || path.join(resolvedRun.runDir, "reductions");
+      const clustersDir = manifest.output.clustersDir || path.join(resolvedRun.runDir, "clusters");
+      const embeddingsDirs = resolveReducerEvaluationEmbeddingDirs(manifest);
+      const embeddingsById = await loadReducerEvaluationEmbeddings(embeddingsDirs);
+      const clusterEntries = await loadReducerEvaluationClusters(clustersDir);
+      const comparableOpinionIds = sortedUnique([...embeddingsById.keys()]);
+      const clusterCounts = uniqueNumberList(
+        clusterEntries
+          .map((entry) => entry.artifact.requestedClusterCount)
+          .filter((value) => Number.isFinite(value) && value > 0)
+      );
+      const embeddingSurfaces = clusterCounts.map((clusterCount) =>
+        buildEmbeddingClusteringSurface({
+          runId: resolvedRun.runId,
+          clusterCount,
+          opinionIds: comparableOpinionIds,
+          embeddingsById,
+          neighborK
+        })
+      );
+      const projectionSurfaces = clusterEntries.map((entry) =>
+        buildProjectionClusteringSurface(entry, embeddingsById, neighborK)
+      );
+      const surfaces = [...embeddingSurfaces, ...projectionSurfaces];
+      const comparisons = compareClusteringSurfaces(surfaces);
+      const surfaceOpinionIds = new Set<string>();
+
+      for (const surface of surfaces) {
+        for (const opinionId of surface.clusterById.keys()) {
+          surfaceOpinionIds.add(opinionId);
+        }
+      }
+
+      const summary: ClusteringSurfaceEvaluationArtifact = {
+        createdAt: new Date().toISOString(),
+        runId: resolvedRun.runId,
+        method: "clustering-surface-evaluation-v1",
+        parameters: {
+          neighborK,
+          silhouetteMaxPoints: REDUCER_EVALUATION_SILHOUETTE_MAX_POINTS
+        },
+        source: {
+          manifestPath,
+          embeddingsDirs,
+          reductionsDir,
+          clustersDir
+        },
+        corpus: {
+          embeddingCount: embeddingsById.size,
+          clusterArtifactCount: clusterEntries.length,
+          embeddingSurfaceCount: embeddingSurfaces.length,
+          projectionSurfaceCount: projectionSurfaces.length,
+          comparableOpinionCount: surfaceOpinionIds.size
+        },
+        surfaces: surfaces.map((surface) => surface.summary),
+        comparisons,
+        observations: []
+      };
+
+      summary.observations = buildClusteringSurfaceObservations(summary);
+
+      const outputPath = path.join(resolvedRun.runDir, "cluster-surface-eval", "summary.json");
+      await writeJsonFile(outputPath, summary);
+
+      process.stdout.write(renderClusteringSurfaceConsoleSummary(projectRoot, outputPath, summary));
+    }
+  });
+}
+
+function buildEmbeddingClusteringSurface(options: {
+  runId: string;
+  clusterCount: number;
+  opinionIds: string[];
+  embeddingsById: Map<string, EmbeddingArtifact>;
+  neighborK: number;
+}): ClusteringSurfaceWorkingSet {
+  const usableOpinionIds = options.opinionIds.filter((opinionId) =>
+    options.embeddingsById.has(opinionId)
+  );
+  const effectiveClusterCount = Math.max(
+    1,
+    Math.min(options.clusterCount, usableOpinionIds.length)
+  );
+  const clusterById = new Map<string, number>();
+
+  if (usableOpinionIds.length === 1) {
+    const onlyOpinionId = usableOpinionIds[0];
+
+    if (onlyOpinionId !== undefined) {
+      clusterById.set(onlyOpinionId, 0);
+    }
+  } else if (usableOpinionIds.length > 1) {
+    const vectors = usableOpinionIds.map((opinionId) => options.embeddingsById.get(opinionId)?.vector ?? []);
+    const result = kmeans(vectors, effectiveClusterCount, {
+      seed: positiveIntegerSeed(`embedding-surface:${options.runId}:k${options.clusterCount}`),
+      initialization: "kmeans++",
+      maxIterations: 100
+    });
+
+    usableOpinionIds.forEach((opinionId, index) => {
+      clusterById.set(opinionId, result.clusters[index] ?? 0);
+    });
+  }
+
+  const surfaceId = `embedding-k${options.clusterCount}`;
+
+  return {
+    summary: summarizeClusteringSurface({
+      surfaceId,
+      surfaceKind: "embedding",
+      label: `Embedding k=${options.clusterCount}`,
+      method: "embedding-kmeans",
+      status: usableOpinionIds.length === 0 ? "failed" : "ready",
+      requestedClusterCount: options.clusterCount,
+      effectiveClusterCount,
+      clusterById,
+      embeddingsById: options.embeddingsById,
+      neighborK: options.neighborK
+    }),
+    clusterById
+  };
+}
+
+function buildProjectionClusteringSurface(
+  entry: { viewName: string; artifactPath: string; artifact: ClusterArtifact },
+  embeddingsById: Map<string, EmbeddingArtifact>,
+  neighborK: number
+): ClusteringSurfaceWorkingSet {
+  const clusterById = new Map<string, number>();
+
+  for (const member of entry.artifact.members ?? []) {
+    if (
+      typeof member.opinionId === "string" &&
+      Number.isFinite(member.clusterId) &&
+      embeddingsById.has(member.opinionId)
+    ) {
+      clusterById.set(member.opinionId, member.clusterId);
+    }
+  }
+
+  return {
+    summary: summarizeClusteringSurface({
+      surfaceId: `projection-${entry.viewName}`,
+      surfaceKind: "projection",
+      label: entry.viewName,
+      method: entry.artifact.method,
+      status: entry.artifact.status,
+      viewName: entry.viewName,
+      requestedClusterCount: entry.artifact.requestedClusterCount,
+      effectiveClusterCount: entry.artifact.effectiveClusterCount,
+      clusterById,
+      embeddingsById,
+      neighborK
+    }),
+    clusterById
+  };
+}
+
+function summarizeClusteringSurface(options: {
+  surfaceId: string;
+  surfaceKind: "embedding" | "projection";
+  label: string;
+  method: string;
+  status: "ready" | "skipped" | "failed";
+  viewName?: string;
+  requestedClusterCount: number;
+  effectiveClusterCount: number;
+  clusterById: Map<string, number>;
+  embeddingsById: Map<string, EmbeddingArtifact>;
+  neighborK: number;
+}): ClusteringSurfaceSummary {
+  const opinionIds = sortedUnique([...options.clusterById.keys()]);
+  const effectiveK = Math.min(options.neighborK, Math.max(0, opinionIds.length - 1));
+  const clusterSizes = new Map<number, number>();
+
+  for (const clusterId of options.clusterById.values()) {
+    clusterSizes.set(clusterId, (clusterSizes.get(clusterId) ?? 0) + 1);
+  }
+
+  const largestClusterSize = Math.max(0, ...clusterSizes.values());
+  const singletonClusterCount = [...clusterSizes.values()].filter((value) => value === 1).length;
+  const embeddingNeighborIndex =
+    effectiveK === 0
+      ? new Map<string, string[]>()
+      : buildEmbeddingNeighborIndex(opinionIds, options.embeddingsById, effectiveK);
+
+  return {
+    surfaceId: options.surfaceId,
+    surfaceKind: options.surfaceKind,
+    label: options.label,
+    method: options.method,
+    status: options.status,
+    ...(options.viewName === undefined ? {} : { viewName: options.viewName }),
+    requestedClusterCount: options.requestedClusterCount,
+    effectiveClusterCount: options.effectiveClusterCount,
+    memberCount: options.clusterById.size,
+    comparableOpinionCount: opinionIds.length,
+    singletonClusterCount,
+    largestClusterSize,
+    largestClusterShare: roundMetric(safeRatio(largestClusterSize, Math.max(1, opinionIds.length))),
+    embeddingNeighborPurityAtK: calculateNeighborPurityAtK(
+      embeddingNeighborIndex,
+      options.clusterById
+    ),
+    embeddingSilhouette: computeAverageSilhouette(
+      opinionIds,
+      options.clusterById,
+      (leftId, rightId) => {
+        const left = options.embeddingsById.get(leftId);
+        const right = options.embeddingsById.get(rightId);
+
+        if (left === undefined || right === undefined) {
+          return Number.POSITIVE_INFINITY;
+        }
+
+        return cosineDistance(left.vector, right.vector);
+      }
+    )
+  };
+}
+
+function compareClusteringSurfaces(
+  surfaces: ClusteringSurfaceWorkingSet[]
+): ClusteringSurfaceComparisonSummary[] {
+  const comparisons: ClusteringSurfaceComparisonSummary[] = [];
+
+  for (let leftIndex = 0; leftIndex < surfaces.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < surfaces.length; rightIndex += 1) {
+      const left = surfaces[leftIndex];
+      const right = surfaces[rightIndex];
+
+      if (left === undefined || right === undefined) {
+        continue;
+      }
+
+      const commonIds = [...left.clusterById.keys()].filter((opinionId) =>
+        right.clusterById.has(opinionId)
+      );
+
+      comparisons.push({
+        leftSurfaceId: left.summary.surfaceId,
+        rightSurfaceId: right.summary.surfaceId,
+        leftLabel: left.summary.label,
+        rightLabel: right.summary.label,
+        comparableOpinionCount: commonIds.length,
+        adjustedRandIndex: computeAdjustedRandIndex(
+          commonIds,
+          left.clusterById,
+          right.clusterById
+        ),
+        largestMembershipShifts: computeLargestMembershipShifts(
+          commonIds,
+          left.clusterById,
+          right.clusterById
+        )
+      });
+    }
+  }
+
+  return comparisons.sort(
+    (left, right) =>
+      (right.adjustedRandIndex ?? -1) - (left.adjustedRandIndex ?? -1) ||
+      left.leftLabel.localeCompare(right.leftLabel) ||
+      left.rightLabel.localeCompare(right.rightLabel)
+  );
+}
+
+function computeLargestMembershipShifts(
+  opinionIds: string[],
+  leftClusterById: Map<string, number>,
+  rightClusterById: Map<string, number>
+): MembershipShiftSummary[] {
+  const rightCountsByLeftCluster = new Map<number, Map<number, number>>();
+
+  for (const opinionId of opinionIds) {
+    const leftClusterId = leftClusterById.get(opinionId);
+    const rightClusterId = rightClusterById.get(opinionId);
+
+    if (leftClusterId === undefined || rightClusterId === undefined) {
+      continue;
+    }
+
+    const rightCounts = rightCountsByLeftCluster.get(leftClusterId) ?? new Map<number, number>();
+    rightCounts.set(rightClusterId, (rightCounts.get(rightClusterId) ?? 0) + 1);
+    rightCountsByLeftCluster.set(leftClusterId, rightCounts);
+  }
+
+  return [...rightCountsByLeftCluster.entries()]
+    .map(([sourceClusterId, rightCounts]) => {
+      const sourceClusterSize = [...rightCounts.values()].reduce((sum, value) => sum + value, 0);
+      const topDestinationClusters = [...rightCounts.entries()]
+        .map(([clusterId, count]) => ({
+          clusterId,
+          count,
+          share: roundMetric(safeRatio(count, sourceClusterSize))
+        }))
+        .sort((left, right) => right.count - left.count || left.clusterId - right.clusterId)
+        .slice(0, 4);
+      const topShare = topDestinationClusters[0]?.share ?? 0;
+
+      return {
+        sourceClusterId,
+        sourceClusterSize,
+        fragmentationRate: roundMetric(1 - topShare),
+        topDestinationClusters
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.fragmentationRate - left.fragmentationRate ||
+        right.sourceClusterSize - left.sourceClusterSize ||
+        left.sourceClusterId - right.sourceClusterId
+    )
+    .slice(0, 5);
+}
+
+function buildClusteringSurfaceObservations(
+  summary: ClusteringSurfaceEvaluationArtifact
+): string[] {
+  const observations: string[] = [];
+  const surfaceById = new Map(summary.surfaces.map((surface) => [surface.surfaceId, surface]));
+  const surfacesWithPurity = summary.surfaces.filter(
+    (surface) => surface.embeddingNeighborPurityAtK !== null
+  );
+  const bestSurface = [...surfacesWithPurity].sort(
+    (left, right) =>
+      (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1)
+  )[0];
+
+  if (bestSurface !== undefined) {
+    observations.push(
+      `${bestSurface.label} had the strongest embedding-neighbor purity at ${formatMetric(bestSurface.embeddingNeighborPurityAtK)}.`
+    );
+  }
+
+  const sameCountEmbeddingComparisons = summary.comparisons.filter(
+    (comparison) => {
+      const left = surfaceById.get(comparison.leftSurfaceId);
+      const right = surfaceById.get(comparison.rightSurfaceId);
+
+      return (
+        left !== undefined &&
+        right !== undefined &&
+        left.surfaceKind !== right.surfaceKind &&
+        left.requestedClusterCount === right.requestedClusterCount
+      );
+    }
+  );
+  const lowAgreementComparisons = sameCountEmbeddingComparisons.filter(
+    (comparison) => comparison.adjustedRandIndex !== null && comparison.adjustedRandIndex < 0.5
+  );
+
+  if (lowAgreementComparisons.length > 0) {
+    observations.push(
+      `${lowAgreementComparisons.length} embedding-vs-projection comparison(s) with matching cluster counts had ARI below 0.5, so clustering surface materially changes membership.`
+    );
+  }
+
+  const bestEmbeddingSurface = [...summary.surfaces]
+    .filter(
+      (surface) =>
+        surface.surfaceKind === "embedding" && surface.embeddingNeighborPurityAtK !== null
+    )
+    .sort(
+      (left, right) =>
+        (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1)
+    )[0];
+  const bestProjectionSurface = [...summary.surfaces]
+    .filter(
+      (surface) =>
+        surface.surfaceKind === "projection" && surface.embeddingNeighborPurityAtK !== null
+    )
+    .sort(
+      (left, right) =>
+        (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1)
+    )[0];
+
+  if (bestEmbeddingSurface !== undefined && bestProjectionSurface !== undefined) {
+    const embeddingPurity = bestEmbeddingSurface.embeddingNeighborPurityAtK ?? 0;
+    const projectionPurity = bestProjectionSurface.embeddingNeighborPurityAtK ?? 0;
+
+    observations.push(
+      embeddingPurity >= projectionPurity
+        ? `Best embedding-space clustering beat the best projection-space clustering on embedding-neighbor purity (${formatMetric(embeddingPurity)} vs ${formatMetric(projectionPurity)}).`
+        : `Best projection-space clustering beat the best embedding-space clustering on embedding-neighbor purity (${formatMetric(projectionPurity)} vs ${formatMetric(embeddingPurity)}).`
+    );
+  }
+
+  return observations;
+}
+
+function renderClusteringSurfaceConsoleSummary(
+  projectRoot: string,
+  outputPath: string,
+  summary: ClusteringSurfaceEvaluationArtifact
+): string {
+  const surfaceById = new Map(summary.surfaces.map((surface) => [surface.surfaceId, surface]));
+  const lines = [
+    color.heading("Broadly Clustering Surface Evaluation"),
+    color.muted(rule("=")),
+    formatDetailLine("Project", projectRoot),
+    formatDetailLine("Run", summary.runId),
+    formatDetailLine(
+      "Corpus",
+      `${summary.corpus.comparableOpinionCount} comparable opinions · ${summary.corpus.embeddingCount} embeddings`
+    ),
+    formatDetailLine(
+      "Surfaces",
+      `${summary.corpus.embeddingSurfaceCount} embedding · ${summary.corpus.projectionSurfaceCount} projection`
+    ),
+    ...summary.surfaces.map((surface) =>
+      formatDetailLine(
+        surface.label,
+        `${surface.method} · k=${surface.effectiveClusterCount} · purity ${formatMetric(surface.embeddingNeighborPurityAtK)} · silhouette ${formatMetric(surface.embeddingSilhouette)}`
+      )
+    ),
+    ...summary.comparisons
+      .filter(
+        (comparison) => {
+          const left = surfaceById.get(comparison.leftSurfaceId);
+          const right = surfaceById.get(comparison.rightSurfaceId);
+
+          return (
+            left !== undefined &&
+            right !== undefined &&
+            left.surfaceKind !== right.surfaceKind &&
+            left.requestedClusterCount === right.requestedClusterCount
+          );
+        }
+      )
+      .slice(0, 5)
+      .map((comparison) =>
+        formatDetailLine(
+          "Compare",
+          `${comparison.leftLabel} vs ${comparison.rightLabel}: ARI ${formatMetric(comparison.adjustedRandIndex)}`
+        )
+      ),
     ...summary.observations.map((observation) => formatDetailLine("Note", observation)),
     formatDetailLine("Output", toPortableRelativePath(projectRoot, outputPath))
   ];

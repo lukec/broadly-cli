@@ -218,6 +218,7 @@ The current command surface is:
 | `broadly extract-opinions` | Compatibility wrapper around the configured opinion extraction path. |
 | `broadly analysis` | Build embeddings, reductions, clusters, semantic hierarchies, and perspective artifacts. |
 | `broadly analysis --evaluate-reducers` | Evaluate existing reduction/cluster artifacts without new model calls. |
+| `broadly analysis --evaluate-clustering-surfaces` | Compare embedding-space clustering against projection-space cluster artifacts. |
 | `broadly report` | Generate `reports/<run-id>/report-bundle.json` from analysis artifacts. |
 | `broadly report site` | Generate a self-contained static HTML report site under `reports/<run-id>/site/`. |
 | `broadly qa` | Run structural and model-assisted QA over analysis/report artifacts. |
@@ -503,6 +504,23 @@ The current evaluator reports:
 - embedding-neighbor and projection-neighbor cluster purity
 - embedding-space and projection-space silhouette scores
 - adjusted Rand agreement between configured cluster views
+
+`broadly analysis --evaluate-clustering-surfaces` is a second no-new-model-calls
+diagnostic path. It clusters the same opinion embeddings directly for each
+configured cluster count, then compares those embedding-space clusters against
+the existing UMAP/PaCMAP projection-space cluster artifacts. It writes:
+
+```text
+runs/<run-id>/cluster-surface-eval/summary.json
+```
+
+The current evaluator reports:
+
+- embedding-neighbor purity for each embedding/projection surface
+- embedding-space silhouette for each surface
+- adjusted Rand agreement between embedding-space and projection-space
+  clusterings
+- largest cluster membership shifts between compared surfaces
 
 Configured views are the durable unit for report variants. A view combines:
 
@@ -875,6 +893,7 @@ failures.
 - statement bank review with status and text edits
 - follow-up voting summary when `vote-summary.json` is attached to a report
 - scatterplots for clustered reductions
+- reducer and clustering-surface diagnostics for analysis runs
 - theme and cluster exploration
 - cluster detail pages with assigned opinions
 - admin views for comments and opinions

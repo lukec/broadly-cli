@@ -132,8 +132,9 @@ program
   .option("--limit <count>", "Only process the first N opinion artifacts from the selected run", parsePositiveInteger)
   .option("--offset <count>", "Skip the first N opinion artifacts from the selected run", parsePositiveInteger)
   .option("--evaluate-reducers", "Evaluate existing reducer artifacts for local-neighbor preservation and cluster agreement", false)
+  .option("--evaluate-clustering-surfaces", "Compare embedding-space clustering against existing reduction-based cluster artifacts", false)
   .option("--run <runId>", "Analysis run id to evaluate; defaults to current, then latest")
-  .option("--neighbor-k <count>", "Neighbor count for reducer evaluation metrics", parsePositiveInteger)
+  .option("--neighbor-k <count>", "Neighbor count for analysis evaluation metrics", parsePositiveInteger)
   .action(
     async (options: {
       project?: string;
@@ -141,6 +142,7 @@ program
       limit?: number;
       offset?: number;
       evaluateReducers: boolean;
+      evaluateClusteringSurfaces: boolean;
       run?: string;
       neighborK?: number;
     }) => {
@@ -152,6 +154,7 @@ program
         ...(options.limit === undefined ? {} : { limit: options.limit }),
         ...(options.offset === undefined ? {} : { offset: options.offset }),
         evaluateReducers: options.evaluateReducers,
+        evaluateClusteringSurfaces: options.evaluateClusteringSurfaces,
         ...(options.run === undefined ? {} : { run: options.run }),
         ...(options.neighborK === undefined ? {} : { neighborK: options.neighborK })
       });
