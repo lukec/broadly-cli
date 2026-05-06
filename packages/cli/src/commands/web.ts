@@ -22,6 +22,10 @@ import {
   type NormalizedCommentRecord
 } from "@broadly/ingest";
 import type { ReportBundle } from "@broadly/report-model";
+import {
+  renderReportInterpretationMap,
+  renderReportInterpretationMapScript
+} from "@broadly/report-site";
 import type {
   Statement,
   StatementModerationStatus,
@@ -2546,7 +2550,7 @@ function renderPublishedReportPage(
 
                 return `<button type="button" class="perspective-switcher-tab ${isPrimary ? "active" : ""}" data-perspective-target="perspective-${escapeHtmlAttribute(
                   perspective.viewId
-                )}">
+                )}" data-report-map-view="${escapeHtmlAttribute(perspective.viewId)}">
                     <span class="perspective-switcher-title">${escapeHtml(perspective.title)}</span>
                     <span class="perspective-switcher-meta">${escapeHtml(
                       config === undefined ? "configuration unavailable" : buildPerspectiveFullSummary(config)
@@ -2557,6 +2561,8 @@ function renderPublishedReportPage(
           </div>
         </article>
       </section>
+      ${renderReportInterpretationMap(report)}
+      ${renderReportInterpretationMapScript(report)}
       ${report.views
         .map(
           (perspective) => {
@@ -5121,6 +5127,9 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
       .panel {
         margin-top: 22px;
       }
+      .section {
+        margin-top: 24px;
+      }
       .grid,
       .record-list,
       .intro-grid,
@@ -5562,6 +5571,80 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         fill-opacity: 0.98 !important;
         stroke-opacity: 0.75 !important;
       }
+      .report-map-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 18px;
+        align-items: stretch;
+        margin-top: 16px;
+      }
+      .report-map-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-top: 16px;
+      }
+      .map-view-button,
+      .map-toggle {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255,255,255,0.92);
+        color: var(--muted);
+        padding: 9px 12px;
+        font: 700 12px/1.2 ui-monospace, monospace;
+      }
+      .map-view-button {
+        cursor: pointer;
+      }
+      .map-view-button.active {
+        color: white;
+        border-color: var(--bl-primary-700);
+        background: linear-gradient(135deg, var(--bl-primary-800), var(--bl-primary-600));
+      }
+      .map-toggle {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .report-map-shell {
+        min-height: 480px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(242,247,251,0.98));
+      }
+      .report-map {
+        display: block;
+        width: 100%;
+        height: 100%;
+        min-height: 480px;
+      }
+      .report-map-point {
+        cursor: pointer;
+        transition: transform 650ms cubic-bezier(.2,.8,.2,1), opacity 180ms ease, fill 180ms ease, r 180ms ease;
+      }
+      .report-map-point.selected {
+        stroke: var(--bl-gray-900);
+        stroke-width: 2.2;
+      }
+      .cluster-shape {
+        transition: opacity 180ms ease;
+        pointer-events: none;
+      }
+      .report-map.hide-shapes .cluster-shape {
+        opacity: 0 !important;
+      }
+      .map-inspector {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 16px;
+        background: rgba(255,255,255,0.94);
+        min-height: 480px;
+      }
+      .map-inspector blockquote {
+        margin-top: 12px;
+      }
       .report-hero {
         background:
           linear-gradient(135deg, rgba(8,38,64,0.98), rgba(20,86,136,0.92)),
@@ -5847,6 +5930,9 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         }
         .perspective-panel-meta {
           text-align: left;
+        }
+        .report-map-layout {
+          grid-template-columns: 1fr;
         }
       }
     </style>

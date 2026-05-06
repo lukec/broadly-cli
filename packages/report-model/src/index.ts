@@ -18,12 +18,39 @@ export interface ThemeSummary {
   clusterIds: string[];
 }
 
+export interface ReportPlotPoint {
+  opinionId: string;
+  clusterId: string;
+  x: number;
+  y: number;
+  opinionText?: string;
+  excerpt?: string;
+  sourceId?: string;
+  highlighted?: boolean;
+}
+
+export interface ReportPlotCluster {
+  clusterId: string;
+  label: string;
+  summary: string;
+  size: number;
+  highlighted?: boolean;
+}
+
+export interface ReportViewPlot {
+  method: string;
+  pointCount: number;
+  clusters: ReportPlotCluster[];
+  points: ReportPlotPoint[];
+}
+
 export interface AnalysisViewReport {
   viewId: string;
   title: string;
   summary: string;
   themes?: ThemeSummary[];
   clusters: ClusterSummary[];
+  plot?: ReportViewPlot;
 }
 
 export interface ReviewBoundarySummary {

@@ -673,12 +673,17 @@ The bundle contains:
 - one report view per perspective artifact
 - optional semantic themes
 - highlighted clusters with evidence excerpts
+- optional full-view plot payloads with opinion ids, coordinates, cluster ids,
+  source ids, and opinion text for interactive report maps
 
 `broadly report site` writes a standalone static site that can be opened from
 disk without the local CLI server. It reads `report-bundle.json`, copies the
 analysis JSON artifacts needed for drill-down, and includes optional statement
 bank, vote summary, attestation data, and the captured review boundary when
-present or explicitly supplied.
+present or explicitly supplied. When report views contain plot payloads, the
+static site includes an interactive interpretation map: switching views animates
+the same opinion points to their new positions, translucent cluster shapes can
+be toggled on or off, and clicking a point shows the underlying opinion.
 
 Static site output:
 
@@ -1004,6 +1009,8 @@ failures.
 - opinion extraction run summaries
 - analysis run summaries
 - report view with perspective switching
+- animated report interpretation map with point inspection and cluster-shape
+  overlays
 - statement bank review with status and text edits
 - follow-up voting summary when `vote-summary.json` is attached to a report
 - scatterplots for clustered reductions
@@ -1070,9 +1077,6 @@ The implementation is useful but not finished.
 
 - The active analysis pipeline is still mostly in `@broadly/cli`, not in
   `@broadly/pipeline`.
-- The static report site is intentionally simple HTML; richer offline maps and
-  drill-down interactions can build on the copied JSON data and visible review
-  boundary summary.
 - Statement generation is deterministic and report-derived in the first pass;
   it does not yet call a statement-specific LLM prompt.
 - Statement QA is heuristic and local. It does not yet use a model judge.

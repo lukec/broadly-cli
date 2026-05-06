@@ -7,6 +7,7 @@ import { resolveProjectPaths } from "@broadly/core";
 import type {
   AttestationManifest,
   ReportBundle,
+  ReportViewPlot,
   StatementBank,
   VoteRoundSummary
 } from "@broadly/report-model";
@@ -29,10 +30,18 @@ export interface ReportSiteCommandOptions {
 }
 
 interface ClusterArtifact {
+  method?: string;
+  members?: Array<{
+    opinionId?: string;
+    clusterId?: number;
+    x?: number;
+    y?: number;
+  }>;
   clusters?: Array<{
     clusterId?: number;
     label?: string;
     summary?: string;
+    size?: number;
     representativeOpinions?: Array<{
       opinionId?: string;
       excerpt?: string;
@@ -80,6 +89,8 @@ interface AnalysisManifest {
   runId?: string;
   createdAt?: string;
   input?: {
+    opinionRunId?: string;
+    opinionsDir?: string;
     review?: {
       configPath?: string;
       configSha256?: string;
@@ -90,7 +101,18 @@ interface AnalysisManifest {
       excludedOpinions?: number;
       excludedByStatus?: Record<string, number>;
     };
+    groups?: Array<{
+      opinionRunId?: string;
+      opinionsDir?: string;
+    }>;
   };
+}
+
+interface LoadedOpinionArtifact {
+  opinionId?: string;
+  opinionText?: string;
+  excerpt?: string;
+  sourceId?: string;
 }
 
 export async function generateReport(options: ReportCommandOptions): Promise<void> {
@@ -119,6 +141,7 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
   const hierarchiesDir = path.join(runDir, "hierarchies");
   const perspectiveFiles = await readdir(perspectivesDir, { withFileTypes: true }).catch(() => []);
   const hierarchyArtifacts = await loadSemanticMergeArtifacts(hierarchiesDir);
+  const opinionLookup = await loadReportOpinionLookup(manifest);
   const views = [];
 
   for (const entry of perspectiveFiles
@@ -189,7 +212,16 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
               excerpt: opinion.excerpt ?? opinion.opinionText ?? ""
             }))
         };
-      })
+      }),
+      ...(chosenClusterArtifact === null
+        ? {}
+        : {
+            plot: buildReportViewPlot(
+              chosenClusterArtifact,
+              new Set((perspective.highlights ?? []).map((highlight) => String(highlight.clusterId ?? "unknown"))),
+              opinionLookup
+            )
+          })
     });
   }
 
@@ -488,6 +520,95 @@ async function copyAnalysisData(
       );
     }
   }
+}
+
+async function loadReportOpinionLookup(
+  manifest: AnalysisManifest | null
+): Promise<Record<string, LoadedOpinionArtifact>> {
+  const opinionsDirs = uniqueStrings(
+    [
+      manifest?.input?.opinionsDir,
+      ...(manifest?.input?.groups ?? []).map((group) => group.opinionsDir)
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+  );
+  const lookup: Record<string, LoadedOpinionArtifact> = {};
+
+  for (const opinionsDir of opinionsDirs) {
+    const entries = await readdir(opinionsDir, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+
+      const artifact = await readJsonFile<LoadedOpinionArtifact>(path.join(opinionsDir, entry.name));
+
+      if (artifact?.opinionId !== undefined) {
+        lookup[artifact.opinionId] = artifact;
+      }
+    }
+  }
+
+  return lookup;
+}
+
+function buildReportViewPlot(
+  artifact: ClusterArtifact,
+  highlightedClusterIds: Set<string>,
+  opinionLookup: Record<string, LoadedOpinionArtifact>
+): ReportViewPlot {
+  const clusterById = new Map(
+    (artifact.clusters ?? [])
+      .filter((cluster) => typeof cluster.clusterId === "number")
+      .map((cluster) => [String(cluster.clusterId), cluster] as const)
+  );
+  const points = (artifact.members ?? [])
+    .filter(
+      (
+        member
+      ): member is { opinionId: string; clusterId: number; x: number; y: number } =>
+        typeof member.opinionId === "string" &&
+        typeof member.clusterId === "number" &&
+        typeof member.x === "number" &&
+        typeof member.y === "number"
+    )
+    .map((member) => {
+      const opinion = opinionLookup[member.opinionId];
+      const clusterId = String(member.clusterId);
+
+      return {
+        opinionId: member.opinionId,
+        clusterId,
+        x: member.x,
+        y: member.y,
+        ...(opinion?.opinionText === undefined ? {} : { opinionText: opinion.opinionText }),
+        ...(opinion?.excerpt === undefined ? {} : { excerpt: opinion.excerpt }),
+        ...(opinion?.sourceId === undefined ? {} : { sourceId: opinion.sourceId }),
+        ...(highlightedClusterIds.has(clusterId) ? { highlighted: true } : {})
+      };
+    });
+
+  return {
+    method: artifact.method ?? "unknown",
+    pointCount: points.length,
+    clusters: [...clusterById.entries()]
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .map(([clusterId, cluster]) => ({
+        clusterId,
+        label: cluster.label ?? `Cluster ${clusterId}`,
+        summary: cluster.summary ?? "",
+        size:
+          typeof cluster.size === "number"
+            ? cluster.size
+            : points.filter((point) => point.clusterId === clusterId).length,
+        ...(highlightedClusterIds.has(clusterId) ? { highlighted: true } : {})
+      })),
+    points
+  };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 async function loadSemanticMergeArtifacts(
