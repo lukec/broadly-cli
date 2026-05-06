@@ -2479,7 +2479,6 @@ function renderPublishedReportPage(
       themeCount: String(perspective.themes?.length ?? 0)
     };
   });
-  const perspectiveGroupId = `perspectives-${escapeHtmlAttribute(runId)}`;
 
   return renderPage(
     data,
@@ -2492,76 +2491,15 @@ function renderPublishedReportPage(
         <p class="lede">${escapeHtml(primaryPerspective?.title ?? report.primaryViewId)}</p>
         <p class="meta">Report ${escapeHtml(runId)} · analysis run ${escapeHtml(report.analysisRunId)} · generated ${escapeHtml(report.createdAt)}</p>
       </section>
-      ${
-        report.review === undefined
-          ? ""
-          : `<section class="panel">
-              <article class="card feature-card">
-                <p class="eyebrow">Review Boundary</p>
-                <h2>What evidence this report included</h2>
-                <p class="meta">This report reflects the review config that shaped the analysis run. Excluded content still exists in the project; it was just outside the inclusion boundary for this report.</p>
-                ${renderKeyValueList([
-                  [
-                    "Included opinions",
-                    `${report.review.includedOpinions} of ${report.review.totalOpinionsAvailable}`
-                  ],
-                  ["Excluded opinions", String(report.review.excludedOpinions)],
-                  [
-                    "Included comment statuses",
-                    report.review.includeCommentStatuses.join(", ") || "none"
-                  ],
-                  [
-                    "Included opinion statuses",
-                    report.review.includeOpinionStatuses.join(", ") || "none"
-                  ],
-                  [
-                    "Review config",
-                    toPortableRelativePath(data.projectRoot, report.review.configPath)
-                  ]
-                ])}
-                <div class="stack">
-                  <p class="section-label">Excluded by status</p>
-                  <div class="meta-chip-row">
-                    ${Object.entries(report.review.excludedByStatus)
-                      .filter(([, count]) => count > 0)
-                      .map(
-                        ([status, count]) =>
-                          `${renderReviewStatusBadge(status as ReviewStatus)}${renderMetaChip(String(count))}`
-                      )
-                      .join("") || renderMetaChip("none")}
-                  </div>
-                </div>
-              </article>
-            </section>`
-      }
       ${voteSummary === null ? "" : renderVoteSummarySection(voteSummary)}
-      <section class="panel">
-        <article class="card feature-card">
-          <p class="eyebrow">Perspectives</p>
-          <h2>Analysis views</h2>
-          <p class="meta">Switch between the different readings produced from the same opinion set. Each view keeps the same source evidence, but may use a different cluster configuration or emphasis.</p>
-          <div class="perspective-switcher" data-perspective-group="${perspectiveGroupId}">
-            ${report.views
-              .map((perspective) => {
-                const config = perspectiveConfigs.find(
-                  (item) => item.perspectiveId === perspective.viewId
-                );
-                const isPrimary = perspective.viewId === report.primaryViewId;
-
-                return `<button type="button" class="perspective-switcher-tab ${isPrimary ? "active" : ""}" data-perspective-target="perspective-${escapeHtmlAttribute(
-                  perspective.viewId
-                )}" data-report-map-view="${escapeHtmlAttribute(perspective.viewId)}">
-                    <span class="perspective-switcher-title">${escapeHtml(perspective.title)}</span>
-                    <span class="perspective-switcher-meta">${escapeHtml(
-                      config === undefined ? "configuration unavailable" : buildPerspectiveFullSummary(config)
-                    )}</span>
-                  </button>`;
-              })
-              .join("")}
-          </div>
-        </article>
-      </section>
-      ${renderReportInterpretationMap(report)}
+      ${renderReportInterpretationMap(report, {
+        eyebrow: "Perspectives",
+        title: "Analysis views",
+        description:
+          "Switch between the different readings produced from the same opinion set. The points animate into each selected view; click any point to inspect the source opinion.",
+        linkPerspectivePanels: true,
+        perspectiveGroupId: `perspectives-${runId}`
+      })}
       ${renderReportInterpretationMapScript(report)}
       ${report.views
         .map(
@@ -2743,8 +2681,67 @@ function renderPublishedReportPage(
           }
         )
         .join("")}
+      ${renderReportReviewBoundarySection(report, data.projectRoot)}
     </main>`
   );
+}
+
+function renderReportReviewBoundarySection(report: ReportBundle, projectRoot: string): string {
+  const review = report.review;
+
+  if (review === undefined) {
+    return "";
+  }
+
+  const excludedStatuses = Object.entries(review.excludedByStatus)
+    .filter(([, count]) => count > 0)
+    .sort(([leftStatus], [rightStatus]) => leftStatus.localeCompare(rightStatus));
+
+  return `<section class="panel report-review-boundary">
+    <article class="card feature-card review-boundary-card">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Review Boundary</p>
+          <h2>Evidence included in this report</h2>
+        </div>
+        <p class="meta">${escapeHtml(toPortableRelativePath(projectRoot, review.configPath))}</p>
+      </div>
+      <p class="meta">This is the report's inclusion boundary. Excluded content remains in the project; it was outside the analysis set used for this report.</p>
+      <div class="review-boundary-grid">
+        <div class="review-boundary-stat">
+          <strong>${review.includedOpinions} / ${review.totalOpinionsAvailable}</strong>
+          <span>opinions included</span>
+        </div>
+        <div class="review-boundary-stat">
+          <strong>${review.excludedOpinions}</strong>
+          <span>opinions excluded</span>
+        </div>
+        <div class="review-boundary-stat">
+          <strong>${escapeHtml(formatIncludedStatuses(review.includeCommentStatuses as ReviewStatus[]))}</strong>
+          <span>comment statuses</span>
+        </div>
+        <div class="review-boundary-stat">
+          <strong>${escapeHtml(formatIncludedStatuses(review.includeOpinionStatuses as ReviewStatus[]))}</strong>
+          <span>opinion statuses</span>
+        </div>
+      </div>
+      <div class="stack">
+        <p class="section-label">Excluded statuses</p>
+        <div class="meta-chip-row">
+          ${
+            excludedStatuses.length === 0
+              ? renderMetaChip("none")
+              : excludedStatuses
+                  .map(
+                    ([status, count]) =>
+                      `${renderReviewStatusBadge(status as ReviewStatus)}${renderMetaChip(String(count))}`
+                  )
+                  .join("")
+          }
+        </div>
+      </div>
+    </article>
+  </section>`;
 }
 
 function buildPerspectiveFullSummary(config: {
@@ -4987,7 +4984,6 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         if (window.location.hash !== "#" + tabTarget) {
           history.replaceState(null, "", "#" + tabTarget);
         }
-        window.scrollTo({ top: 0, behavior: "smooth" });
       });
 
       const hashPanelId = window.location.hash.startsWith("#")
@@ -5644,6 +5640,35 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
       }
       .map-inspector blockquote {
         margin-top: 12px;
+      }
+      .review-boundary-card {
+        background: rgba(250,252,254,0.96);
+        box-shadow: none;
+      }
+      .review-boundary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin: 16px 0;
+      }
+      .review-boundary-stat {
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.9);
+      }
+      .review-boundary-stat strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--bl-gray-900);
+        font-size: 1.2rem;
+        line-height: 1.2;
+      }
+      .review-boundary-stat span {
+        color: var(--muted);
+        font: 700 12px/1.35 ui-monospace, monospace;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
       }
       .report-hero {
         background:

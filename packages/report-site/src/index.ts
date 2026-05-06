@@ -11,6 +11,14 @@ export interface StaticReportRenderOptions {
   attestation?: AttestationManifest | null;
 }
 
+export interface ReportInterpretationMapOptions {
+  eyebrow?: string;
+  title?: string;
+  description?: string;
+  linkPerspectivePanels?: boolean;
+  perspectiveGroupId?: string;
+}
+
 export function renderStaticReportHtml(
   report: ReportBundle,
   options: StaticReportRenderOptions = {}
@@ -107,6 +115,49 @@ export function renderStaticReportHtml(
         padding: 8px 10px;
         background: #fafbfc;
         color: var(--muted);
+      }
+      .review-boundary-card {
+        background: #fbfcfe;
+        box-shadow: none;
+      }
+      .review-boundary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .review-boundary-stat {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fff;
+      }
+      .review-boundary-stat strong {
+        display: block;
+        font-size: 1.2rem;
+      }
+      .review-boundary-stat span {
+        color: var(--muted);
+        font: 700 12px/1.35 ui-monospace, monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .review-boundary-status-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .review-boundary-chip {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        padding: 7px 10px;
+        color: var(--muted);
+        font: 700 12px/1.2 ui-monospace, monospace;
       }
       .section {
         margin-top: 24px;
@@ -230,7 +281,6 @@ export function renderStaticReportHtml(
           ${report.questions.map((question) => `<li>${escapeHtml(question)}</li>`).join("")}
         </ul>
       </section>
-      ${renderStaticReviewBoundarySection(report)}
       ${renderStaticInterpretationMap(report)}
       <section class="grid perspectives">
         ${report.views
@@ -319,6 +369,7 @@ export function renderStaticReportHtml(
               <p class="meta">${options.attestation.artifacts.length} hashed artifact(s) · code ${escapeHtml(options.attestation.codeVersion)}</p>
             </section>`
       }
+      ${renderStaticReviewBoundarySection(report)}
     </main>
     ${renderStaticReportBehaviorScript(report)}
   </body>
@@ -329,15 +380,21 @@ export function renderPlaceholderReportHtml(report: ReportBundle): string {
   return renderStaticReportHtml(report);
 }
 
-export function renderReportInterpretationMap(report: ReportBundle): string {
-  return renderStaticInterpretationMap(report);
+export function renderReportInterpretationMap(
+  report: ReportBundle,
+  options: ReportInterpretationMapOptions = {}
+): string {
+  return renderStaticInterpretationMap(report, options);
 }
 
 export function renderReportInterpretationMapScript(report: ReportBundle): string {
   return renderStaticReportBehaviorScript(report);
 }
 
-function renderStaticInterpretationMap(report: ReportBundle): string {
+function renderStaticInterpretationMap(
+  report: ReportBundle,
+  options: ReportInterpretationMapOptions = {}
+): string {
   const plottedViews = report.views.filter((view) => (view.plot?.points.length ?? 0) > 0);
 
   if (plottedViews.length === 0) {
@@ -346,17 +403,30 @@ function renderStaticInterpretationMap(report: ReportBundle): string {
 
   const initialView =
     plottedViews.find((view) => view.viewId === report.primaryViewId) ?? plottedViews[0];
+  const eyebrow = options.eyebrow ?? "Perspectives";
+  const title = options.title ?? "Analysis views";
+  const description =
+    options.description ??
+    "Switch between report interpretations to see the same opinion points move. Click a point to inspect the opinion behind it.";
+  const linkPerspectivePanels = options.linkPerspectivePanels === true;
+  const perspectiveGroupAttribute = linkPerspectivePanels
+    ? ` data-perspective-group="${escapeHtmlAttribute(options.perspectiveGroupId ?? "report-map-perspectives")}"`
+    : "";
 
-  return `<section class="card section" data-report-map data-active-view-id="${escapeHtml(initialView?.viewId ?? plottedViews[0]?.viewId ?? "")}">
-    <p class="eyebrow">Interpretation Map</p>
-    <h2>How opinions move between views</h2>
-    <p class="meta">Switch views to see the same opinion points move into the selected report interpretation. Click a point to inspect the opinion behind it.</p>
+  return `<section class="card section" data-report-map${perspectiveGroupAttribute} data-active-view-id="${escapeHtmlAttribute(initialView?.viewId ?? plottedViews[0]?.viewId ?? "")}">
+    <p class="eyebrow">${escapeHtml(eyebrow)}</p>
+    <h2>${escapeHtml(title)}</h2>
+    <p class="meta">${escapeHtml(description)}</p>
     <div class="report-map-controls">
       ${plottedViews
         .map(
           (view) => `<button type="button" class="map-view-button ${
             view.viewId === initialView?.viewId ? "active" : ""
-          }" data-report-map-view="${escapeHtml(view.viewId)}">${escapeHtml(view.title)}</button>`
+          }" data-report-map-view="${escapeHtmlAttribute(view.viewId)}"${
+            linkPerspectivePanels
+              ? ` data-perspective-target="perspective-${escapeHtmlAttribute(view.viewId)}"`
+              : ""
+          }>${escapeHtml(view.title)}</button>`
         )
         .join("")}
       <label class="map-toggle"><input type="checkbox" data-report-map-shapes checked /> Cluster shapes</label>
@@ -656,29 +726,41 @@ function renderStaticReviewBoundarySection(report: ReportBundle): string {
     .filter(([, count]) => count > 0)
     .sort(([leftStatus], [rightStatus]) => leftStatus.localeCompare(rightStatus));
 
-  return `<section class="card section">
+  return `<section class="card section review-boundary-card">
     <p class="eyebrow">Review Boundary</p>
     <h2>What evidence this report included</h2>
-    <p class="meta">This report reflects the review config captured by the analysis run. Excluded content still exists in the project; it was outside this report's inclusion boundary.</p>
-    <div class="stats">
-      <span class="stat">${review.includedOpinions} of ${review.totalOpinionsAvailable} opinion(s) included</span>
-      <span class="stat">${review.excludedOpinions} opinion(s) excluded</span>
-      <span class="stat">comment statuses: ${escapeHtml(renderStatusSummary(review.includeCommentStatuses))}</span>
-      <span class="stat">opinion statuses: ${escapeHtml(renderStatusSummary(review.includeOpinionStatuses))}</span>
-      <span class="stat">config: ${escapeHtml(renderPortableReviewConfigPath(review.configPath))}</span>
+    <p class="meta">The report uses this inclusion boundary. Excluded content remains in the project, outside this report's analysis set.</p>
+    <div class="review-boundary-grid">
+      <div class="review-boundary-stat">
+        <strong>${review.includedOpinions} / ${review.totalOpinionsAvailable}</strong>
+        <span>opinions included</span>
+      </div>
+      <div class="review-boundary-stat">
+        <strong>${review.excludedOpinions}</strong>
+        <span>opinions excluded</span>
+      </div>
+      <div class="review-boundary-stat">
+        <strong>${escapeHtml(renderStatusSummary(review.includeCommentStatuses))}</strong>
+        <span>comment statuses</span>
+      </div>
+      <div class="review-boundary-stat">
+        <strong>${escapeHtml(renderStatusSummary(review.includeOpinionStatuses))}</strong>
+        <span>opinion statuses</span>
+      </div>
     </div>
-    <section class="cluster">
-      <h3>Excluded by status</h3>
+    <p class="meta" style="margin-top: 14px;">Config: ${escapeHtml(renderPortableReviewConfigPath(review.configPath))}</p>
+    <section class="cluster" style="margin-top: 16px;">
+      <h3>Excluded statuses</h3>
       ${
         excludedStatuses.length === 0
           ? `<p class="meta">No opinions were excluded by status.</p>`
-          : `<ul class="quote-list">
+          : `<div class="review-boundary-status-row">
               ${excludedStatuses
                 .map(
-                  ([status, count]) => `<li>${escapeHtml(status)}: ${count}</li>`
+                  ([status, count]) => `<span class="review-boundary-chip">${escapeHtml(status)} <strong>${count}</strong></span>`
                 )
                 .join("")}
-            </ul>`
+            </div>`
       }
     </section>
   </section>`;
@@ -709,4 +791,8 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replaceAll("`", "&#96;");
 }
