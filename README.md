@@ -211,9 +211,9 @@ broadly analysis --strategy hybrid-taxonomy --project opengov2017
 
 This path uses `codex exec` with `gpt-5.5` and medium reasoning by default.
 It writes durable taxonomy artifacts under `taxonomies/<run-id>/` and updates
-`taxonomies/current-run.txt`. The `broadly web` Theme Taxonomy page shows the
-taxonomy-native map by default, with a vector overlay available for comparison
-against the normal reducer coordinates.
+`taxonomies/current-run.txt`. In `broadly web` it appears as an analysis run
+with a hybrid backend. Its default map shows category-native positions, with a
+vector overlay available for comparison against the normal reducer coordinates.
 Use `--dry-run` to prepare schemas, batches, and manifests without spending
 Codex quota.
 

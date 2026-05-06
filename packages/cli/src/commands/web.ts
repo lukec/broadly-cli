@@ -974,30 +974,17 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
           (await findLatestTaxonomyRun(projectPaths.taxonomiesDir));
 
         if (runId === null) {
-          response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          response.end(renderTaxonomyEmptyPage(dashboard));
+          redirectResponse(response, "/pipeline/analysis");
           return;
         }
 
-        const selectedCategoryId = requestUrl.searchParams.get("category");
-        const layout = parseTaxonomyPlotLayout(requestUrl.searchParams.get("layout"));
-        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
-        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun, layout);
-
-        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end(renderTaxonomyRunPage(dashboard, taxonomyRun, plot, selectedCategoryId));
+        redirectResponse(response, buildHybridAnalysisRunHref(runId, requestUrl.searchParams, ""));
         return;
       }
 
       if (requestUrl.pathname.startsWith("/taxonomies/")) {
         const runId = decodeURIComponent(requestUrl.pathname.slice("/taxonomies/".length));
-        const selectedCategoryId = requestUrl.searchParams.get("category");
-        const layout = parseTaxonomyPlotLayout(requestUrl.searchParams.get("layout"));
-        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
-        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun, layout);
-
-        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end(renderTaxonomyRunPage(dashboard, taxonomyRun, plot, selectedCategoryId));
+        redirectResponse(response, buildHybridAnalysisRunHref(runId, requestUrl.searchParams, ""));
         return;
       }
 
@@ -1105,10 +1092,21 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         }
 
         const runId = decodeURIComponent(requestUrl.pathname.slice("/analysis-runs/".length));
-        const run = await loadAnalysisRun(projectPaths.runsDir, runId);
+        const run = await loadAnalysisRunIfAvailable(projectPaths.runsDir, runId);
+
+        if (run !== null) {
+          response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          response.end(renderAnalysisRunPage(dashboard, runId, run));
+          return;
+        }
+
+        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
+        const layout = parseTaxonomyPlotLayout(requestUrl.searchParams.get("layout"));
+        const selectedCategoryId = requestUrl.searchParams.get("category");
+        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun, layout);
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end(renderAnalysisRunPage(dashboard, runId, run));
+        response.end(renderHybridAnalysisRunPage(dashboard, taxonomyRun, plot, selectedCategoryId));
         return;
       }
 
@@ -1220,6 +1218,21 @@ async function loadAnalysisRun(
     clusteringSurfaceEvaluation,
     graphBuilderEvaluation
   };
+}
+
+async function loadAnalysisRunIfAvailable(
+  runsDir: string,
+  runId: string
+): Promise<LoadedAnalysisRun | null> {
+  const manifest = await readJsonFile<LoadedAnalysisRun["manifest"]>(
+    path.join(runsDir, runId, "manifest.json")
+  );
+
+  if (manifest === null) {
+    return null;
+  }
+
+  return loadAnalysisRun(runsDir, runId);
 }
 
 async function loadReportBundle(reportsDir: string, runId: string): Promise<ReportBundle> {
@@ -1529,6 +1542,15 @@ function buildTaxonomyLayoutPlot(taxonomyRun: LoadedTaxonomyRun): TaxonomyPlot {
 
 function parseTaxonomyPlotLayout(raw: string | null): TaxonomyPlotLayout {
   return raw === "vector" ? "vector" : "taxonomy";
+}
+
+function buildHybridAnalysisRunHref(
+  runId: string,
+  params: URLSearchParams,
+  anchor: string
+): string {
+  const query = params.toString();
+  return `/analysis-runs/${encodeURIComponent(runId)}${query.length === 0 ? "" : `?${query}`}${anchor}`;
 }
 
 function deterministicAngle(seed: string): number {
@@ -2456,24 +2478,7 @@ function renderAdminOpinionDetailPage(
   );
 }
 
-function renderTaxonomyEmptyPage(data: ProjectDashboardData): string {
-  return renderPage(
-    data,
-    "Theme Taxonomy",
-    `<main class="shell">
-      ${renderHeader(data, "Theme Taxonomy")}
-      <section class="panel">
-        <article class="card">
-          <p class="eyebrow">Hybrid Taxonomy</p>
-          <h2>No hybrid taxonomy runs yet</h2>
-          <p class="meta">Run <code>broadly analysis --strategy hybrid-taxonomy</code> to create a taxonomy.</p>
-        </article>
-      </section>
-    </main>`
-  );
-}
-
-function renderTaxonomyRunPage(
+function renderHybridAnalysisRunPage(
   data: ProjectDashboardData,
   taxonomyRun: LoadedTaxonomyRun,
   plot: TaxonomyPlot,
@@ -2511,27 +2516,27 @@ function renderTaxonomyRunPage(
       params.push(`layout=${encodeURIComponent(layout)}`);
     }
 
-    return `/taxonomies/${encodeURIComponent(taxonomyRun.runId)}${
+    return `/analysis-runs/${encodeURIComponent(taxonomyRun.runId)}${
       params.length === 0 ? "" : `?${params.join("&")}`
     }${anchor}`;
   };
   const selectedCategoryLinkId = selectedCategory?.category_id ?? null;
   const plotSourceLabel =
     plot.layout === "taxonomy"
-      ? "Layout from taxonomy assignments"
+      ? "Layout from hybrid category assignments"
       : plot.analysisRunId === null
         ? "No vector coordinates available"
         : `Vector overlay from ${plot.analysisRunId}`;
 
   return renderPage(
     data,
-    "Theme Taxonomy",
+    "Analysis Run",
     `<main class="shell">
-      ${renderHeader(data, "Theme Taxonomy")}
+      ${renderHeader(data, "Analysis Run")}
       <section class="panel report-hero">
         <p class="eyebrow"><a href="/pipeline/analysis">Back to Perform Analysis</a></p>
-        <h2>Hybrid taxonomy: ${escapeHtml(taxonomyRun.runId)}</h2>
-        <p class="lede">Analysis artifact · ${escapeHtml(taxonomyRun.manifest.status ?? "unknown")} · ${escapeHtml(taxonomyRun.manifest.createdAt ?? "")}</p>
+        <h2>${escapeHtml(taxonomyRun.runId)}</h2>
+        <p class="lede">Hybrid backend · ${escapeHtml(taxonomyRun.manifest.status ?? "unknown")} · ${escapeHtml(taxonomyRun.manifest.createdAt ?? "")}</p>
         <div class="meta-chip-row">
           ${renderMetaChip(`${escapeHtml(String(taxonomyRun.assignments.length))} assignments`)}
           ${renderMetaChip(`${escapeHtml(String(categories.length))} categories`)}
@@ -2543,13 +2548,13 @@ function renderTaxonomyRunPage(
         <article class="card">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Two-tier map</p>
+              <p class="eyebrow">Hybrid analysis view</p>
               <h2>${escapeHtml(selectedCategory?.label ?? "All categories")}</h2>
             </div>
             <p class="meta">${escapeHtml(plotSourceLabel)}</p>
           </div>
           <div class="taxonomy-toolbar">
-            <a class="button-link button-link-secondary button-link-small ${plot.layout === "taxonomy" ? "active" : ""}" href="${buildTaxonomyHref(selectedCategoryLinkId, "taxonomy", "#taxonomy-map")}">Taxonomy layout</a>
+            <a class="button-link button-link-secondary button-link-small ${plot.layout === "taxonomy" ? "active" : ""}" href="${buildTaxonomyHref(selectedCategoryLinkId, "taxonomy", "#taxonomy-map")}">Category layout</a>
             <a class="button-link button-link-secondary button-link-small ${plot.layout === "vector" ? "active" : ""}" href="${buildTaxonomyHref(selectedCategoryLinkId, "vector", "#taxonomy-map")}">Vector overlay</a>
           </div>
           <div class="taxonomy-toolbar">
@@ -2586,7 +2591,7 @@ function renderTaxonomyRunPage(
                 (theme) => theme.parent_category_id === categoryId
               ).length;
 
-              return `<a class="card link-card taxonomy-category-card" href="/taxonomies/${encodeURIComponent(
+              return `<a class="card link-card taxonomy-category-card" href="/analysis-runs/${encodeURIComponent(
                 taxonomyRun.runId
               )}?category=${encodeURIComponent(categoryId)}${
                 plot.layout === "taxonomy" ? "" : `&layout=${encodeURIComponent(plot.layout)}`
@@ -2855,7 +2860,7 @@ function renderAnalysisPage(data: ProjectDashboardData): string {
           <p class="section-label">Current state</p>
           <p>${escapeHtml(
             data.analysis.runCount > 0
-              ? `Found ${data.analysis.runCount} item(s) in runs/. This stage has produced analysis artifacts.`
+              ? `Found ${data.analysis.runCount} analysis artifact set(s). This includes vector and hybrid backends when present.`
               : "No analysis artifacts found in runs/ yet. The pipeline has opinion artifacts, but clustering, synthesis, and map-oriented analysis have not been executed."
           )}</p>
         </article>
@@ -2880,8 +2885,12 @@ function renderAnalysisPage(data: ProjectDashboardData): string {
                   (run) => `<a class="card link-card" href="/analysis-runs/${encodeURIComponent(run.runId)}">
                       <p class="eyebrow">${escapeHtml(run.createdAt)}</p>
                       <h3>${escapeHtml(run.runId)}</h3>
-                      <p>${escapeHtml(run.embeddingModelLabel)}</p>
-                      <p class="meta">${escapeHtml(run.status)} · reductions ${escapeHtml(run.reductionMethods.join(", "))} · clusters ${escapeHtml(run.clusterCounts.join(", "))}</p>
+                      <p>${escapeHtml(
+                        run.backend === "hybrid-taxonomy"
+                          ? "Hybrid backend"
+                          : run.embeddingModelLabel
+                      )}</p>
+                      <p class="meta">${escapeHtml(renderAnalysisRunSummaryMeta(run))}</p>
                     </a>`
                 )
                 .join("")}
@@ -2889,6 +2898,14 @@ function renderAnalysisPage(data: ProjectDashboardData): string {
       </section>
     </main>`
   );
+}
+
+function renderAnalysisRunSummaryMeta(run: ProjectDashboardData["analysis"]["runs"][number]): string {
+  if (run.backend === "hybrid-taxonomy") {
+    return `${run.status} · ${run.categoryCount ?? 0} categories · ${run.subgroupCount ?? 0} subgroups · ${run.assignmentCount ?? 0} assignments`;
+  }
+
+  return `${run.status} · reductions ${run.reductionMethods.join(", ")} · clusters ${run.clusterCounts.join(", ")}`;
 }
 
 function renderReportPage(data: ProjectDashboardData): string {
@@ -4507,7 +4524,6 @@ function renderHeader(data: ProjectDashboardData, activePage: string): string {
     { href: "/pipeline/ingest", label: "Ingest Comments", key: "Ingest Comments" },
     { href: "/pipeline/opinions", label: "Extract Opinions", key: "Extract Opinions" },
     { href: "/pipeline/analysis", label: "Perform Analysis", key: "Perform Analysis" },
-    { href: "/taxonomies", label: "Theme Taxonomy", key: "Theme Taxonomy" },
     { href: "/pipeline/report", label: "Create Report", key: "Create Report" },
     { href: "/statements", label: "Statements", key: "Statements" },
     { href: "/admin", label: "Admin Review", key: "Admin Review" }

@@ -39,6 +39,7 @@ export interface IngestSummary {
 export interface AnalysisRunSummary {
   runId: string;
   manifestPath: string;
+  backend: "vector" | "hybrid-taxonomy";
   createdAt: string;
   updatedAt: string;
   status: string;
@@ -55,6 +56,10 @@ export interface AnalysisRunSummary {
   clusterArtifactsWritten: number;
   clusterArtifactsFailed: number;
   perspectiveArtifactsWritten: number;
+  categoryCount?: number;
+  subgroupCount?: number;
+  assignmentCount?: number;
+  outOfScopeCount?: number;
 }
 
 export interface AnalysisSummary {
@@ -96,12 +101,11 @@ export async function loadProjectDashboard(
   const projectPaths = resolveProjectPaths(projectRoot);
   const ingest = await loadIngestSummary(projectPaths, config);
   const currentOpinionRunId = await readCurrentRunId(projectPaths.opinionsCurrentRunPath);
-  const currentAnalysisRunId = await readCurrentRunId(projectPaths.analysisCurrentRunPath);
   const opinionRuns = prioritizeCurrentRun(
     await loadOpinionRuns(path.join(projectPaths.dataDir, "opinions")),
     currentOpinionRunId
   );
-  const analysis = await loadAnalysisSummary(projectPaths, currentAnalysisRunId);
+  const analysis = await loadAnalysisSummary(projectPaths);
   const report = await loadReportSummary(projectPaths, config);
 
   return {
@@ -342,10 +346,12 @@ async function loadIngestSummary(
 }
 
 async function loadAnalysisSummary(
-  projectPaths: ReturnType<typeof resolveProjectPaths>,
-  currentRunId: string | null
+  projectPaths: ReturnType<typeof resolveProjectPaths>
 ): Promise<AnalysisSummary> {
-  const runs = prioritizeCurrentRun(await loadAnalysisRuns(projectPaths.runsDir), currentRunId);
+  const runs = [
+    ...(await loadAnalysisRuns(projectPaths.runsDir)),
+    ...(await loadHybridAnalysisRuns(projectPaths.taxonomiesDir))
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   return {
     runCount: runs.length,
@@ -400,6 +406,7 @@ async function loadAnalysisRuns(runsDir: string): Promise<AnalysisRunSummary[]> 
     runs.push({
       runId: entry.name,
       manifestPath,
+      backend: "vector",
       createdAt: manifest.createdAt,
       updatedAt: manifest.updatedAt ?? manifest.createdAt,
       status: manifest.status ?? "unknown",
@@ -419,6 +426,66 @@ async function loadAnalysisRuns(runsDir: string): Promise<AnalysisRunSummary[]> 
       clusterArtifactsWritten: manifest.output?.clusterArtifactsWritten ?? 0,
       clusterArtifactsFailed: manifest.output?.clusterArtifactsFailed ?? 0,
       perspectiveArtifactsWritten: manifest.output?.perspectiveArtifactsWritten ?? 0
+    });
+  }
+
+  return runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+async function loadHybridAnalysisRuns(taxonomiesDir: string): Promise<AnalysisRunSummary[]> {
+  const entries = await readdir(taxonomiesDir, { withFileTypes: true }).catch(() => []);
+  const runs: AnalysisRunSummary[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const manifestPath = path.join(taxonomiesDir, entry.name, "manifest.json");
+    const manifest = await readJsonFile<{
+      createdAt?: string;
+      updatedAt?: string;
+      status?: string;
+      model?: { provider?: string; modelId?: string; reasoningEffort?: string };
+      input?: { opinionsSelected?: number };
+    }>(manifestPath);
+    const taxonomy = await readJsonFile<{
+      categories?: unknown[];
+      themes?: unknown[];
+    }>(path.join(taxonomiesDir, entry.name, "taxonomy.json"));
+    const assignmentSummary = await readJsonFile<{
+      assignmentCount?: number;
+      outOfScopeCount?: number;
+    }>(path.join(taxonomiesDir, entry.name, "assignment-summary.json"));
+
+    if (manifest?.createdAt === undefined) {
+      continue;
+    }
+
+    runs.push({
+      runId: entry.name,
+      manifestPath,
+      backend: "hybrid-taxonomy",
+      createdAt: manifest.createdAt,
+      updatedAt: manifest.updatedAt ?? manifest.createdAt,
+      status: manifest.status ?? "unknown",
+      opinionsSelected: manifest.input?.opinionsSelected ?? assignmentSummary?.assignmentCount ?? 0,
+      embeddingModelLabel: `hybrid-taxonomy (${manifest.model?.provider ?? "unknown"} · ${manifest.model?.modelId ?? "unknown"} · ${manifest.model?.reasoningEffort ?? "unknown"} reasoning)`,
+      reductionMethods: ["taxonomy layout"],
+      clusterCounts: [],
+      viewNames: ["hybrid-taxonomy"],
+      embeddingsReady: 0,
+      failedOpinions: 0,
+      reductionsReady: 1,
+      reductionsUnavailable: 0,
+      reductionsFailed: 0,
+      clusterArtifactsWritten: taxonomy === null ? 0 : 1,
+      clusterArtifactsFailed: 0,
+      perspectiveArtifactsWritten: assignmentSummary === null ? 0 : 1,
+      categoryCount: taxonomy?.categories?.length ?? 0,
+      subgroupCount: taxonomy?.themes?.length ?? 0,
+      assignmentCount: assignmentSummary?.assignmentCount ?? 0,
+      outOfScopeCount: assignmentSummary?.outOfScopeCount ?? 0
     });
   }
 
@@ -458,6 +525,15 @@ function expectedPerspectiveArtifactCount(run: AnalysisRunSummary): number {
 }
 
 function isAnalysisRunComplete(run: AnalysisRunSummary): boolean {
+  if (run.backend === "hybrid-taxonomy") {
+    return (
+      run.status === "ready" &&
+      (run.assignmentCount ?? 0) > 0 &&
+      (run.categoryCount ?? 0) > 0 &&
+      (run.subgroupCount ?? 0) > 0
+    );
+  }
+
   return (
     run.status === "completed" &&
     run.opinionsSelected > 0 &&
@@ -485,6 +561,15 @@ function describePartialAnalysisSummary(run: AnalysisRunSummary): string {
 }
 
 function describeAnalysisRunDetail(run: AnalysisRunSummary): string {
+  if (run.backend === "hybrid-taxonomy") {
+    return [
+      `status ${run.status}`,
+      `${run.categoryCount ?? 0} categories`,
+      `${run.subgroupCount ?? 0} subgroups`,
+      `${run.assignmentCount ?? 0} assignments`
+    ].join(" · ");
+  }
+
   return [
     `status ${run.status}`,
     `reductions ${run.reductionsReady}/${expectedReductionCount(run)}`,

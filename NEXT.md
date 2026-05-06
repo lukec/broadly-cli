@@ -53,12 +53,13 @@ Avoid pulling in closed-product concerns:
 - managed connector operations
 - proprietary perspective-ranking and merge orchestration
 
-## Phase 0: Hybrid Taxonomy Foundation
+## Phase 0: Hybrid Analysis Backend
 
 Goal:
 
-- make the authoritative analysis layer a relevance-filtered, two-tier
-  taxonomy-and-assignment system, with maps as exploratory navigation surfaces
+- make `hybrid-taxonomy` a normal analysis backend that produces a
+  relevance-filtered, two-tier category-and-assignment view, with maps as
+  exploratory navigation surfaces
 
 Build:
 
@@ -117,8 +118,9 @@ Implementation notes:
 
 Exit criteria:
 
-- `hybrid-taxonomy` produces durable taxonomy and assignment artifacts without
-  overwriting the vector `runs/` pipeline
+- `hybrid-taxonomy` appears in the analysis-run UI as a hybrid backend, even
+  while its durable artifacts remain compatible with the current taxonomy
+  storage layout
 - false-friend QA checks assignment leakage against theme exclusion rules
 - primary report generation can consume the taxonomy layer without pulling
   off-topic comments into the main analysis

@@ -541,12 +541,12 @@ The hybrid taxonomy contract in `taxonomy.json` contains two tiers:
 - top-level categories for navigation and report structure
 - subgroup themes with `parent_category_id` values for assignment
 
-`broadly web` exposes these artifacts in the Theme Taxonomy page. That page is
-an analysis inspection surface, not a report bundle. Its default map uses
-deterministic taxonomy coordinates so categories and subgroup themes are
-visually separated by the taxonomy itself. A separate vector overlay can color
-the same taxonomy assignments on the current vector-analysis reducer
-coordinates for QA and comparison.
+`broadly web` exposes these artifacts as an analysis run with a hybrid backend,
+not as a separate product surface. The default map uses deterministic category
+coordinates so categories and subgroup themes are visually separated by the
+hybrid assignment output. A separate vector overlay can color the same
+assignments on the current vector-analysis reducer coordinates for QA and
+comparison.
 
 The assignment artifacts record:
 
@@ -570,9 +570,9 @@ batch assignment already exists, the command reuses it unless `--force` is
 passed. `--dry-run` prepares inputs, schemas, and the manifest without invoking
 Codex.
 
-The command writes `taxonomies/current-run.txt`. It does not write
-`runs/current-run.txt` yet, because taxonomy assignments are not currently the
-same artifact shape as vector analysis runs.
+The command writes `taxonomies/current-run.txt` for artifact compatibility.
+The web UI still presents the run under `/analysis-runs/<run-id>` because the
+user-facing concept is an analysis backend, not a separate taxonomy workflow.
 
 `broadly analysis --evaluate-reducers` is a no-new-model-calls diagnostic path
 over an existing analysis run. It reads existing embedding, reduction, and
