@@ -90,6 +90,12 @@ This repo is not yet the hosted SaaS product.
 
 If code changes product assumptions, update the wiki in a separate pass rather than stuffing strategy prose into source comments.
 
+Major implementation learnings from this repo should be recorded in the sibling wiki page:
+
+- `../broadly/strategy/20-broadly-cli-learnings.md`
+
+Treat that page as a dated journal. Add entries when work here changes what we believe about analysis quality, benchmark strategy, artifact design, CLI/product boundaries, report generation, QA, or the path from local runs to hosted execution. Keep implementation truth in this repo, but preserve durable product interpretation there.
+
 ### 2. Favor Reusable Package Boundaries
 
 The same core pipeline should later be runnable:
