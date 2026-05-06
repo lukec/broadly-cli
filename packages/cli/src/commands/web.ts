@@ -5814,7 +5814,7 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         width: 10px;
         height: 10px;
         border-radius: 999px;
-        background: var(--cluster-accent, var(--bl-primary-600));
+        background: var(--cluster-color, var(--cluster-accent, var(--bl-primary-600)));
         box-shadow: 0 0 0 2px rgba(8,38,64,0.08);
       }
       .theme-grid {

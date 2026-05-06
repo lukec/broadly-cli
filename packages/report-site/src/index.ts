@@ -625,8 +625,18 @@ function renderStaticReportBehaviorScript(report: ReportBundle): string {
         if (selectedId && pointById.has(selectedId)) {
           showInspector(root, pointById.get(selectedId), view);
         } else {
-          inspector.innerHTML = '<p class="eyebrow">Opinion</p><h3>' + escapeText(view.title) + '</h3><p class="meta">' + points.length + ' plotted opinions. Click a point to inspect it.</p>';
+          showDefaultInspector(root, view, points.length);
         }
+      };
+
+      const showDefaultInspector = (root, view, pointCount) => {
+        const inspector = root.querySelector("[data-report-map-inspector]");
+        if (!inspector || !view) return;
+        delete root.dataset.selectedOpinionId;
+        root.querySelectorAll(".report-map-point").forEach((node) => {
+          node.classList.remove("selected");
+        });
+        inspector.innerHTML = '<p class="eyebrow">Opinion</p><h3>' + escapeText(view.title) + '</h3><p class="meta">' + pointCount + ' plotted opinions. Click a point to inspect it.</p>';
       };
 
       const showInspector = (root, point, view) => {
@@ -662,6 +672,12 @@ function renderStaticReportBehaviorScript(report: ReportBundle): string {
             const view = root.__reportMapViews.find((item) => item.viewId === root.dataset.activeViewId) || root.__reportMapViews[0];
             const point = scalePoints(view).find((item) => item.opinionId === pointNode.getAttribute("data-opinion-id"));
             showInspector(root, point, view);
+            return;
+          }
+          const mapNode = event.target.closest("[data-report-map-svg]");
+          if (mapNode instanceof SVGElement) {
+            const view = root.__reportMapViews.find((item) => item.viewId === root.dataset.activeViewId) || root.__reportMapViews[0];
+            showDefaultInspector(root, view, scalePoints(view).length);
             return;
           }
           const viewButton = event.target.closest("[data-report-map-view]");
