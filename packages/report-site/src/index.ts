@@ -163,10 +163,11 @@ export function renderStaticReportHtml(
         margin-top: 24px;
       }
       .report-map-layout {
+        --report-map-height: 460px;
         display: grid;
         grid-template-columns: minmax(0, 1fr) 320px;
         gap: 18px;
-        align-items: stretch;
+        align-items: start;
         margin-top: 16px;
       }
       .report-map-controls {
@@ -199,7 +200,7 @@ export function renderStaticReportHtml(
         align-items: center;
       }
       .report-map-shell {
-        min-height: 460px;
+        height: var(--report-map-height);
         border: 1px solid var(--line);
         border-radius: 8px;
         overflow: hidden;
@@ -208,8 +209,7 @@ export function renderStaticReportHtml(
       .report-map {
         display: block;
         width: 100%;
-        height: 100%;
-        min-height: 460px;
+        height: var(--report-map-height);
       }
       .report-map-point {
         cursor: pointer;
@@ -231,7 +231,8 @@ export function renderStaticReportHtml(
         border-radius: 8px;
         padding: 16px;
         background: #fff;
-        min-height: 460px;
+        height: var(--report-map-height);
+        overflow: auto;
       }
       .map-inspector blockquote {
         margin-top: 12px;

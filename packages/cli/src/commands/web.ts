@@ -5568,10 +5568,11 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         stroke-opacity: 0.75 !important;
       }
       .report-map-layout {
+        --report-map-height: 480px;
         display: grid;
         grid-template-columns: minmax(0, 1fr) 340px;
         gap: 18px;
-        align-items: stretch;
+        align-items: start;
         margin-top: 16px;
       }
       .report-map-controls {
@@ -5604,7 +5605,7 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         align-items: center;
       }
       .report-map-shell {
-        min-height: 480px;
+        height: var(--report-map-height);
         border: 1px solid var(--line);
         border-radius: 18px;
         overflow: hidden;
@@ -5613,8 +5614,7 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
       .report-map {
         display: block;
         width: 100%;
-        height: 100%;
-        min-height: 480px;
+        height: var(--report-map-height);
       }
       .report-map-point {
         cursor: pointer;
@@ -5636,7 +5636,8 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         border-radius: 18px;
         padding: 16px;
         background: rgba(255,255,255,0.94);
-        min-height: 480px;
+        height: var(--report-map-height);
+        overflow: auto;
       }
       .map-inspector blockquote {
         margin-top: 12px;
