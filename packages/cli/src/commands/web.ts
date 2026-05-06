@@ -465,7 +465,10 @@ interface LoadedTaxonomyRun {
   } | null;
 }
 
+type TaxonomyPlotLayout = "taxonomy" | "vector";
+
 interface TaxonomyPlot {
+  layout: TaxonomyPlotLayout;
   analysisRunId: string | null;
   clusterArtifactPath: string | null;
   points: Array<{
@@ -976,9 +979,10 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
           return;
         }
 
-        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
-        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun);
         const selectedCategoryId = requestUrl.searchParams.get("category");
+        const layout = parseTaxonomyPlotLayout(requestUrl.searchParams.get("layout"));
+        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
+        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun, layout);
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end(renderTaxonomyRunPage(dashboard, taxonomyRun, plot, selectedCategoryId));
@@ -987,9 +991,10 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
 
       if (requestUrl.pathname.startsWith("/taxonomies/")) {
         const runId = decodeURIComponent(requestUrl.pathname.slice("/taxonomies/".length));
-        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
-        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun);
         const selectedCategoryId = requestUrl.searchParams.get("category");
+        const layout = parseTaxonomyPlotLayout(requestUrl.searchParams.get("layout"));
+        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
+        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun, layout);
 
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end(renderTaxonomyRunPage(dashboard, taxonomyRun, plot, selectedCategoryId));
@@ -1328,6 +1333,18 @@ async function loadTaxonomyRun(
 
 async function loadTaxonomyPlot(
   projectPaths: ProjectPaths,
+  taxonomyRun: LoadedTaxonomyRun,
+  layout: TaxonomyPlotLayout
+): Promise<TaxonomyPlot> {
+  if (layout === "taxonomy") {
+    return buildTaxonomyLayoutPlot(taxonomyRun);
+  }
+
+  return loadTaxonomyVectorOverlayPlot(projectPaths, taxonomyRun);
+}
+
+async function loadTaxonomyVectorOverlayPlot(
+  projectPaths: ProjectPaths,
   taxonomyRun: LoadedTaxonomyRun
 ): Promise<TaxonomyPlot> {
   const analysisRunId =
@@ -1335,7 +1352,7 @@ async function loadTaxonomyPlot(
     (await findLatestAnalysisRun(projectPaths.runsDir));
 
   if (analysisRunId === null) {
-    return { analysisRunId: null, clusterArtifactPath: null, points: [] };
+    return { layout: "vector", analysisRunId: null, clusterArtifactPath: null, points: [] };
   }
 
   const analysisRun = await loadAnalysisRun(projectPaths.runsDir, analysisRunId);
@@ -1376,10 +1393,11 @@ async function loadTaxonomyPlot(
   }
 
   if (best === null || best.matchCount === 0) {
-    return { analysisRunId, clusterArtifactPath: null, points: [] };
+    return { layout: "vector", analysisRunId, clusterArtifactPath: null, points: [] };
   }
 
   return {
+    layout: "vector",
     analysisRunId,
     clusterArtifactPath: best.path,
     points: best.members.flatMap((member) => {
@@ -1403,6 +1421,133 @@ async function loadTaxonomyPlot(
       ];
     })
   };
+}
+
+function buildTaxonomyLayoutPlot(taxonomyRun: LoadedTaxonomyRun): TaxonomyPlot {
+  const categories = (taxonomyRun.taxonomy.categories ?? []).filter(
+    (category) => typeof category.category_id === "string"
+  );
+  const themes = (taxonomyRun.taxonomy.themes ?? []).filter(
+    (theme) => typeof theme.theme_id === "string"
+  );
+  const categoryIndex = new Map(
+    categories.map((category, index) => [category.category_id as string, index] as const)
+  );
+  type TaxonomyTheme = NonNullable<TaxonomyArtifact["themes"]>[number];
+  const themesByCategory = new Map<string, TaxonomyTheme[]>();
+
+  for (const category of categories) {
+    themesByCategory.set(category.category_id as string, []);
+  }
+
+  for (const theme of themes) {
+    const categoryId = theme.parent_category_id;
+
+    if (typeof categoryId !== "string") {
+      continue;
+    }
+
+    const categoryThemes = themesByCategory.get(categoryId) ?? [];
+    categoryThemes.push(theme);
+    themesByCategory.set(categoryId, categoryThemes);
+  }
+
+  const categoryCount = Math.max(categories.length, 1);
+  const columns = categoryCount <= 2 ? categoryCount : categoryCount <= 4 ? 2 : 3;
+  const rows = Math.ceil(categoryCount / columns);
+  const cellWidth = 1 / columns;
+  const cellHeight = 1 / rows;
+  const pointRadius = Math.min(cellWidth, cellHeight);
+
+  return {
+    layout: "taxonomy",
+    analysisRunId: null,
+    clusterArtifactPath: null,
+    points: taxonomyRun.assignments.flatMap((assignment) => {
+      if (typeof assignment.opinion_id !== "string") {
+        return [];
+      }
+
+      const categoryId = assignment.primary_category_id ?? null;
+      const categoryPosition =
+        categoryId === null ? -1 : (categoryIndex.get(categoryId) ?? categories.length);
+
+      if (categoryPosition < 0) {
+        return [
+          {
+            opinionId: assignment.opinion_id,
+            x: 0,
+            y: 0,
+            categoryId,
+            themeId: assignment.primary_theme_id ?? null,
+            fit: assignment.fit ?? "unknown",
+            confidence: typeof assignment.confidence === "number" ? assignment.confidence : null,
+            uncertainty: assignment.uncertainty_flag === true
+          }
+        ];
+      }
+
+      const column = categoryPosition % columns;
+      const row = Math.floor(categoryPosition / columns);
+      const categoryCenterX = column * cellWidth + cellWidth / 2;
+      const categoryCenterY = row * cellHeight + cellHeight / 2;
+      const categoryThemes = categoryId === null ? [] : (themesByCategory.get(categoryId) ?? []);
+      const themePosition = categoryThemes.findIndex(
+        (theme) => theme.theme_id === assignment.primary_theme_id
+      );
+      const themeCount = Math.max(categoryThemes.length, 1);
+      const subgroupRadius = pointRadius * (themeCount <= 1 ? 0 : themeCount <= 3 ? 0.16 : 0.22);
+      const angle =
+        themePosition >= 0
+          ? -Math.PI / 2 + (Math.PI * 2 * themePosition) / themeCount
+          : deterministicAngle(`${assignment.opinion_id}:theme`);
+      const subgroupCenterX = categoryCenterX + Math.cos(angle) * subgroupRadius;
+      const subgroupCenterY = categoryCenterY + Math.sin(angle) * subgroupRadius;
+      const jitterRadius = pointRadius * 0.055;
+      const x =
+        subgroupCenterX +
+        (deterministicUnit(`${assignment.opinion_id}:x`) - 0.5) * jitterRadius * 2;
+      const y =
+        subgroupCenterY +
+        (deterministicUnit(`${assignment.opinion_id}:y`) - 0.5) * jitterRadius * 2;
+
+      return [
+        {
+          opinionId: assignment.opinion_id,
+          x: clampUnit(x),
+          y: clampUnit(y),
+          categoryId,
+          themeId: assignment.primary_theme_id ?? null,
+          fit: assignment.fit ?? "unknown",
+          confidence: typeof assignment.confidence === "number" ? assignment.confidence : null,
+          uncertainty: assignment.uncertainty_flag === true
+        }
+      ];
+    })
+  };
+}
+
+function parseTaxonomyPlotLayout(raw: string | null): TaxonomyPlotLayout {
+  return raw === "vector" ? "vector" : "taxonomy";
+}
+
+function deterministicAngle(seed: string): number {
+  return deterministicUnit(seed) * Math.PI * 2;
+}
+
+function deterministicUnit(seed: string): number {
+  let hash = 2166136261;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0) / 4294967295;
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 async function loadOpinionArtifactLookup(
@@ -2314,13 +2459,13 @@ function renderAdminOpinionDetailPage(
 function renderTaxonomyEmptyPage(data: ProjectDashboardData): string {
   return renderPage(
     data,
-    "Taxonomies",
+    "Theme Taxonomy",
     `<main class="shell">
-      ${renderHeader(data, "Taxonomies")}
+      ${renderHeader(data, "Theme Taxonomy")}
       <section class="panel">
         <article class="card">
           <p class="eyebrow">Hybrid Taxonomy</p>
-          <h2>No taxonomy runs yet</h2>
+          <h2>No hybrid taxonomy runs yet</h2>
           <p class="meta">Run <code>broadly analysis --strategy hybrid-taxonomy</code> to create a taxonomy.</p>
         </article>
       </section>
@@ -2351,16 +2496,42 @@ function renderTaxonomyRunPage(
   const outOfScopeCount = taxonomyRun.assignments.filter(
     (assignment) => assignment.fit === "out_of_scope"
   ).length;
+  const buildTaxonomyHref = (
+    categoryId: string | null,
+    layout: TaxonomyPlotLayout,
+    anchor: string
+  ): string => {
+    const params: string[] = [];
+
+    if (categoryId !== null) {
+      params.push(`category=${encodeURIComponent(categoryId)}`);
+    }
+
+    if (layout !== "taxonomy") {
+      params.push(`layout=${encodeURIComponent(layout)}`);
+    }
+
+    return `/taxonomies/${encodeURIComponent(taxonomyRun.runId)}${
+      params.length === 0 ? "" : `?${params.join("&")}`
+    }${anchor}`;
+  };
+  const selectedCategoryLinkId = selectedCategory?.category_id ?? null;
+  const plotSourceLabel =
+    plot.layout === "taxonomy"
+      ? "Layout from taxonomy assignments"
+      : plot.analysisRunId === null
+        ? "No vector coordinates available"
+        : `Vector overlay from ${plot.analysisRunId}`;
 
   return renderPage(
     data,
-    "Taxonomies",
+    "Theme Taxonomy",
     `<main class="shell">
-      ${renderHeader(data, "Taxonomies")}
+      ${renderHeader(data, "Theme Taxonomy")}
       <section class="panel report-hero">
         <p class="eyebrow"><a href="/pipeline/analysis">Back to Perform Analysis</a></p>
-        <h2>${escapeHtml(taxonomyRun.runId)}</h2>
-        <p class="lede">${escapeHtml(taxonomyRun.manifest.status ?? "unknown")} · ${escapeHtml(taxonomyRun.manifest.createdAt ?? "")}</p>
+        <h2>Hybrid taxonomy: ${escapeHtml(taxonomyRun.runId)}</h2>
+        <p class="lede">Analysis artifact · ${escapeHtml(taxonomyRun.manifest.status ?? "unknown")} · ${escapeHtml(taxonomyRun.manifest.createdAt ?? "")}</p>
         <div class="meta-chip-row">
           ${renderMetaChip(`${escapeHtml(String(taxonomyRun.assignments.length))} assignments`)}
           ${renderMetaChip(`${escapeHtml(String(categories.length))} categories`)}
@@ -2368,28 +2539,30 @@ function renderTaxonomyRunPage(
           ${renderMetaChip(`${escapeHtml(String(outOfScopeCount))} out of scope`)}
         </div>
       </section>
-      <section class="panel">
+      <section class="panel" id="taxonomy-map">
         <article class="card">
           <div class="section-head">
             <div>
               <p class="eyebrow">Two-tier map</p>
               <h2>${escapeHtml(selectedCategory?.label ?? "All categories")}</h2>
             </div>
-            <p class="meta">${
-              plot.analysisRunId === null
-                ? "No vector coordinates available"
-                : `Coordinates from ${escapeHtml(plot.analysisRunId)}`
-            }</p>
+            <p class="meta">${escapeHtml(plotSourceLabel)}</p>
           </div>
           <div class="taxonomy-toolbar">
-            <a class="button-link button-link-secondary button-link-small ${selectedCategory === null ? "active" : ""}" href="/taxonomies/${encodeURIComponent(taxonomyRun.runId)}">All</a>
+            <a class="button-link button-link-secondary button-link-small ${plot.layout === "taxonomy" ? "active" : ""}" href="${buildTaxonomyHref(selectedCategoryLinkId, "taxonomy", "#taxonomy-map")}">Taxonomy layout</a>
+            <a class="button-link button-link-secondary button-link-small ${plot.layout === "vector" ? "active" : ""}" href="${buildTaxonomyHref(selectedCategoryLinkId, "vector", "#taxonomy-map")}">Vector overlay</a>
+          </div>
+          <div class="taxonomy-toolbar">
+            <a class="button-link button-link-secondary button-link-small ${selectedCategory === null ? "active" : ""}" href="${buildTaxonomyHref(null, plot.layout, "#taxonomy-map")}">All</a>
             ${categories
               .map(
                 (category) =>
                   `<a class="button-link button-link-secondary button-link-small ${
                     category.category_id === selectedCategory?.category_id ? "active" : ""
-                  }" href="/taxonomies/${encodeURIComponent(taxonomyRun.runId)}?category=${encodeURIComponent(
-                    category.category_id ?? ""
+                  }" href="${buildTaxonomyHref(
+                    category.category_id ?? "",
+                    plot.layout,
+                    "#taxonomy-map"
                   )}">${escapeHtml(category.label ?? category.category_id ?? "Category")}</a>`
               )
               .join("")}
@@ -2415,7 +2588,9 @@ function renderTaxonomyRunPage(
 
               return `<a class="card link-card taxonomy-category-card" href="/taxonomies/${encodeURIComponent(
                 taxonomyRun.runId
-              )}?category=${encodeURIComponent(categoryId)}" style="--taxonomy-color:${escapeHtmlAttribute(color)}">
+              )}?category=${encodeURIComponent(categoryId)}${
+                plot.layout === "taxonomy" ? "" : `&layout=${encodeURIComponent(plot.layout)}`
+              }#taxonomy-subgroups" style="--taxonomy-color:${escapeHtmlAttribute(color)}">
                 <p class="eyebrow">${escapeHtml(String(categoryCounts.get(categoryId) ?? 0))} assignments · ${escapeHtml(String(subgroupCount))} subgroups</p>
                 <h3>${escapeHtml(category.label ?? categoryId)}</h3>
                 <p>${escapeHtml(category.summary ?? "")}</p>
@@ -2424,7 +2599,7 @@ function renderTaxonomyRunPage(
             .join("")}
         </section>
       </section>
-      <section class="panel">
+      <section class="panel" id="taxonomy-subgroups">
         <div class="section-head">
           <div>
             <p class="eyebrow">Subgroups</p>
@@ -4332,7 +4507,7 @@ function renderHeader(data: ProjectDashboardData, activePage: string): string {
     { href: "/pipeline/ingest", label: "Ingest Comments", key: "Ingest Comments" },
     { href: "/pipeline/opinions", label: "Extract Opinions", key: "Extract Opinions" },
     { href: "/pipeline/analysis", label: "Perform Analysis", key: "Perform Analysis" },
-    { href: "/taxonomies", label: "Taxonomies", key: "Taxonomies" },
+    { href: "/taxonomies", label: "Theme Taxonomy", key: "Theme Taxonomy" },
     { href: "/pipeline/report", label: "Create Report", key: "Create Report" },
     { href: "/statements", label: "Statements", key: "Statements" },
     { href: "/admin", label: "Admin Review", key: "Admin Review" }

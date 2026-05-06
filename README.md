@@ -203,8 +203,7 @@ pipeline stages and their current state.
 The analysis stage is only shown as complete when the latest analysis run has
 produced all configured reductions, clustering outputs, and perspectives.
 
-Run an experimental frontier-model hybrid taxonomy pass over the selected
-opinion run:
+Run the frontier-model hybrid taxonomy backend over the selected opinion run:
 
 ```bash
 broadly analysis --strategy hybrid-taxonomy --project opengov2017
@@ -212,7 +211,9 @@ broadly analysis --strategy hybrid-taxonomy --project opengov2017
 
 This path uses `codex exec` with `gpt-5.5` and medium reasoning by default.
 It writes durable taxonomy artifacts under `taxonomies/<run-id>/` and updates
-`taxonomies/current-run.txt`.
+`taxonomies/current-run.txt`. The `broadly web` Theme Taxonomy page shows the
+taxonomy-native map by default, with a vector overlay available for comparison
+against the normal reducer coordinates.
 Use `--dry-run` to prepare schemas, batches, and manifests without spending
 Codex quota.
 

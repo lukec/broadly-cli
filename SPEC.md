@@ -541,6 +541,13 @@ The hybrid taxonomy contract in `taxonomy.json` contains two tiers:
 - top-level categories for navigation and report structure
 - subgroup themes with `parent_category_id` values for assignment
 
+`broadly web` exposes these artifacts in the Theme Taxonomy page. That page is
+an analysis inspection surface, not a report bundle. Its default map uses
+deterministic taxonomy coordinates so categories and subgroup themes are
+visually separated by the taxonomy itself. A separate vector overlay can color
+the same taxonomy assignments on the current vector-analysis reducer
+coordinates for QA and comparison.
+
 The assignment artifacts record:
 
 - `primary_category_id`
