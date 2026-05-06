@@ -53,6 +53,80 @@ Avoid pulling in closed-product concerns:
 - managed connector operations
 - proprietary perspective-ranking and merge orchestration
 
+## Phase 0: Hybrid Taxonomy Foundation
+
+Goal:
+
+- make the authoritative analysis layer a relevance-filtered, two-tier
+  taxonomy-and-assignment system, with maps as exploratory navigation surfaces
+
+Build:
+
+```bash
+broadly analysis --strategy hybrid-taxonomy
+```
+
+Inputs:
+
+- reviewed opinion artifacts
+- the review analysis inclusion boundary
+- project framing questions
+- existing embedding neighborhoods, graph surfaces, or vector clusters when
+  available
+
+Outputs:
+
+```text
+project/
+  taxonomies/
+    <taxonomy-run-id>/
+      manifest.json
+      inputs/
+      schemas/
+      prompts/
+      taxonomy.json
+      assignments.jsonl
+      assignment-summary.json
+      qa/
+        false-friends.json
+```
+
+Implementation notes:
+
+- the project questions define the default relevance boundary
+- comments or opinions marked `excluded-off-topic` stay preserved in review
+  artifacts but are excluded from primary taxonomy, summaries, and maps by
+  default
+- review config can include off-topic statuses for intentionally open-ended
+  projects
+- use embeddings and graph surfaces for neighborhoods, duplicate detection,
+  outlier surfacing, and scatterplot coordinates
+- use a frontier model for the top-level category and subgroup taxonomy design
+- use lower-cost cached model calls for bulk assignment when the taxonomy is
+  stable enough
+- target 3-6 top-level categories and 2-8 subgroup themes per category, while
+  allowing an unbalanced tree
+- record primary category, primary subgroup theme, secondary subgroup themes,
+  confidence, rationale, evidence quote, uncertainty flag, and false-friend
+  boundary checks for each assignment
+- split broad inclusion buckets through subgroups rather than adding report
+  role labels
+- defer official benchmark recall QA, vector-versus-gold comparison, and
+  special small-theme promotion rules until they are needed by a specific
+  benchmark or report
+
+Exit criteria:
+
+- `hybrid-taxonomy` produces durable taxonomy and assignment artifacts without
+  overwriting the vector `runs/` pipeline
+- false-friend QA checks assignment leakage against theme exclusion rules
+- primary report generation can consume the taxonomy layer without pulling
+  off-topic comments into the main analysis
+- scatterplot/report UI can drill from a top-level category into its subgroup
+  opinion space
+- `SPEC.md` documents the implemented command, artifacts, and relevance
+  boundary
+
 ## Phase 1: Statement Bank Contract
 
 Goal:

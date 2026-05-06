@@ -535,6 +535,29 @@ gold-standards/<run-id>/
   assignment-summary.json
 ```
 
+The current Codex gold-standard schema is a benchmark version of the planned
+hybrid taxonomy contract. `taxonomy.json` contains two tiers:
+
+- top-level categories for navigation and report structure
+- subgroup themes with `parent_category_id` values for assignment
+
+The assignment artifacts record:
+
+- `primary_category_id`
+- `primary_theme_id`
+- `secondary_theme_ids`
+- confidence
+- `fit`
+- `uncertainty_flag`
+- rationale
+- evidence quote
+- false-friend boundary checks against theme exclusion rules
+
+`primary_category_id` and `primary_theme_id` can be `null` when an opinion is
+clearly outside the project questions. Those out-of-scope assignments are a
+safety escape; the normal default is still to exclude off-topic content earlier
+through the review inclusion boundary.
+
 The workflow is resumable by artifact. If a batch taxonomy, merged taxonomy, or
 batch assignment already exists, the command reuses it unless `--force` is
 passed. `--dry-run` prepares inputs, schemas, and the manifest without invoking

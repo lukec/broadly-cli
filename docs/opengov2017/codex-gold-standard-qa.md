@@ -153,25 +153,35 @@ hierarchy.
 
 ## Implementation Implications
 
+The accepted implementation direction from this QA pass is:
+
 1. Add a real `hybrid-taxonomy` strategy: embeddings for neighborhoods and
    outliers, frontier model for taxonomy design, cheaper model for bulk
    assignment, QA repair for weak themes.
-2. Add assignment artifacts with primary theme, optional secondary themes,
-   confidence, rationale, evidence quote, and uncertainty flag.
-3. Add official benchmark recall QA: score each known benchmark theme as
-   `strong`, `partial`, `weak`, or `missing`.
+2. Keep durable assignment artifacts with primary theme, optional secondary
+   themes, confidence, rationale, evidence quote, and uncertainty flag.
+3. Do not add official benchmark recall QA as a default product feature.
+   Benchmark recall can stay in corpus-specific evaluation notes when useful.
 4. Add false-friend QA using each theme's exclusion rules.
-5. Add role labels to themes: `core_open_government`,
-   `implementation_capacity`, `service_access`, `privacy_safeguard`,
-   `official_benchmark_theme`, `out_of_scope_policy`, `low_specificity`.
-6. Compare vector clusters against gold assignments: cluster purity by gold
-   theme, gold-theme spread across vector clusters, and merged-theme warnings.
-7. Treat themes with fewer than five assignments as minority signals unless a
-   benchmark or human reviewer promotes them.
-8. Split or tag G07 for benchmark reporting so feminist/GBA+ and
-   reconciliation/Indigenous data governance can be evaluated separately.
-9. Warn when official benchmark themes such as open science or open government
-   community have no clear gold match.
+5. Do not add theme role labels in the next implementation pass.
+6. Do not prioritize vector-cluster-versus-gold-assignment comparison in the
+   next implementation pass.
+7. Do not add a special small-theme promotion rule yet.
+8. Split overloaded categories through subgroups rather than role tags. In this
+   run, G07 should become a parent category with subgroups for feminist/GBA+,
+   accessibility and language, digital divide, and Indigenous governance or
+   reconciliation where supported by the evidence.
+
+Two product decisions fall out of this:
+
+- Off-topic comments should be preserved but excluded from primary analysis by
+  default. The project questions define the relevance boundary. Review artifacts
+  can mark comments or opinions as `excluded-off-topic`, and analysis/report
+  config can opt back into those statuses for open-ended projects.
+- Larger corpora need a two-tier taxonomy. The top tier should be roughly 3-6
+  broad categories. Each category should have roughly 2-8 subgroup themes, with
+  an unbalanced tree allowed. Scatterplot views should support drilling into a
+  category and seeing the opinion space within that subgrouped area.
 
 ## Bottom Line
 
@@ -179,8 +189,8 @@ The Codex gold-standard run is substantially better than the vector report for
 semantic QA and benchmark comparison. It hears the corpus at the policy-mechanism
 level, not just at the semantic-neighborhood level.
 
-It still needs role tags and benchmark-specific subtheme handling before it can
-produce a final public report. The next product step is not to replace embeddings
-with Codex. It is to make embeddings feed a gold-style taxonomy-and-assignment
-pipeline, then use official-theme recall and false-friend QA to repair the
+It still needs subgroup handling and false-friend QA before it can produce a
+final public report. The next product step is not to replace embeddings with
+Codex. It is to make embeddings feed a gold-style taxonomy-and-assignment
+pipeline, then use assignment confidence and false-friend checks to repair the
 result.

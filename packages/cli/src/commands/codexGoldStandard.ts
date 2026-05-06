@@ -230,7 +230,7 @@ interface CodexExecResult {
   elapsedMs: number;
 }
 
-const GOLD_STANDARD_VERSION = "codex-gold-standard-v1";
+const GOLD_STANDARD_VERSION = "codex-gold-standard-v2";
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT: CodexReasoningEffort = "medium";
 const DEFAULT_BATCH_SIZE = 80;
@@ -282,9 +282,32 @@ const mergedTaxonomySchema = {
   title: "Broadly Codex Gold Standard Taxonomy",
   type: "object",
   additionalProperties: false,
-  required: ["taxonomy_id", "themes", "missing_or_uncertain_areas", "notes"],
+  required: ["taxonomy_id", "categories", "themes", "missing_or_uncertain_areas", "notes"],
   properties: {
     taxonomy_id: { type: "string" },
+    categories: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "category_id",
+          "label",
+          "summary",
+          "inclusion_rule",
+          "exclusion_rule",
+          "subgroup_theme_ids"
+        ],
+        properties: {
+          category_id: { type: "string" },
+          label: { type: "string" },
+          summary: { type: "string" },
+          inclusion_rule: { type: "string" },
+          exclusion_rule: { type: "string" },
+          subgroup_theme_ids: { type: "array", items: { type: "string" } }
+        }
+      }
+    },
     themes: {
       type: "array",
       items: {
@@ -292,6 +315,7 @@ const mergedTaxonomySchema = {
         additionalProperties: false,
         required: [
           "theme_id",
+          "parent_category_id",
           "label",
           "summary",
           "inclusion_rule",
@@ -303,6 +327,7 @@ const mergedTaxonomySchema = {
         ],
         properties: {
           theme_id: { type: "string" },
+          parent_category_id: { type: "string" },
           label: { type: "string" },
           summary: { type: "string" },
           inclusion_rule: { type: "string" },
@@ -334,24 +359,39 @@ const assignmentSchema = {
         additionalProperties: false,
         required: [
           "opinion_id",
+          "primary_category_id",
           "primary_theme_id",
           "secondary_theme_ids",
           "confidence",
           "fit",
+          "uncertainty_flag",
           "rationale",
-          "evidence_quote"
+          "evidence_quote",
+          "false_friend_check"
         ],
         properties: {
           opinion_id: { type: "string" },
-          primary_theme_id: { type: "string" },
+          primary_category_id: { type: ["string", "null"] },
+          primary_theme_id: { type: ["string", "null"] },
           secondary_theme_ids: { type: "array", items: { type: "string" } },
           confidence: { type: "number", minimum: 0, maximum: 1 },
           fit: {
             type: "string",
             enum: ["clear", "partial", "uncertain", "out_of_scope"]
           },
+          uncertainty_flag: { type: "boolean" },
           rationale: { type: "string" },
-          evidence_quote: { type: "string" }
+          evidence_quote: { type: "string" },
+          false_friend_check: {
+            type: "object",
+            additionalProperties: false,
+            required: ["exclusion_rule_checked", "nearest_false_friend_theme_ids", "note"],
+            properties: {
+              exclusion_rule_checked: { type: "boolean" },
+              nearest_false_friend_theme_ids: { type: "array", items: { type: "string" } },
+              note: { type: "string" }
+            }
+          }
         }
       }
     },
@@ -837,22 +877,37 @@ async function writeAssignmentSummary(
   batches: GoldOpinionBatch[]
 ): Promise<void> {
   const assignmentLines: string[] = [];
+  const categoryCounts = new Map<string, number>();
   const themeCounts = new Map<string, number>();
   let assignmentCount = 0;
   let uncertainCount = 0;
+  let outOfScopeCount = 0;
+  let falseFriendWarningCount = 0;
 
   for (const batch of batches) {
     const artifact = await readJsonFile<{
       assignments?: Array<{
         opinion_id?: string;
-        primary_theme_id?: string;
+        primary_category_id?: string | null;
+        primary_theme_id?: string | null;
         fit?: string;
+        uncertainty_flag?: boolean;
+        false_friend_check?: {
+          nearest_false_friend_theme_ids?: string[];
+        };
       }>;
     }>(path.join(paths.batchAssignmentsDir, `${batch.batchId}.json`));
 
     for (const assignment of artifact?.assignments ?? []) {
       assignmentLines.push(JSON.stringify({ batch_id: batch.batchId, ...assignment }));
       assignmentCount += 1;
+
+      if (typeof assignment.primary_category_id === "string") {
+        categoryCounts.set(
+          assignment.primary_category_id,
+          (categoryCounts.get(assignment.primary_category_id) ?? 0) + 1
+        );
+      }
 
       if (typeof assignment.primary_theme_id === "string") {
         themeCounts.set(
@@ -861,8 +916,20 @@ async function writeAssignmentSummary(
         );
       }
 
-      if (assignment.fit === "uncertain" || assignment.fit === "out_of_scope") {
+      if (assignment.fit === "out_of_scope") {
+        outOfScopeCount += 1;
+      }
+
+      if (
+        assignment.fit === "uncertain" ||
+        assignment.fit === "out_of_scope" ||
+        assignment.uncertainty_flag === true
+      ) {
         uncertainCount += 1;
+      }
+
+      if ((assignment.false_friend_check?.nearest_false_friend_theme_ids ?? []).length > 0) {
+        falseFriendWarningCount += 1;
       }
     }
   }
@@ -871,6 +938,9 @@ async function writeAssignmentSummary(
   await writeJsonFile(paths.assignmentSummaryPath, {
     assignmentCount,
     uncertainOrOutOfScopeCount: uncertainCount,
+    outOfScopeCount,
+    falseFriendWarningCount,
+    categoryCounts: Object.fromEntries([...categoryCounts.entries()].sort((a, b) => b[1] - a[1])),
     themeCounts: Object.fromEntries([...themeCounts.entries()].sort((a, b) => b[1] - a[1]))
   });
 }
@@ -968,7 +1038,9 @@ function renderBatchTaxonomyPrompt(options: {
     "You are building Broadly's gold-standard qualitative taxonomy for a civic consultation dataset.",
     "Read every opinion in this batch. Group opinions by the policy concern or civic argument they express.",
     "Prefer analyst-grade distinctions over geometric similarity. Do not flatten specific policy issues into vague grievance clusters.",
-    "Use only the opinion IDs provided. Every opinion should either appear in one theme's opinion_ids or in unassigned_opinion_ids.",
+    "Use only the opinion IDs provided. Every on-topic opinion should either appear in one theme's opinion_ids or in unassigned_opinion_ids.",
+    "Treat the project questions as the relevance boundary. If an opinion is clearly off topic, put it in unassigned_opinion_ids and explain the boundary in notes rather than inventing an off-topic theme.",
+    "Aim for raw material that can later merge into 3-6 top-level categories with 2-8 lower-tier subgroups per category. The tree does not need to be balanced.",
     "",
     "Project:",
     JSON.stringify({
@@ -993,9 +1065,14 @@ function renderTaxonomyMergePrompt(options: {
 }): string {
   return [
     "You are merging batch-level qualitative themes into a corpus-wide gold-standard taxonomy.",
-    "Create a compact but expressive taxonomy that preserves specific policy distinctions and minority themes.",
+    "Create a compact but expressive two-tier taxonomy that preserves specific policy distinctions.",
+    "The top tier must be broad categories, usually 3-6 total. The lower tier must be subgroup themes, usually 2-8 per category. The tree does not need to be balanced.",
+    "Use categories for navigation and report structure. Use themes as the assignable subgroups.",
     "Themes should be stable enough for every opinion in the corpus to be assigned later.",
     "Avoid duplicate labels. Separate themes when their policy implications, target institution, or remedy differs.",
+    "Do not create a primary-analysis category just to hold clearly off-topic material. Preserve those cases as missing_or_uncertain_areas or later out_of_scope assignments instead.",
+    "If a broad inclusion bucket mixes representation, feminist/GBA+, accessibility, Indigenous governance, or reconciliation concerns, split it into subgroups under the most appropriate parent category.",
+    "For each subgroup theme, record the parent_category_id and expected_false_friends so assignment QA can catch boundary leakage.",
     "",
     "Project:",
     JSON.stringify({
@@ -1021,9 +1098,12 @@ function renderAssignmentPrompt(options: {
 }): string {
   return [
     "You are assigning civic consultation opinions to Broadly's gold-standard taxonomy.",
-    "Use the taxonomy definitions strictly. Assign each opinion to one primary theme and zero or more secondary themes.",
-    "If an opinion does not fit the taxonomy, set fit to uncertain or out_of_scope and explain the gap in new_theme_suggestions.",
-    "Use only theme IDs from the taxonomy for primary_theme_id and secondary_theme_ids.",
+    "Use the taxonomy definitions strictly. Assign each on-topic opinion to one primary subgroup theme and zero or more secondary subgroup themes.",
+    "Set primary_category_id to the parent category of the primary theme. Use only category IDs and theme IDs from the taxonomy.",
+    "If an opinion is clearly outside the project questions, set fit to out_of_scope, set primary_category_id and primary_theme_id to null, keep secondary_theme_ids empty, and explain the relevance boundary.",
+    "If an on-topic opinion does not fit the taxonomy, set fit to uncertain, set uncertainty_flag to true, and explain the gap in new_theme_suggestions.",
+    "Set uncertainty_flag to true for partial, uncertain, out_of_scope, low-confidence, or mixed assignments.",
+    "Check the assigned theme's exclusion_rule and expected_false_friends. Fill false_friend_check with nearby false-friend theme IDs when the opinion might be confused with a neighboring theme.",
     "",
     "Project:",
     JSON.stringify({
