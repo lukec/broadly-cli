@@ -155,7 +155,7 @@ program
   .option("--evaluate-graph-builders", "Compare cheap neighborhood-graph clustering variants against existing cluster artifacts", false)
   .option(
     "--promote-graph-surface [surfaceId]",
-    "Promote a graph diagnostic surface into an experimental labeled/synthesized analysis view"
+    "Promote a graph diagnostic surface into a semantic-neighborhood analysis view"
   )
   .option("--run <runId>", "Analysis run id to evaluate; defaults to current, then latest")
   .option("--neighbor-k <count>", "Neighbor count for analysis evaluation metrics", parsePositiveInteger)

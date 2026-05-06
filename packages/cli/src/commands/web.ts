@@ -114,6 +114,7 @@ interface AnalysisClusterArtifact {
     graphSurfaceLabel?: string;
     embeddingNeighborPurityAtK?: number | null;
     embeddingSilhouette?: number | null;
+    excludedClusterIds?: number[];
   };
 }
 
@@ -4041,18 +4042,28 @@ function renderClusterCard(
       } => typeof cluster.clusterId === "number" && typeof cluster.size === "number"
     )
     .sort((left, right) => right.size - left.size || left.clusterId - right.clusterId);
-  const experimentalGraph = clusterArtifact.experimental?.kind === "graph-surface";
+  const semanticNeighborhood = clusterArtifact.experimental?.kind === "graph-surface";
+  const excludedClusterIds = semanticNeighborhood
+    ? clusterArtifact.experimental?.excludedClusterIds ?? []
+    : [];
 
   return `<article class="card record-card">
     <div class="record-header">
-      <p class="eyebrow">${experimentalGraph ? "EXPERIMENTAL GRAPH" : escapeHtml((clusterArtifact.method ?? "unknown").toUpperCase())} · K=${escapeHtml(String(clusterArtifact.effectiveClusterCount ?? clusterArtifact.requestedClusterCount ?? "?"))}</p>
+      <p class="eyebrow">${semanticNeighborhood ? "SEMANTIC NEIGHBORHOOD · EXPERIMENTAL" : escapeHtml((clusterArtifact.method ?? "unknown").toUpperCase())} · K=${escapeHtml(String(clusterArtifact.effectiveClusterCount ?? clusterArtifact.requestedClusterCount ?? "?"))}</p>
       <h3>${escapeHtml(clusterArtifact.status ?? "unknown")}</h3>
       <p class="meta">${escapeHtml(String(members.length))} assigned points · requested ${escapeHtml(String(clusterArtifact.requestedClusterCount ?? "?"))} · ${escapeHtml(clusterArtifact.labeling?.method ?? "unknown")}</p>
     </div>
     ${
-      experimentalGraph
-        ? `<p class="meta">Graph membership from ${escapeHtml(clusterArtifact.experimental?.graphSurfaceLabel ?? clusterArtifact.experimental?.sourceSurfaceId ?? "graph surface")} · purity ${escapeHtml(formatDiagnosticMetric(clusterArtifact.experimental?.embeddingNeighborPurityAtK ?? null))} · silhouette ${escapeHtml(formatDiagnosticMetric(clusterArtifact.experimental?.embeddingSilhouette ?? null))}</p>`
+      semanticNeighborhood
+        ? `<p class="meta">Neighborhood membership from ${escapeHtml(clusterArtifact.experimental?.graphSurfaceLabel ?? clusterArtifact.experimental?.sourceSurfaceId ?? "graph surface")} · purity ${escapeHtml(formatDiagnosticMetric(clusterArtifact.experimental?.embeddingNeighborPurityAtK ?? null))} · silhouette ${escapeHtml(formatDiagnosticMetric(clusterArtifact.experimental?.embeddingSilhouette ?? null))}</p>`
         : ""
+    }
+    ${
+      excludedClusterIds.length === 0
+        ? ""
+        : `<p class="meta">Mixed remainder clusters held out of themes/highlights: ${escapeHtml(
+            excludedClusterIds.map((clusterId) => `#${clusterId}`).join(", ")
+          )}</p>`
     }
     ${
       clusterArtifact.status === "ready"

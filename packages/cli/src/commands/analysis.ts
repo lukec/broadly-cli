@@ -158,6 +158,7 @@ interface ClusterArtifact {
     graphSurfaceLabel: string;
     embeddingNeighborPurityAtK?: number | null;
     embeddingSilhouette?: number | null;
+    excludedClusterIds?: number[];
   };
 }
 
@@ -231,6 +232,7 @@ interface PerspectivePlanArtifact {
   experimental?: {
     kind: "graph-surface";
     sourceSurfaceId: string;
+    excludedClusterIds?: number[];
   };
 }
 
@@ -272,6 +274,12 @@ interface ClusterHierarchyArtifact {
     higherLabel: string;
     mergeRationale: string;
   }>;
+  experimental?: {
+    kind: "graph-surface";
+    sourceSurfaceId: string;
+    excludedClusterIds: number[];
+    exclusionReason: string;
+  };
 }
 
 interface ReducerEvaluationArtifact {
@@ -1517,6 +1525,7 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
 
 const DEFAULT_REDUCER_EVALUATION_NEIGHBOR_K = 10;
 const REDUCER_EVALUATION_SILHOUETTE_MAX_POINTS = 1500;
+const GRAPH_REMAINDER_CLUSTER_SHARE_THRESHOLD = 0.4;
 
 async function evaluateAnalysisReducers(options: AnalysisCommandOptions): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
@@ -2978,7 +2987,7 @@ async function promoteAnalysisGraphSurface(options: AnalysisCommandOptions): Pro
       );
       const opinionsById = await loadAnalysisRunOpinionArtifacts(manifest);
       const viewName = promotedGraphViewName(surface.surfaceId);
-      const viewTitle = `Experimental Graph View: ${surface.label}`;
+      const viewTitle = "Semantic Neighborhood View";
       const promotedView: AnalysisViewConfig = {
         ...templateView,
         name: viewName,
@@ -3001,7 +3010,7 @@ async function promoteAnalysisGraphSurface(options: AnalysisCommandOptions): Pro
         existingClusterArtifact.experimental.sourceSurfaceId === surface.surfaceId
           ? existingClusterArtifact
           : null;
-      const clusterArtifact =
+      let clusterArtifact =
         reusableClusterArtifact ??
         buildGraphSurfaceClusterArtifact({
           surface,
@@ -3012,16 +3021,18 @@ async function promoteAnalysisGraphSurface(options: AnalysisCommandOptions): Pro
           displayReductionPath: displayReduction.artifactPath,
           opinionsById
         });
+      const normalizedClusterArtifact = normalizeGraphRemainderClusterLabels(clusterArtifact);
 
       await mkdir(clustersDir, { recursive: true });
       await mkdir(hierarchiesDir, { recursive: true });
       await mkdir(perspectivesDir, { recursive: true });
 
-      if (reusableClusterArtifact === null) {
+      if (reusableClusterArtifact === null || normalizedClusterArtifact !== clusterArtifact) {
+        clusterArtifact = normalizedClusterArtifact;
         await writeJsonFile(clusterArtifactPath, clusterArtifact);
       }
 
-      const labeledClusterArtifact =
+      const rawLabeledClusterArtifact =
         clusterArtifact.labeling.method === "llm-cluster-labeling"
           ? clusterArtifact
           : await labelClusterArtifactWithLlm({
@@ -3033,6 +3044,7 @@ async function promoteAnalysisGraphSurface(options: AnalysisCommandOptions): Pro
               promptSha256: prompts.clusterLabeling.sha256,
               promptTemplate: prompts.clusterLabeling.template
             });
+      const labeledClusterArtifact = normalizeGraphRemainderClusterLabels(rawLabeledClusterArtifact);
       const labelReused = labeledClusterArtifact === clusterArtifact;
 
       if (!labelReused) {
@@ -3043,7 +3055,8 @@ async function promoteAnalysisGraphSurface(options: AnalysisCommandOptions): Pro
       const hierarchyArtifact =
         existingHierarchy !== null &&
         existingHierarchy.status === "ready" &&
-        existingHierarchy.sourceClusterArtifactPath === clusterArtifactPath
+        existingHierarchy.sourceClusterArtifactPath === clusterArtifactPath &&
+        hierarchyMatchesGraphRemainderPolicy(existingHierarchy, labeledClusterArtifact)
           ? existingHierarchy
           : await buildSemanticHierarchyArtifact({
               artifact: labeledClusterArtifact,
@@ -3065,7 +3078,9 @@ async function promoteAnalysisGraphSurface(options: AnalysisCommandOptions): Pro
         existingPerspective !== null &&
         existingPerspective.status === "ready" &&
         existingPerspective.synthesis.method === "llm-perspective-summary" &&
-        existingPerspective.viewName === viewName
+        existingPerspective.viewName === viewName &&
+        existingPerspective.viewTitle === viewTitle &&
+        perspectiveMatchesGraphRemainderPolicy(existingPerspective, labeledClusterArtifact)
           ? existingPerspective
           : await buildPerspectivePlanArtifact(promotedView, [clusterArtifactPath], {
               analysisModel,
@@ -3256,6 +3271,156 @@ function promotedGraphViewName(surfaceId: string): string {
     .replace(/^-|-$/g, "");
 }
 
+function findGraphRemainderClusterIds(artifact: ClusterArtifact): number[] {
+  if (artifact.experimental?.kind !== "graph-surface") {
+    return [];
+  }
+
+  const totalMembers = Math.max(1, artifact.members.length);
+  return artifact.clusters
+    .filter((cluster) => cluster.size / totalMembers >= GRAPH_REMAINDER_CLUSTER_SHARE_THRESHOLD)
+    .map((cluster) => cluster.clusterId)
+    .sort((left, right) => left - right);
+}
+
+function normalizeGraphRemainderClusterLabels(artifact: ClusterArtifact): ClusterArtifact {
+  if (artifact.experimental?.kind !== "graph-surface") {
+    return artifact;
+  }
+
+  const remainderClusterIds = findGraphRemainderClusterIds(artifact);
+  const remainderSet = new Set(remainderClusterIds);
+  const method =
+    artifact.method === "semantic-neighborhood-kmeans"
+      ? artifact.method
+      : "semantic-neighborhood-kmeans";
+  const clusters = artifact.clusters.map((cluster) => {
+    if (!remainderSet.has(cluster.clusterId)) {
+      return cluster;
+    }
+
+    const label = "Mixed General Remainder";
+    const summary =
+      "This broad remainder contains mixed or general opinions that were not captured by the smaller semantic-neighborhood clusters. Treat it as material to inspect or recluster, not as one coherent report theme.";
+
+    if (cluster.label === label && cluster.summary === summary) {
+      return cluster;
+    }
+
+    return {
+      ...cluster,
+      label,
+      summary
+    };
+  });
+
+  if (
+    artifact.method === method &&
+    arraysEqual(artifact.experimental.excludedClusterIds ?? [], remainderClusterIds) &&
+    clusters.every((cluster, index) => cluster === artifact.clusters[index])
+  ) {
+    return artifact;
+  }
+
+  return {
+    ...artifact,
+    method,
+    clusters,
+    experimental: {
+      ...artifact.experimental,
+      excludedClusterIds: remainderClusterIds
+    }
+  };
+}
+
+function hierarchyMatchesGraphRemainderPolicy(
+  hierarchy: ClusterHierarchyArtifact,
+  artifact: ClusterArtifact
+): boolean {
+  const excludedClusterIds = findGraphRemainderClusterIds(artifact);
+
+  if (excludedClusterIds.length === 0) {
+    return true;
+  }
+
+  const excludedClusterIdSet = new Set(excludedClusterIds);
+  return (
+    arraysEqual(hierarchy.experimental?.excludedClusterIds ?? [], excludedClusterIds) &&
+    hierarchy.themes.every((theme) =>
+      theme.clusterIds.every((clusterId) => !excludedClusterIdSet.has(clusterId))
+    )
+  );
+}
+
+function perspectiveMatchesGraphRemainderPolicy(
+  perspective: PerspectivePlanArtifact,
+  artifact: ClusterArtifact
+): boolean {
+  const excludedClusterIds = findGraphRemainderClusterIds(artifact);
+
+  if (excludedClusterIds.length === 0) {
+    return true;
+  }
+
+  const excludedClusterIdSet = new Set(excludedClusterIds);
+  return (
+    arraysEqual(perspective.experimental?.excludedClusterIds ?? [], excludedClusterIds) &&
+    perspective.highlights.every((highlight) => !excludedClusterIdSet.has(highlight.clusterId))
+  );
+}
+
+function graphRemainderExclusionMetadata(
+  artifact: ClusterArtifact
+): ClusterHierarchyArtifact["experimental"] | undefined {
+  if (artifact.experimental?.kind !== "graph-surface") {
+    return undefined;
+  }
+
+  const excludedClusterIds = findGraphRemainderClusterIds(artifact);
+
+  if (excludedClusterIds.length === 0) {
+    return undefined;
+  }
+
+  return {
+    kind: "graph-surface",
+    sourceSurfaceId: artifact.experimental.sourceSurfaceId,
+    excludedClusterIds,
+    exclusionReason: `Clusters at or above ${Math.round(
+      GRAPH_REMAINDER_CLUSTER_SHARE_THRESHOLD * 100
+    )}% of graph assignments are treated as broad mixed remainders and held out of semantic themes and highlights.`
+  };
+}
+
+function buildSemanticThemeArtifact(artifact: ClusterArtifact): {
+  artifact: ClusterArtifact;
+  experimental?: ClusterHierarchyArtifact["experimental"];
+} {
+  const experimental = graphRemainderExclusionMetadata(artifact);
+
+  if (experimental === undefined) {
+    return { artifact };
+  }
+
+  const excludedClusterIdSet = new Set(experimental.excludedClusterIds);
+  const clusters = artifact.clusters.filter(
+    (cluster) => !excludedClusterIdSet.has(cluster.clusterId)
+  );
+
+  return {
+    artifact: {
+      ...artifact,
+      effectiveClusterCount: clusters.length,
+      clusters
+    },
+    experimental
+  };
+}
+
+function arraysEqual(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function buildGraphSurfaceClusterArtifact(options: {
   surface: ClusteringSurfaceSummary;
   surfacePath: string;
@@ -3289,7 +3454,7 @@ function buildGraphSurfaceClusterArtifact(options: {
   if (members.length === 0) {
     return {
       createdAt,
-      method: "experimental-graph-adjacency-kmeans",
+      method: "semantic-neighborhood-kmeans",
       requestedClusterCount: options.surface.requestedClusterCount,
       effectiveClusterCount: 0,
       status: "skipped",
@@ -3341,7 +3506,7 @@ function buildGraphSurfaceClusterArtifact(options: {
 
   return {
     createdAt,
-    method: "experimental-graph-adjacency-kmeans",
+    method: "semantic-neighborhood-kmeans",
     requestedClusterCount: options.surface.requestedClusterCount,
     effectiveClusterCount: clusters.length,
     status: "ready",
@@ -3427,7 +3592,7 @@ function renderGraphSurfacePromotionConsoleSummary(options: {
   perspectiveReused: boolean;
 }): string {
   const lines = [
-    color.heading("Broadly Experimental Graph View"),
+    color.heading("Broadly Semantic Neighborhood View"),
     color.muted(rule("=")),
     formatDetailLine("Project", options.projectRoot),
     formatDetailLine("Run", options.runId),
@@ -4968,7 +5133,15 @@ async function buildPerspectivePlanArtifact(
   }
 
   const graphExperiment = chosen.artifact.experimental;
-  const highlights = [...chosen.artifact.clusters]
+  const excludedClusterIds = findGraphRemainderClusterIds(chosen.artifact);
+  const excludedClusterIdSet = new Set(excludedClusterIds);
+  const highlightCandidates =
+    excludedClusterIds.length === 0
+      ? chosen.artifact.clusters
+      : chosen.artifact.clusters.filter(
+          (cluster) => !excludedClusterIdSet.has(cluster.clusterId)
+        );
+  const highlights = [...highlightCandidates]
     .sort((left, right) =>
       view.mode === "dissent"
         ? left.size - right.size || left.clusterId - right.clusterId
@@ -4987,7 +5160,7 @@ async function buildPerspectivePlanArtifact(
     highlights.length === 0
       ? "No cluster highlights were available for this view."
       : graphExperiment !== undefined
-        ? `This experimental perspective uses repaired mutual-kNN graph membership instead of projection-space cluster membership. It foregrounds ${highlights
+        ? `This semantic-neighborhood perspective uses repaired mutual-kNN graph membership instead of projection-space cluster membership. It foregrounds ${highlights
             .slice(0, 3)
             .map((item) => item.label)
             .join(", ")}.`
@@ -5024,7 +5197,13 @@ async function buildPerspectivePlanArtifact(
     highlights,
     rationale:
       graphExperiment !== undefined
-        ? `Promote ${graphExperiment.graphSurfaceLabel} as an experimental analysis view because it preserves local embedding neighborhoods while using ${path.basename(graphExperiment.displayReductionPath)} only for display coordinates.`
+        ? `Use ${graphExperiment.graphSurfaceLabel} as a semantic-neighborhood view because it preserves local embedding neighborhoods while using ${path.basename(graphExperiment.displayReductionPath)} only for display coordinates.${
+            excludedClusterIds.length === 0
+              ? ""
+              : ` Mixed/general remainder clusters (${excludedClusterIds
+                  .map((clusterId) => `#${clusterId}`)
+                  .join(", ")}) are held out of highlights and semantic themes.`
+          }`
         : view.mode === "dissent"
         ? "Prefer the higher cluster count to preserve narrower pockets of disagreement and minority viewpoints."
         : view.reduction.method === "pacmap"
@@ -5035,7 +5214,8 @@ async function buildPerspectivePlanArtifact(
       : {
           experimental: {
             kind: "graph-surface",
-            sourceSurfaceId: graphExperiment.sourceSurfaceId
+            sourceSurfaceId: graphExperiment.sourceSurfaceId,
+            ...(excludedClusterIds.length === 0 ? {} : { excludedClusterIds })
           }
         })
   };
@@ -5347,6 +5527,7 @@ async function buildSemanticHierarchyArtifact(options: {
   promptTemplate: string;
 }): Promise<ClusterHierarchyArtifact> {
   if (options.artifact.status !== "ready" || options.artifact.clusters.length === 0) {
+    const experimental = graphRemainderExclusionMetadata(options.artifact);
     return {
       createdAt: new Date().toISOString(),
       method: options.artifact.method,
@@ -5361,11 +5542,36 @@ async function buildSemanticHierarchyArtifact(options: {
       },
       themes: [],
       higherToLower: [],
-      lowerToHigher: []
+      lowerToHigher: [],
+      ...(experimental === undefined ? {} : { experimental })
     };
   }
 
-  const prompt = buildSemanticMergePrompt(options.promptTemplate, options.artifact);
+  const semanticThemeArtifact = buildSemanticThemeArtifact(options.artifact);
+
+  if (semanticThemeArtifact.artifact.clusters.length === 0) {
+    return {
+      createdAt: new Date().toISOString(),
+      method: options.artifact.method,
+      sourceClusterArtifactPath: options.artifactPath,
+      higherClusterCount: 0,
+      lowerClusterCount: 0,
+      status: "failed",
+      merge: {
+        method: "llm-semantic-merge",
+        error: "No ready non-remainder clusters were available for semantic merge.",
+        createdAt: new Date().toISOString()
+      },
+      themes: [],
+      higherToLower: [],
+      lowerToHigher: [],
+      ...(semanticThemeArtifact.experimental === undefined
+        ? {}
+        : { experimental: semanticThemeArtifact.experimental })
+    };
+  }
+
+  const prompt = buildSemanticMergePrompt(options.promptTemplate, semanticThemeArtifact.artifact);
   const attemptCount = 4;
   let latestRawText = "";
   let latestStopReason: string | null = null;
@@ -5388,9 +5594,9 @@ async function buildSemanticHierarchyArtifact(options: {
       });
       latestRawText = result.text;
       latestStopReason = result.stopReason;
-      const parsedThemes = parseSemanticMergeResponse(result.text, options.artifact);
+      const parsedThemes = parseSemanticMergeResponse(result.text, semanticThemeArtifact.artifact);
       return finalizeSemanticHierarchyArtifact({
-        artifact: options.artifact,
+        artifact: semanticThemeArtifact.artifact,
         artifactPath: options.artifactPath,
         themes: parsedThemes,
         merge: {
@@ -5403,7 +5609,10 @@ async function buildSemanticHierarchyArtifact(options: {
           },
           rawText: result.text,
           createdAt: new Date().toISOString()
-        }
+        },
+        ...(semanticThemeArtifact.experimental === undefined
+          ? {}
+          : { experimental: semanticThemeArtifact.experimental })
       });
     } catch (error) {
       latestError = error instanceof Error ? error.message : String(error);
@@ -5415,7 +5624,7 @@ async function buildSemanticHierarchyArtifact(options: {
     method: options.artifact.method,
     sourceClusterArtifactPath: options.artifactPath,
     higherClusterCount: 0,
-    lowerClusterCount: options.artifact.effectiveClusterCount,
+    lowerClusterCount: semanticThemeArtifact.artifact.effectiveClusterCount,
     status: "failed",
     merge: {
       method: "llm-semantic-merge",
@@ -5431,7 +5640,10 @@ async function buildSemanticHierarchyArtifact(options: {
     },
     themes: [],
     higherToLower: [],
-    lowerToHigher: []
+    lowerToHigher: [],
+    ...(semanticThemeArtifact.experimental === undefined
+      ? {}
+      : { experimental: semanticThemeArtifact.experimental })
   };
 }
 
@@ -5446,6 +5658,7 @@ function finalizeSemanticHierarchyArtifact(options: {
     mergeRationale: string;
   }>;
   merge: ClusterHierarchyArtifact["merge"];
+  experimental?: ClusterHierarchyArtifact["experimental"];
 }): ClusterHierarchyArtifact {
   const clusterById = new Map(options.artifact.clusters.map((cluster) => [cluster.clusterId, cluster] as const));
   const lowerToHigher = options.themes.flatMap((theme) =>
@@ -5484,7 +5697,8 @@ function finalizeSemanticHierarchyArtifact(options: {
     merge: options.merge,
     themes: options.themes,
     higherToLower,
-    lowerToHigher
+    lowerToHigher,
+    ...(options.experimental === undefined ? {} : { experimental: options.experimental })
   };
 }
 
