@@ -693,7 +693,6 @@ function renderStaticReportBehaviorScript(report: ReportBundle): string {
             '<button type="button" class="map-inspector-button" data-map-opinion-step="-1" aria-label="Previous opinion">&larr;</button>' +
             '<button type="button" class="map-inspector-button" data-map-opinion-step="1" aria-label="Next opinion">&rarr;</button>' +
           '</div></div>' +
-          '<p class="meta">' + escapeText(view.title) + '</p>' +
           '<blockquote>' + escapeText(point.opinionText || point.excerpt || "No opinion text available.") + '</blockquote>' +
           (point.excerpt && point.excerpt !== point.opinionText ? '<p class="meta" style="margin-top:12px;">Excerpt: ' + escapeText(point.excerpt) + '</p>' : '');
         inspector.scrollTop = 0;
