@@ -4,6 +4,7 @@ These notes are verbose extraction-style reference documents based on the two ke
 
 1. [01-what-we-heard-summary.md](./01-what-we-heard-summary.md)
 2. [02-2018-2020-national-action-plan.md](./02-2018-2020-national-action-plan.md)
+3. [codex-gold-standard-qa.md](./codex-gold-standard-qa.md)
 
 Purpose:
 
