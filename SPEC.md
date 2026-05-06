@@ -226,6 +226,7 @@ The current command surface is:
 | `broadly analysis --evaluate-reducers` | Evaluate existing reduction/cluster artifacts without new model calls. |
 | `broadly analysis --evaluate-clustering-surfaces` | Compare embedding-space clustering against projection-space cluster artifacts. |
 | `broadly analysis --evaluate-graph-builders` | Compare cheap neighborhood-graph clustering variants against existing surfaces. |
+| `broadly analysis --promote-graph-surface [surfaceId]` | Promote a graph diagnostic surface into an experimental labeled/synthesized analysis view. |
 | `broadly report` | Generate `reports/<run-id>/report-bundle.json` from analysis artifacts. |
 | `broadly report site` | Generate a self-contained static HTML report site under `reports/<run-id>/site/`. |
 | `broadly qa` | Run structural and model-assisted QA over analysis/report artifacts. |
@@ -611,6 +612,23 @@ The per-graph artifacts preserve graph edges and weights. The per-surface
 artifacts preserve graph-clustering assignments so later graph-aware analysis
 views can reuse the graph-builder boundary without regenerating the graph.
 
+`broadly analysis --promote-graph-surface [surfaceId]` promotes one graph
+diagnostic surface into the normal analysis artifact set. If no `surfaceId` is
+provided, the command selects the strongest repaired mutual-kNN graph surface by
+embedding-neighbor purity. Promotion writes:
+
+```text
+runs/<run-id>/clusters/experimental-<surface-id>.json
+runs/<run-id>/hierarchies/experimental-<surface-id>.json
+runs/<run-id>/perspectives/experimental-<surface-id>.json
+```
+
+The promoted cluster artifact uses graph-surface assignments for membership and
+an existing ready 2D reduction only for map/display coordinates. It then reuses
+the standard LLM cluster labeling, semantic merge, and perspective-summary
+prompts. Promoted graph views are marked experimental and are included in report
+bundles as additional views; `report.primaryView` remains unchanged.
+
 Configured views are the durable unit for report variants. A view combines:
 
 - source extraction
@@ -983,6 +1001,7 @@ failures.
 - follow-up voting summary when `vote-summary.json` is attached to a report
 - scatterplots for clustered reductions
 - reducer, clustering-surface, and graph-builder diagnostics for analysis runs
+- experimental graph-backed analysis views promoted from graph diagnostics
 - theme and cluster exploration
 - cluster detail pages with assigned opinions
 - admin views for comments and opinions

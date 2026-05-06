@@ -153,6 +153,10 @@ program
   .option("--evaluate-reducers", "Evaluate existing reducer artifacts for local-neighbor preservation and cluster agreement", false)
   .option("--evaluate-clustering-surfaces", "Compare embedding-space clustering against existing reduction-based cluster artifacts", false)
   .option("--evaluate-graph-builders", "Compare cheap neighborhood-graph clustering variants against existing cluster artifacts", false)
+  .option(
+    "--promote-graph-surface [surfaceId]",
+    "Promote a graph diagnostic surface into an experimental labeled/synthesized analysis view"
+  )
   .option("--run <runId>", "Analysis run id to evaluate; defaults to current, then latest")
   .option("--neighbor-k <count>", "Neighbor count for analysis evaluation metrics", parsePositiveInteger)
   .action(
@@ -173,6 +177,7 @@ program
       evaluateReducers: boolean;
       evaluateClusteringSurfaces: boolean;
       evaluateGraphBuilders: boolean;
+      promoteGraphSurface?: string | boolean;
       run?: string;
       neighborK?: number;
     }) => {
@@ -210,6 +215,9 @@ program
         evaluateReducers: options.evaluateReducers,
         evaluateClusteringSurfaces: options.evaluateClusteringSurfaces,
         evaluateGraphBuilders: options.evaluateGraphBuilders,
+        ...(options.promoteGraphSurface === undefined
+          ? {}
+          : { promoteGraphSurface: options.promoteGraphSurface }),
         ...(options.run === undefined ? {} : { run: options.run }),
         ...(options.neighborK === undefined ? {} : { neighborK: options.neighborK })
       });

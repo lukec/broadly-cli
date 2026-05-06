@@ -48,6 +48,7 @@ export interface AnalysisCommandOptions {
   evaluateReducers?: boolean;
   evaluateClusteringSurfaces?: boolean;
   evaluateGraphBuilders?: boolean;
+  promoteGraphSurface?: string | boolean;
   run?: string;
   neighborK?: number;
 }
@@ -148,6 +149,16 @@ interface ClusterArtifact {
   };
   members: ClusterMember[];
   clusters: ClusterSummary[];
+  experimental?: {
+    kind: "graph-surface";
+    sourceSurfaceId: string;
+    sourceSurfacePath: string;
+    sourceGraphEvaluationPath: string;
+    displayReductionPath: string;
+    graphSurfaceLabel: string;
+    embeddingNeighborPurityAtK?: number | null;
+    embeddingSilhouette?: number | null;
+  };
 }
 
 const ANALYSIS_META_TOKENS = new Set([
@@ -217,6 +228,10 @@ interface PerspectivePlanArtifact {
     }>;
   }>;
   rationale: string;
+  experimental?: {
+    kind: "graph-surface";
+    sourceSurfaceId: string;
+  };
 }
 
 interface ClusterHierarchyArtifact {
@@ -407,6 +422,14 @@ interface MembershipShiftSummary {
 interface ClusteringSurfaceWorkingSet {
   summary: ClusteringSurfaceSummary;
   clusterById: Map<string, number>;
+}
+
+interface GraphSurfaceAssignmentArtifact {
+  surface: ClusteringSurfaceSummary;
+  assignments: Array<{
+    opinionId: string;
+    clusterId: number;
+  }>;
 }
 
 interface GraphBuilderEvaluationArtifact {
@@ -640,11 +663,16 @@ interface AnalysisViewGroup {
 
 type ReviewStatusCounts = Record<ReviewStatus, number>;
 
+function isGraphSurfacePromotionRequested(value: string | boolean | undefined): boolean {
+  return value !== undefined && value !== false;
+}
+
 export async function runAnalysis(options: AnalysisCommandOptions): Promise<void> {
   if (
     options.evaluateReducers === true ||
     options.evaluateClusteringSurfaces === true ||
-    options.evaluateGraphBuilders === true
+    options.evaluateGraphBuilders === true ||
+    isGraphSurfacePromotionRequested(options.promoteGraphSurface)
   ) {
     if (options.evaluateReducers === true) {
       await evaluateAnalysisReducers(options);
@@ -656,6 +684,10 @@ export async function runAnalysis(options: AnalysisCommandOptions): Promise<void
 
     if (options.evaluateGraphBuilders === true) {
       await evaluateAnalysisGraphBuilders(options);
+    }
+
+    if (isGraphSurfacePromotionRequested(options.promoteGraphSurface)) {
+      await promoteAnalysisGraphSurface(options);
     }
 
     return;
@@ -2893,6 +2925,540 @@ async function evaluateAnalysisGraphBuilders(options: AnalysisCommandOptions): P
   });
 }
 
+async function promoteAnalysisGraphSurface(options: AnalysisCommandOptions): Promise<void> {
+  const projectRoot = await resolveCommandProjectRoot(options.project);
+  const requestedSurfaceId = resolveRequestedGraphSurfaceId(options.promoteGraphSurface);
+
+  await withProjectActionLog({
+    projectRoot,
+    command: "analysis promote-graph-surface",
+    details: {
+      run: options.run ?? "(current/latest)",
+      surface: requestedSurfaceId ?? "(best repaired mutual-kNN)"
+    },
+    action: async () => {
+      const projectPaths = resolveProjectPaths(projectRoot);
+      const config = await loadProjectConfig(projectPaths.configPath);
+      const templateView = resolveGraphPromotionTemplateView(config);
+      const analysisModel = resolveAnalysisModelForView(config, templateView);
+      const prompts = await loadResolvedAnalysisPrompts(projectRoot, templateView);
+      const resolvedRun = await resolveReducerEvaluationRun(projectPaths, options.run);
+      const runDir = resolvedRun.runDir;
+      const manifestPath = path.join(runDir, "manifest.json");
+      const manifest = await readJsonFile<AnalysisRunManifest>(manifestPath);
+
+      if (manifest === null) {
+        throw new Error(`Analysis run '${resolvedRun.runId}' does not have a readable manifest.`);
+      }
+
+      const graphEvaluationPath = path.join(runDir, "graph-eval", "summary.json");
+      const graphEvaluation = await readJsonFile<GraphBuilderEvaluationArtifact>(graphEvaluationPath);
+
+      if (graphEvaluation === null) {
+        throw new Error(
+          `Analysis run '${resolvedRun.runId}' does not have graph diagnostics. Run broadly analysis --evaluate-graph-builders first.`
+        );
+      }
+
+      const surface = selectGraphSurfaceForPromotion(graphEvaluation, requestedSurfaceId);
+      const graphSurfacesDir =
+        graphEvaluation.source.graphSurfacesDir || path.join(runDir, "graph-eval", "surfaces");
+      const surfacePath = path.join(graphSurfacesDir, `${surface.surfaceId}.json`);
+      const surfaceAssignments = await readJsonFile<GraphSurfaceAssignmentArtifact>(surfacePath);
+
+      if (surfaceAssignments === null) {
+        throw new Error(`Graph surface assignment artifact was not found: ${surfacePath}`);
+      }
+
+      const reductionsDir = manifest.output.reductionsDir || path.join(runDir, "reductions");
+      const reductions = await loadReducerEvaluationReductions(reductionsDir);
+      const displayReduction = selectDisplayReductionForGraphPromotion(
+        reductions,
+        templateView.reduction.method
+      );
+      const opinionsById = await loadAnalysisRunOpinionArtifacts(manifest);
+      const viewName = promotedGraphViewName(surface.surfaceId);
+      const viewTitle = `Experimental Graph View: ${surface.label}`;
+      const promotedView: AnalysisViewConfig = {
+        ...templateView,
+        name: viewName,
+        title: viewTitle,
+        clustering: {
+          ...templateView.clustering,
+          count: surface.effectiveClusterCount || surface.requestedClusterCount
+        },
+        mode: "balanced"
+      };
+      const clustersDir = manifest.output.clustersDir || path.join(runDir, "clusters");
+      const hierarchiesDir = manifest.output.hierarchiesDir || path.join(runDir, "hierarchies");
+      const perspectivesDir = manifest.output.perspectivesDir || path.join(runDir, "perspectives");
+      const clusterArtifactPath = path.join(clustersDir, `${viewName}.json`);
+      const hierarchyPath = path.join(hierarchiesDir, `${viewName}.json`);
+      const perspectivePath = path.join(perspectivesDir, `${viewName}.json`);
+      const existingClusterArtifact = await readJsonFile<ClusterArtifact>(clusterArtifactPath);
+      const reusableClusterArtifact =
+        existingClusterArtifact?.experimental?.kind === "graph-surface" &&
+        existingClusterArtifact.experimental.sourceSurfaceId === surface.surfaceId
+          ? existingClusterArtifact
+          : null;
+      const clusterArtifact =
+        reusableClusterArtifact ??
+        buildGraphSurfaceClusterArtifact({
+          surface,
+          surfacePath,
+          sourceGraphEvaluationPath: graphEvaluationPath,
+          assignments: surfaceAssignments.assignments,
+          displayReduction: displayReduction.artifact,
+          displayReductionPath: displayReduction.artifactPath,
+          opinionsById
+        });
+
+      await mkdir(clustersDir, { recursive: true });
+      await mkdir(hierarchiesDir, { recursive: true });
+      await mkdir(perspectivesDir, { recursive: true });
+
+      if (reusableClusterArtifact === null) {
+        await writeJsonFile(clusterArtifactPath, clusterArtifact);
+      }
+
+      const labeledClusterArtifact =
+        clusterArtifact.labeling.method === "llm-cluster-labeling"
+          ? clusterArtifact
+          : await labelClusterArtifactWithLlm({
+              artifact: clusterArtifact,
+              artifactPath: clusterArtifactPath,
+              analysisModel,
+              projectRoot,
+              promptPath: prompts.clusterLabeling.path,
+              promptSha256: prompts.clusterLabeling.sha256,
+              promptTemplate: prompts.clusterLabeling.template
+            });
+      const labelReused = labeledClusterArtifact === clusterArtifact;
+
+      if (!labelReused) {
+        await writeJsonFile(clusterArtifactPath, labeledClusterArtifact);
+      }
+
+      const existingHierarchy = await readJsonFile<ClusterHierarchyArtifact>(hierarchyPath);
+      const hierarchyArtifact =
+        existingHierarchy !== null &&
+        existingHierarchy.status === "ready" &&
+        existingHierarchy.sourceClusterArtifactPath === clusterArtifactPath
+          ? existingHierarchy
+          : await buildSemanticHierarchyArtifact({
+              artifact: labeledClusterArtifact,
+              artifactPath: clusterArtifactPath,
+              analysisModel,
+              projectRoot,
+              promptPath: prompts.semanticMerge.path,
+              promptSha256: prompts.semanticMerge.sha256,
+              promptTemplate: prompts.semanticMerge.template
+            });
+      const hierarchyReused = hierarchyArtifact === existingHierarchy;
+
+      if (!hierarchyReused) {
+        await writeJsonFile(hierarchyPath, hierarchyArtifact);
+      }
+
+      const existingPerspective = await readJsonFile<PerspectivePlanArtifact>(perspectivePath);
+      const perspectiveArtifact =
+        existingPerspective !== null &&
+        existingPerspective.status === "ready" &&
+        existingPerspective.synthesis.method === "llm-perspective-summary" &&
+        existingPerspective.viewName === viewName
+          ? existingPerspective
+          : await buildPerspectivePlanArtifact(promotedView, [clusterArtifactPath], {
+              analysisModel,
+              projectRoot,
+              promptPath: prompts.perspectiveSummary.path,
+              promptSha256: prompts.perspectiveSummary.sha256,
+              promptTemplate: prompts.perspectiveSummary.template,
+              guidingQuestions: config.questions
+            });
+      const perspectiveReused = perspectiveArtifact === existingPerspective;
+
+      if (!perspectiveReused) {
+        await writeJsonFile(perspectivePath, perspectiveArtifact);
+      }
+
+      await updateManifestForPromotedGraphView({
+        manifestPath,
+        viewName,
+        viewTitle,
+        view: promotedView,
+        analysisModel,
+        clustersDir,
+        hierarchiesDir,
+        perspectivesDir
+      });
+
+      process.stdout.write(
+        renderGraphSurfacePromotionConsoleSummary({
+          projectRoot,
+          runId: resolvedRun.runId,
+          surface,
+          viewName,
+          clusterArtifactPath,
+          hierarchyPath,
+          perspectivePath,
+          labeledClusterArtifact,
+          hierarchyArtifact,
+          perspectiveArtifact,
+          labelReused,
+          hierarchyReused,
+          perspectiveReused
+        })
+      );
+    }
+  });
+}
+
+function resolveRequestedGraphSurfaceId(value: string | boolean | undefined): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function resolveGraphPromotionTemplateView(config: BroadlyProjectConfig): AnalysisViewConfig {
+  const primaryView =
+    config.analysisViews.find((view) => view.name === config.report.primaryView) ??
+    config.analysisViews[0];
+
+  if (primaryView === undefined) {
+    throw new Error("No analysis views are configured in broadly.yaml.");
+  }
+
+  return primaryView;
+}
+
+async function loadResolvedAnalysisPrompts(
+  projectRoot: string,
+  view: AnalysisViewConfig
+): Promise<ResolvedAnalysisView["prompts"]> {
+  const clusterLabelingPromptPath = path.join(projectRoot, view.prompts.clusterLabeling);
+  const perspectiveSummaryPromptPath = path.join(projectRoot, view.prompts.viewSummary);
+  const semanticMergePromptPath = path.join(projectRoot, view.prompts.semanticMerge);
+  const [clusterLabelingPrompt, perspectiveSummaryPrompt, semanticMergePrompt] =
+    await Promise.all([
+      readFile(clusterLabelingPromptPath, "utf8"),
+      readFile(perspectiveSummaryPromptPath, "utf8"),
+      readFile(semanticMergePromptPath, "utf8")
+    ]);
+
+  return {
+    clusterLabeling: {
+      path: clusterLabelingPromptPath,
+      template: clusterLabelingPrompt,
+      sha256: sha256Hex(clusterLabelingPrompt)
+    },
+    perspectiveSummary: {
+      path: perspectiveSummaryPromptPath,
+      template: perspectiveSummaryPrompt,
+      sha256: sha256Hex(perspectiveSummaryPrompt)
+    },
+    semanticMerge: {
+      path: semanticMergePromptPath,
+      template: semanticMergePrompt,
+      sha256: sha256Hex(semanticMergePrompt)
+    }
+  };
+}
+
+function selectGraphSurfaceForPromotion(
+  graphEvaluation: GraphBuilderEvaluationArtifact,
+  requestedSurfaceId: string | undefined
+): ClusteringSurfaceSummary {
+  const graphSurfaces = graphEvaluation.surfaces.filter(
+    (surface) => surface.surfaceKind === "graph" && surface.status === "ready"
+  );
+
+  if (requestedSurfaceId !== undefined) {
+    const requestedSurface = graphSurfaces.find(
+      (surface) => surface.surfaceId === requestedSurfaceId
+    );
+
+    if (requestedSurface === undefined) {
+      throw new Error(`Graph surface '${requestedSurfaceId}' was not found in graph-eval/summary.json.`);
+    }
+
+    return requestedSurface;
+  }
+
+  const repairedMutualSurfaces = graphSurfaces.filter((surface) =>
+    surface.surfaceId.includes("mutual-knn-repaired")
+  );
+  const candidateSurfaces =
+    repairedMutualSurfaces.length === 0 ? graphSurfaces : repairedMutualSurfaces;
+  const selected = [...candidateSurfaces].sort(
+    (left, right) =>
+      (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1) ||
+      (right.embeddingSilhouette ?? -1) - (left.embeddingSilhouette ?? -1) ||
+      left.surfaceId.localeCompare(right.surfaceId)
+  )[0];
+
+  if (selected === undefined) {
+    throw new Error("No ready graph surfaces were available to promote.");
+  }
+
+  return selected;
+}
+
+function selectDisplayReductionForGraphPromotion(
+  reductions: Array<{ artifactPath: string; artifact: ReductionArtifact }>,
+  preferredMethod: string
+): { artifactPath: string; artifact: ReductionArtifact } {
+  const readyReductions = reductions.filter((entry) => entry.artifact.status === "ready");
+  const selected =
+    readyReductions.find((entry) => entry.artifact.method === preferredMethod) ??
+    readyReductions.find((entry) => entry.artifact.method === "umap") ??
+    readyReductions[0];
+
+  if (selected === undefined) {
+    throw new Error("No ready reduction artifact was available for graph view display coordinates.");
+  }
+
+  return selected;
+}
+
+async function loadAnalysisRunOpinionArtifacts(
+  manifest: AnalysisRunManifest
+): Promise<Map<string, OpinionArtifact>> {
+  const opinionDirs = uniqueList(
+    [
+      manifest.input.opinionsDir,
+      ...(manifest.input.groups ?? []).map((group) => group.opinionsDir)
+    ].filter((value) => value.trim().length > 0)
+  );
+  const opinionsById = new Map<string, OpinionArtifact>();
+
+  for (const opinionsDir of opinionDirs) {
+    const opinionPaths = await listOpinionArtifactPaths(opinionsDir);
+
+    for (const opinionPath of opinionPaths) {
+      const opinion = await readJsonFile<OpinionArtifact>(opinionPath);
+
+      if (
+        opinion !== null &&
+        typeof opinion.opinionId === "string" &&
+        typeof opinion.opinionText === "string"
+      ) {
+        opinionsById.set(opinion.opinionId, opinion);
+      }
+    }
+  }
+
+  return opinionsById;
+}
+
+function promotedGraphViewName(surfaceId: string): string {
+  return `experimental-${surfaceId}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function buildGraphSurfaceClusterArtifact(options: {
+  surface: ClusteringSurfaceSummary;
+  surfacePath: string;
+  sourceGraphEvaluationPath: string;
+  assignments: Array<{ opinionId: string; clusterId: number }>;
+  displayReduction: ReductionArtifact;
+  displayReductionPath: string;
+  opinionsById: Map<string, OpinionArtifact>;
+}): ClusterArtifact {
+  const createdAt = new Date().toISOString();
+  const pointByOpinionId = new Map(
+    options.displayReduction.points.map((point) => [point.opinionId, point])
+  );
+  const members = options.assignments
+    .map((assignment) => {
+      const point = pointByOpinionId.get(assignment.opinionId);
+
+      if (point === undefined) {
+        return null;
+      }
+
+      return {
+        opinionId: assignment.opinionId,
+        clusterId: assignment.clusterId,
+        x: point.x,
+        y: point.y
+      };
+    })
+    .filter((value): value is ClusterMember => value !== null);
+
+  if (members.length === 0) {
+    return {
+      createdAt,
+      method: "experimental-graph-adjacency-kmeans",
+      requestedClusterCount: options.surface.requestedClusterCount,
+      effectiveClusterCount: 0,
+      status: "skipped",
+      message: "No graph surface assignments had display coordinates.",
+      sourceReductionPath: options.displayReductionPath,
+      labeling: {
+        method: "heuristic-fallback",
+        createdAt
+      },
+      members: [],
+      clusters: [],
+      experimental: {
+        kind: "graph-surface",
+        sourceSurfaceId: options.surface.surfaceId,
+        sourceSurfacePath: options.surfacePath,
+        sourceGraphEvaluationPath: options.sourceGraphEvaluationPath,
+        displayReductionPath: options.displayReductionPath,
+        graphSurfaceLabel: options.surface.label,
+        embeddingNeighborPurityAtK: options.surface.embeddingNeighborPurityAtK,
+        embeddingSilhouette: options.surface.embeddingSilhouette
+      }
+    };
+  }
+
+  const clusterMap = new Map<number, ClusterMember[]>();
+
+  for (const member of members) {
+    const group = clusterMap.get(member.clusterId) ?? [];
+    group.push(member);
+    clusterMap.set(member.clusterId, group);
+  }
+
+  const clusters = [...clusterMap.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([clusterId, group]) => {
+      const centroid = computeCentroid(group);
+      const summary = summarizeCluster(group, centroid, options.opinionsById, clusterId);
+
+      return {
+        clusterId,
+        size: group.length,
+        centroid,
+        label: summary.label,
+        topTerms: summary.topTerms,
+        summary: summary.summary,
+        representativeOpinions: summary.representativeOpinions
+      };
+    });
+
+  return {
+    createdAt,
+    method: "experimental-graph-adjacency-kmeans",
+    requestedClusterCount: options.surface.requestedClusterCount,
+    effectiveClusterCount: clusters.length,
+    status: "ready",
+    sourceReductionPath: options.displayReductionPath,
+    labeling: {
+      method: "heuristic-fallback",
+      createdAt
+    },
+    members,
+    clusters,
+    experimental: {
+      kind: "graph-surface",
+      sourceSurfaceId: options.surface.surfaceId,
+      sourceSurfacePath: options.surfacePath,
+      sourceGraphEvaluationPath: options.sourceGraphEvaluationPath,
+      displayReductionPath: options.displayReductionPath,
+      graphSurfaceLabel: options.surface.label,
+      embeddingNeighborPurityAtK: options.surface.embeddingNeighborPurityAtK,
+      embeddingSilhouette: options.surface.embeddingSilhouette
+    }
+  };
+}
+
+async function updateManifestForPromotedGraphView(options: {
+  manifestPath: string;
+  viewName: string;
+  viewTitle: string;
+  view: AnalysisViewConfig;
+  analysisModel: RegisteredModel;
+  clustersDir: string;
+  hierarchiesDir: string;
+  perspectivesDir: string;
+}): Promise<void> {
+  const manifest = await readJsonFile<AnalysisRunManifest>(options.manifestPath);
+
+  if (manifest === null) {
+    return;
+  }
+
+  const existingViews = manifest.input.views ?? [];
+  manifest.updatedAt = new Date().toISOString();
+  manifest.input.synthesisModes = uniqueList([
+    ...manifest.input.synthesisModes,
+    options.viewName
+  ]);
+  manifest.input.views = [
+    ...existingViews.filter((view) => view.name !== options.viewName),
+    {
+      name: options.viewName,
+      title: options.viewTitle,
+      mode: options.view.mode,
+      reductionMethod: "experimental-graph-surface",
+      clusterCount: options.view.clustering.count,
+      sourceExtraction: options.view.sourceExtraction,
+      analysisModel: options.analysisModel.name
+    }
+  ].sort((left, right) => left.name.localeCompare(right.name));
+  manifest.output.clusterArtifactsWritten = await countJsonArtifacts(options.clustersDir);
+  manifest.output.hierarchyArtifactsWritten = await countJsonArtifacts(options.hierarchiesDir);
+  manifest.output.perspectiveArtifactsWritten = await countJsonArtifacts(options.perspectivesDir);
+
+  await writeJsonFile(options.manifestPath, manifest);
+}
+
+async function countJsonArtifacts(directoryPath: string): Promise<number> {
+  const entries = await readdir(directoryPath, { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
+}
+
+function renderGraphSurfacePromotionConsoleSummary(options: {
+  projectRoot: string;
+  runId: string;
+  surface: ClusteringSurfaceSummary;
+  viewName: string;
+  clusterArtifactPath: string;
+  hierarchyPath: string;
+  perspectivePath: string;
+  labeledClusterArtifact: ClusterArtifact;
+  hierarchyArtifact: ClusterHierarchyArtifact;
+  perspectiveArtifact: PerspectivePlanArtifact;
+  labelReused: boolean;
+  hierarchyReused: boolean;
+  perspectiveReused: boolean;
+}): string {
+  const lines = [
+    color.heading("Broadly Experimental Graph View"),
+    color.muted(rule("=")),
+    formatDetailLine("Project", options.projectRoot),
+    formatDetailLine("Run", options.runId),
+    formatDetailLine("View", options.viewName),
+    formatDetailLine("Surface", options.surface.label),
+    formatDetailLine("Purity", formatMetric(options.surface.embeddingNeighborPurityAtK)),
+    formatDetailLine("Silhouette", formatMetric(options.surface.embeddingSilhouette)),
+    formatDetailLine(
+      "Clusters",
+      `${options.labeledClusterArtifact.clusters.length} clusters · ${options.labeledClusterArtifact.members.length} assignments`
+    ),
+    formatDetailLine(
+      "Labels",
+      `${options.labeledClusterArtifact.labeling.method}${options.labelReused ? " · reused" : " · generated"}`
+    ),
+    formatDetailLine(
+      "Hierarchy",
+      `${options.hierarchyArtifact.status}${options.hierarchyReused ? " · reused" : " · generated"}`
+    ),
+    formatDetailLine(
+      "Perspective",
+      `${options.perspectiveArtifact.status}${options.perspectiveReused ? " · reused" : " · generated"}`
+    ),
+    formatDetailLine("Cluster artifact", toPortableRelativePath(options.projectRoot, options.clusterArtifactPath)),
+    formatDetailLine("Hierarchy", toPortableRelativePath(options.projectRoot, options.hierarchyPath)),
+    formatDetailLine("Perspective", toPortableRelativePath(options.projectRoot, options.perspectivePath))
+  ];
+
+  return `\n${lines.join("\n")}\n`;
+}
+
 function buildGraphBuilderArtifacts(options: {
   opinionIds: string[];
   embeddingsById: Map<string, EmbeddingArtifact>;
@@ -4401,6 +4967,7 @@ async function buildPerspectivePlanArtifact(
     };
   }
 
+  const graphExperiment = chosen.artifact.experimental;
   const highlights = [...chosen.artifact.clusters]
     .sort((left, right) =>
       view.mode === "dissent"
@@ -4419,6 +4986,11 @@ async function buildPerspectivePlanArtifact(
   const summary =
     highlights.length === 0
       ? "No cluster highlights were available for this view."
+      : graphExperiment !== undefined
+        ? `This experimental perspective uses repaired mutual-kNN graph membership instead of projection-space cluster membership. It foregrounds ${highlights
+            .slice(0, 3)
+            .map((item) => item.label)
+            .join(", ")}.`
       : view.mode === "dissent"
         ? `This perspective looks for narrower or minority clusters that could be drowned out in a broad summary. It foregrounds ${highlights
             .slice(0, 3)
@@ -4451,11 +5023,21 @@ async function buildPerspectivePlanArtifact(
     summary,
     highlights,
     rationale:
-      view.mode === "dissent"
+      graphExperiment !== undefined
+        ? `Promote ${graphExperiment.graphSurfaceLabel} as an experimental analysis view because it preserves local embedding neighborhoods while using ${path.basename(graphExperiment.displayReductionPath)} only for display coordinates.`
+        : view.mode === "dissent"
         ? "Prefer the higher cluster count to preserve narrower pockets of disagreement and minority viewpoints."
         : view.reduction.method === "pacmap"
           ? "Prefer the PaCMAP reduction with the broader cluster count so the report can compare a second map geometry against the primary UMAP view."
-        : "Prefer the lower cluster count to produce a broader reading that should still surface strong consensus where it exists."
+        : "Prefer the lower cluster count to produce a broader reading that should still surface strong consensus where it exists.",
+    ...(graphExperiment === undefined
+      ? {}
+      : {
+          experimental: {
+            kind: "graph-surface",
+            sourceSurfaceId: graphExperiment.sourceSurfaceId
+          }
+        })
   };
 
   return summarizePerspectiveWithLlm(heuristicPerspective, chosen.artifact, options);
