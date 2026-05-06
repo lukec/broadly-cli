@@ -707,8 +707,10 @@ present or explicitly supplied. When report views contain plot payloads, the
 static site includes an interactive interpretation map: switching views animates
 the same opinion points to their new positions, translucent cluster shapes can
 be toggled on or off, and clicking a point shows the underlying opinion. The
-report review boundary is rendered as compact provenance metadata near the end
-of the report rather than taking over the top of the page.
+opinion inspector supports previous/next cycling without exposing long artifact
+ids as the visible label. The report review boundary is rendered as compact
+provenance metadata near the end of the report rather than taking over the top
+of the page.
 
 Static site output:
 
@@ -1036,7 +1038,7 @@ failures.
 - report view with map-driven perspective switching that preserves scroll
   position while points animate
 - animated report interpretation map with point inspection and cluster-shape
-  overlays
+  overlays, plus previous/next controls for cycling selected opinions
 - statement bank review with status and text edits
 - follow-up voting summary when `vote-summary.json` is attached to a report
 - scatterplots for clustered reductions

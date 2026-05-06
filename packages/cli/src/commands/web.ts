@@ -5639,6 +5639,43 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         height: var(--report-map-height);
         overflow: auto;
       }
+      .map-inspector-head {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        padding-bottom: 12px;
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--line);
+        background: inherit;
+      }
+      .map-inspector-nav {
+        display: inline-flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .map-inspector-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255,255,255,0.94);
+        color: var(--muted);
+        cursor: pointer;
+        font: 700 16px/1 ui-monospace, monospace;
+        transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+      }
+      .map-inspector-button:hover {
+        border-color: var(--bl-primary-400);
+        color: var(--bl-primary-800);
+        background: #fff;
+      }
       .map-inspector blockquote {
         margin-top: 12px;
       }

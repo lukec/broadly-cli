@@ -234,6 +234,41 @@ export function renderStaticReportHtml(
         height: var(--report-map-height);
         overflow: auto;
       }
+      .map-inspector-head {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        padding-bottom: 12px;
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--line);
+        background: inherit;
+      }
+      .map-inspector-nav {
+        display: inline-flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .map-inspector-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        color: var(--muted);
+        cursor: pointer;
+        font: 700 16px/1 ui-monospace, monospace;
+      }
+      .map-inspector-button:hover {
+        border-color: var(--primary);
+        color: var(--primary);
+      }
       .map-inspector blockquote {
         margin-top: 12px;
       }
@@ -638,6 +673,7 @@ function renderStaticReportBehaviorScript(report: ReportBundle): string {
           node.classList.remove("selected");
         });
         inspector.innerHTML = '<p class="eyebrow">Opinion</p><h3>' + escapeText(view.title) + '</h3><p class="meta">' + pointCount + ' plotted opinions. Click a point to inspect it.</p>';
+        inspector.scrollTop = 0;
       };
 
       const showInspector = (root, point, view) => {
@@ -648,11 +684,19 @@ function renderStaticReportBehaviorScript(report: ReportBundle): string {
           node.classList.toggle("selected", node.getAttribute("data-opinion-id") === point.opinionId);
         });
         const cluster = (view.plot.clusters || []).find((item) => item.clusterId === point.clusterId);
-        inspector.innerHTML = '<p class="eyebrow">Opinion ' + escapeText(point.opinionId) + '</p>' +
-          '<h3>#' + escapeText(point.clusterId) + ' ' + escapeText(cluster ? cluster.label : "Cluster") + '</h3>' +
-          '<p class="meta">' + escapeText(view.title) + (point.sourceId ? " · source " + escapeText(point.sourceId) : "") + '</p>' +
+        const points = scalePoints(view);
+        const pointIndex = points.findIndex((item) => item.opinionId === point.opinionId);
+        const positionLabel = pointIndex === -1 ? "Opinion" : "Opinion " + (pointIndex + 1) + " of " + points.length;
+        inspector.innerHTML = '<div class="map-inspector-head"><div><p class="eyebrow">' + escapeText(positionLabel) + '</p>' +
+          '<h3>#' + escapeText(point.clusterId) + ' ' + escapeText(cluster ? cluster.label : "Cluster") + '</h3></div>' +
+          '<div class="map-inspector-nav">' +
+            '<button type="button" class="map-inspector-button" data-map-opinion-step="-1" aria-label="Previous opinion">&larr;</button>' +
+            '<button type="button" class="map-inspector-button" data-map-opinion-step="1" aria-label="Next opinion">&rarr;</button>' +
+          '</div></div>' +
+          '<p class="meta">' + escapeText(view.title) + '</p>' +
           '<blockquote>' + escapeText(point.opinionText || point.excerpt || "No opinion text available.") + '</blockquote>' +
           (point.excerpt && point.excerpt !== point.opinionText ? '<p class="meta" style="margin-top:12px;">Excerpt: ' + escapeText(point.excerpt) + '</p>' : '');
+        inspector.scrollTop = 0;
       };
 
       document.querySelectorAll("[data-report-map]").forEach((root) => {
@@ -673,6 +717,20 @@ function renderStaticReportBehaviorScript(report: ReportBundle): string {
             const view = root.__reportMapViews.find((item) => item.viewId === root.dataset.activeViewId) || root.__reportMapViews[0];
             const point = scalePoints(view).find((item) => item.opinionId === pointNode.getAttribute("data-opinion-id"));
             showInspector(root, point, view);
+            return;
+          }
+          const opinionStepButton = event.target.closest("[data-map-opinion-step]");
+          if (opinionStepButton instanceof HTMLElement) {
+            const view = root.__reportMapViews.find((item) => item.viewId === root.dataset.activeViewId) || root.__reportMapViews[0];
+            if (!view) return;
+            const points = scalePoints(view);
+            if (points.length === 0) return;
+            const step = Number(opinionStepButton.getAttribute("data-map-opinion-step")) || 0;
+            const selectedId = root.dataset.selectedOpinionId;
+            const selectedIndex = points.findIndex((item) => item.opinionId === selectedId);
+            const baseIndex = selectedIndex === -1 ? (step < 0 ? 0 : -1) : selectedIndex;
+            const nextIndex = (baseIndex + step + points.length) % points.length;
+            showInspector(root, points[nextIndex], view);
             return;
           }
           const mapNode = event.target.closest("[data-report-map-svg]");
