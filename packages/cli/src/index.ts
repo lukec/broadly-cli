@@ -8,10 +8,10 @@ import { attestReport, attestStatements, verifyArtifacts } from "./commands/atte
 import { defaultBlueskyScrapeOptions, scrapeBluesky } from "./commands/bluesky.js";
 import { configureDataset } from "./commands/configureDataset.js";
 import {
-  CODEX_GOLD_STANDARD_STRATEGY,
-  runCodexGoldStandardAnalysis,
+  HYBRID_TAXONOMY_STRATEGY,
+  runHybridTaxonomyAnalysis,
   type CodexReasoningEffort
-} from "./commands/codexGoldStandard.js";
+} from "./commands/hybridTaxonomy.js";
 import { extractOpinions } from "./commands/extractOpinions.js";
 import { initProject } from "./commands/init.js";
 import { runLlm } from "./commands/llm.js";
@@ -133,23 +133,23 @@ program
   .command("analysis")
   .description("Generate embedding, reduction, clustering, and perspective-planning artifacts.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
-  .option("--strategy <strategy>", `Analysis strategy: vector or ${CODEX_GOLD_STANDARD_STRATEGY}`, "vector")
+  .option("--strategy <strategy>", `Analysis strategy: vector or ${HYBRID_TAXONOMY_STRATEGY}`, "vector")
   .option("--embedding-model <name>", "Project model alias to use for embeddings")
-  .option("--extraction <name>", "Opinion extraction to use with --strategy codex-gold-standard")
-  .option("--opinion-run <runId>", "Opinion run id to use with --strategy codex-gold-standard")
+  .option("--extraction <name>", "Opinion extraction to use with --strategy hybrid-taxonomy")
+  .option("--opinion-run <runId>", "Opinion run id to use with --strategy hybrid-taxonomy")
   .option("--limit <count>", "Only process the first N opinion artifacts from the selected run", parsePositiveInteger)
   .option("--offset <count>", "Skip the first N opinion artifacts from the selected run", parsePositiveInteger)
-  .option("--batch-size <count>", "Opinions per Codex gold-standard batch", parsePositiveInteger, 80)
-  .option("--codex-model <model>", "Codex model for --strategy codex-gold-standard", "gpt-5.5")
+  .option("--batch-size <count>", "Opinions per Codex hybrid-taxonomy batch", parsePositiveInteger, 80)
+  .option("--codex-model <model>", "Codex model for --strategy hybrid-taxonomy", "gpt-5.5")
   .option(
     "--codex-reasoning <effort>",
-    "Codex reasoning effort for --strategy codex-gold-standard: low, medium, high, or xhigh",
+    "Codex reasoning effort for --strategy hybrid-taxonomy: low, medium, high, or xhigh",
     parseCodexReasoningEffort,
     "medium"
   )
-  .option("--codex-bin <path>", "Codex executable for --strategy codex-gold-standard")
-  .option("--dry-run", "Prepare gold-standard inputs without invoking Codex", false)
-  .option("--force", "Overwrite reusable Codex gold-standard artifacts for the selected run", false)
+  .option("--codex-bin <path>", "Codex executable for --strategy hybrid-taxonomy")
+  .option("--dry-run", "Prepare hybrid-taxonomy inputs without invoking Codex", false)
+  .option("--force", "Overwrite reusable Codex hybrid-taxonomy artifacts for the selected run", false)
   .option("--evaluate-reducers", "Evaluate existing reducer artifacts for local-neighbor preservation and cluster agreement", false)
   .option("--evaluate-clustering-surfaces", "Compare embedding-space clustering against existing reduction-based cluster artifacts", false)
   .option("--evaluate-graph-builders", "Compare cheap neighborhood-graph clustering variants against existing cluster artifacts", false)
@@ -181,8 +181,8 @@ program
       run?: string;
       neighborK?: number;
     }) => {
-      if (options.strategy === CODEX_GOLD_STANDARD_STRATEGY) {
-        await runCodexGoldStandardAnalysis({
+      if (options.strategy === HYBRID_TAXONOMY_STRATEGY) {
+        await runHybridTaxonomyAnalysis({
           ...(options.project === undefined ? {} : { project: options.project }),
           ...(options.extraction === undefined ? {} : { extraction: options.extraction }),
           ...(options.opinionRun === undefined ? {} : { opinionRun: options.opinionRun }),
@@ -201,7 +201,7 @@ program
 
       if (options.strategy !== "vector") {
         throw new Error(
-          `Unsupported analysis strategy '${options.strategy}'. Use 'vector' or '${CODEX_GOLD_STANDARD_STRATEGY}'.`
+          `Unsupported analysis strategy '${options.strategy}'. Use 'vector' or '${HYBRID_TAXONOMY_STRATEGY}'.`
         );
       }
 

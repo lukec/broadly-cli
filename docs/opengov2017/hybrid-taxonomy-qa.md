@@ -1,13 +1,13 @@
-# Codex Gold-Standard QA
+# Hybrid Taxonomy QA
 
 ## Purpose
 
-This note compares the Codex CLI gold-standard taxonomy for `opengov2017`
+This note compares the frontier-model hybrid taxonomy for `opengov2017`
 against the latest vector report and the Government of Canada benchmark themes.
 
-Gold-standard run reviewed:
+Hybrid taxonomy run reviewed:
 
-- `projects/opengov2017/gold-standards/codex-gold-opengov2017-full/`
+- `projects/opengov2017/taxonomies/hybrid-taxonomy-opengov2017-v2/`
 - model: `gpt-5.5`
 - reasoning effort: `medium`
 - source opinion run: `2026-04-21_19-11-23-636-gemini-flash-opinions-v2`
@@ -17,35 +17,38 @@ Vector report reviewed:
 - `projects/opengov2017/reports/2026-04-21_19-18-25-390-cohere-embed/report-bundle.json`
 - QA scorecard: `projects/opengov2017/runs/2026-04-21_19-18-25-390-cohere-embed/qa/2026-04-21_19-28-41-032/scorecard.json`
 
-## Gold-Standard Structural QA
+## Hybrid Taxonomy Structural QA
 
 | Check | Result | Read |
 |---|---:|---|
 | Included opinions | 376 | Full reviewed corpus was covered. |
-| Final themes | 20 | Compact enough for benchmark analysis, high for a public report. |
+| Top-level categories | 5 | Fits the target range for a public report/navigation tier. |
+| Subgroup themes | 22 | Enough detail for drill-down without forcing one flat theme list. |
 | Assignments | 376 | Every selected opinion has an assignment. |
-| Clear assignments | 311 | 82.7% clear. |
-| Partial assignments | 58 | 15.4% partial. |
-| Uncertain assignments | 7 | 1.9% uncertain. |
+| Clear assignments | 241 | 64.1% clear. |
+| Partial assignments | 78 | 20.7% partial. |
+| Uncertain assignments | 4 | 1.1% uncertain. |
+| Out-of-scope assignments | 53 | Preserved in artifacts but excluded from the primary taxonomy map by default. |
 
-Largest gold themes:
+Top-level categories:
+
+| Category | Count | Subgroups | Label |
+|---|---:|---:|---|
+| cat-02 | 76 | 5 | Open Data Infrastructure and Public Value |
+| cat-03 | 74 | 4 | Public Engagement and Inclusive Participation |
+| cat-01 | 71 | 5 | Transparency, Disclosure, and Rights |
+| cat-04 | 61 | 4 | Institutional Capacity and Service Delivery |
+| cat-05 | 38 | 4 | Democratic Governance and Boundary Issues |
+
+Largest subgroup themes:
 
 | Theme | Count | Label |
 |---|---:|---|
-| G09 | 48 | Public Service Culture, Leadership, And Implementation Capacity |
-| G07 | 45 | Inclusive Representation, Accessibility, And Digital Divide |
-| G03 | 29 | Open Data Standards, Stewardship, And Reusable Infrastructure |
-| G01 | 29 | Beneficial Ownership And Anti-Corruption Registries |
-| G08 | 25 | Participation Methods, Feedback Loops, And Consultation Legitimacy |
-
-Smallest gold themes:
-
-| Theme | Count | Label |
-|---|---:|---|
-| G18 | 3 | Market Capture, Coercion, And Ethics Of Open-Government Adoption |
-| G19 | 5 | Legal, Regulatory, And Procedural Complexity |
-| G12 | 10 | Spending, Contracting, Procurement, And Program Measurement Transparency |
-| G13 | 10 | Commitment Tracking, Open-Government Plans, And Public Archiving |
+| theme-001 | 29 | Beneficial ownership and anti-corruption registries |
+| theme-006 | 28 | Data standards, stewardship, and interoperability |
+| theme-012 | 27 | Accessible and representative participation |
+| theme-016 | 26 | Public-service culture and implementation capacity |
+| theme-007 | 23 | Findability, plain language, and practical access |
 
 ## Comparison Against Vector QA
 
@@ -67,7 +70,7 @@ The key comparison is not total score. The vector total is mostly lifted by
 artifact-integrity checks. The meaningful gap is semantic: `cluster membership`
 and `cluster theme support` are only moderate.
 
-The gold taxonomy directly addresses that weakness by giving every theme:
+The hybrid taxonomy directly addresses that weakness by giving every theme:
 
 - inclusion rules
 - exclusion rules
@@ -78,7 +81,7 @@ The gold taxonomy directly addresses that weakness by giving every theme:
 
 ## Official Theme Recall
 
-| Government benchmark theme | Gold recall | Notes |
+| Government benchmark theme | Hybrid recall | Notes |
 |---|---|---|
 | Open dialogue and public engagement | Strong | G08 covers participation methods, feedback loops, consultation legitimacy; G07 covers inclusion barriers. |
 | Open data, standards, discoverability, digital service convergence | Strong | G03, G04, and G05 split standards, usefulness, and digital access more cleanly than vector themes. |
@@ -88,14 +91,14 @@ The gold taxonomy directly addresses that weakness by giving every theme:
 | Healthy democracy | Partial | G14 catches democratic accountability and electoral reform, but not the full official democratic-resilience frame. |
 | Feminist and inclusive dialogue | Partial | G07 includes gender, GBA+, accessibility, language, Indigenous identity, and digital divide, but it is overloaded. |
 | Reconciliation and open government | Weak/partial | G07 catches Indigenous inclusion, but OCAP/data governance and relationship-based engagement are not first-class. |
-| Open science | Missing | No gold theme clearly targets federal science publications, science professionals, or open-science progress. |
+| Open science | Missing | No hybrid taxonomy theme clearly targets federal science publications, science professionals, or open-science progress. |
 | Open government community | Weak/partial | Some content appears in G09, G11, and G13, but OGP/Open Data Charter/community capacity is not explicit. |
 
-## What Gold Does Better
+## What The Frontier Backend Does Better
 
-Gold separates several concepts that the vector report tends to blur:
+The frontier taxonomy separates several concepts that the vector report tends to blur:
 
-| Vector blur | Gold separation |
+| Vector blur | Hybrid taxonomy separation |
 |---|---|
 | Generic access problems | G02 ATI rights, G05 findability/service access, G19 legal/procedural complexity |
 | Open data as one broad issue | G03 standards/stewardship, G04 usefulness/communication, G06 literacy |
@@ -107,7 +110,7 @@ This is the main result: the frontier-model taxonomy is not merely prettier
 labeling. It preserves policy mechanisms and false friends that vector geometry
 does not preserve reliably.
 
-## Where Gold Still Fails
+## Where The Frontier Backend Still Fails
 
 G07 is overloaded. It is useful as an assignment bucket, but too broad for
 benchmark reporting. It combines accessibility, language, youth, regional
@@ -132,7 +135,7 @@ theme.
 
 ## What We Learn
 
-The gold run supports the hybrid direction.
+The frontier-model run supports the hybrid direction.
 
 Embeddings and vector clustering are useful for neighborhoods, duplicates,
 outliers, and exploratory maps. They are not enough for benchmark-grade theme
@@ -147,7 +150,7 @@ The frontier-model taxonomy is stronger because it works like an analyst:
 - it records uncertainty
 - it preserves small but meaningful minority signals
 
-The gold taxonomy should become the target for report generation. Vector maps
+The hybrid taxonomy should become the target for report generation. Vector maps
 should become exploratory evidence surfaces, not the authoritative theme
 hierarchy.
 
@@ -164,7 +167,7 @@ The accepted implementation direction from this QA pass is:
    Benchmark recall can stay in corpus-specific evaluation notes when useful.
 4. Add false-friend QA using each theme's exclusion rules.
 5. Do not add theme role labels in the next implementation pass.
-6. Do not prioritize vector-cluster-versus-gold-assignment comparison in the
+6. Do not prioritize vector-cluster-versus-hybrid-assignment comparison in the
    next implementation pass.
 7. Do not add a special small-theme promotion rule yet.
 8. Split overloaded categories through subgroups rather than role tags. In this
@@ -185,12 +188,12 @@ Two product decisions fall out of this:
 
 ## Bottom Line
 
-The Codex gold-standard run is substantially better than the vector report for
+The hybrid taxonomy run is substantially better than the vector report for
 semantic QA and benchmark comparison. It hears the corpus at the policy-mechanism
 level, not just at the semantic-neighborhood level.
 
 It still needs subgroup handling and false-friend QA before it can produce a
 final public report. The next product step is not to replace embeddings with
-Codex. It is to make embeddings feed a gold-style taxonomy-and-assignment
+Codex. It is to make embeddings feed a hybrid taxonomy-and-assignment
 pipeline, then use assignment confidence and false-friend checks to repair the
 result.

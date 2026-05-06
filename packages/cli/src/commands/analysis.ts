@@ -260,6 +260,13 @@ interface ClusterHierarchyArtifact {
     themeLabel: string;
     themeSummary: string;
     clusterIds: number[];
+    subthemes?: Array<{
+      subthemeId: string;
+      clusterId: number;
+      label: string;
+      summary: string;
+      size: number;
+    }>;
     mergeRationale: string;
   }>;
   higherToLower: Array<{
@@ -5655,6 +5662,13 @@ function finalizeSemanticHierarchyArtifact(options: {
     themeLabel: string;
     themeSummary: string;
     clusterIds: number[];
+    subthemes?: Array<{
+      subthemeId: string;
+      clusterId: number;
+      label: string;
+      summary: string;
+      size: number;
+    }>;
     mergeRationale: string;
   }>;
   merge: ClusterHierarchyArtifact["merge"];
@@ -5681,7 +5695,28 @@ function finalizeSemanticHierarchyArtifact(options: {
       .filter((value): value is NonNullable<typeof value> => value !== null)
   );
 
-  const higherToLower = options.themes.map((theme) => ({
+  const themes = options.themes.map((theme) => ({
+    ...theme,
+    subthemes: theme.clusterIds
+      .map((clusterId) => {
+        const cluster = clusterById.get(clusterId);
+
+        if (cluster === undefined) {
+          return null;
+        }
+
+        return {
+          subthemeId: `${theme.themeId}.${cluster.clusterId}`,
+          clusterId: cluster.clusterId,
+          label: cluster.label,
+          summary: cluster.summary,
+          size: cluster.size
+        };
+      })
+      .filter((value): value is NonNullable<typeof value> => value !== null)
+  }));
+
+  const higherToLower = themes.map((theme) => ({
     higherClusterId: theme.themeId,
     higherLabel: theme.themeLabel,
     lowerClusterIds: [...theme.clusterIds].sort((left, right) => left - right)
@@ -5691,11 +5726,11 @@ function finalizeSemanticHierarchyArtifact(options: {
     createdAt: new Date().toISOString(),
     method: options.artifact.method,
     sourceClusterArtifactPath: options.artifactPath,
-    higherClusterCount: options.themes.length,
+    higherClusterCount: themes.length,
     lowerClusterCount: options.artifact.effectiveClusterCount,
     status: "ready",
     merge: options.merge,
-    themes: options.themes,
+    themes,
     higherToLower,
     lowerToHigher,
     ...(options.experimental === undefined ? {} : { experimental: options.experimental })

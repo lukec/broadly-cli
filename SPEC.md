@@ -90,8 +90,9 @@ project/
   archive/
     opinions/
     analysis/
-  gold-standards/
-    <gold-standard-run-id>/
+  taxonomies/
+    current-run.txt
+    <hybrid-taxonomy-run-id>/
       manifest.json
       taxonomy.json
       assignments.jsonl
@@ -222,7 +223,7 @@ The current command surface is:
 | `broadly opinions` | Run configured LLM opinion extraction specs. |
 | `broadly extract-opinions` | Compatibility wrapper around the configured opinion extraction path. |
 | `broadly analysis` | Build embeddings, reductions, clusters, semantic hierarchies, and perspective artifacts. |
-| `broadly analysis --strategy codex-gold-standard` | Run the experimental Codex CLI gold-standard taxonomy workflow over opinion artifacts. |
+| `broadly analysis --strategy hybrid-taxonomy` | Run the frontier-model hybrid taxonomy workflow over opinion artifacts. |
 | `broadly analysis --evaluate-reducers` | Evaluate existing reduction/cluster artifacts without new model calls. |
 | `broadly analysis --evaluate-clustering-surfaces` | Compare embedding-space clustering against projection-space cluster artifacts. |
 | `broadly analysis --evaluate-graph-builders` | Compare cheap neighborhood-graph clustering variants against existing surfaces. |
@@ -497,12 +498,10 @@ The current analysis stages are:
    - LLM summary artifacts per configured view
    - includes title, summary, highlighted clusters, and rationale
 
-## Codex Gold-Standard Analysis
+## Hybrid Taxonomy Analysis
 
-`broadly analysis --strategy codex-gold-standard` is an experimental benchmark
-path for building a higher-quality qualitative taxonomy with the local Codex
-CLI. It is intended for expensive gold-standard runs, not as the default
-open-source analysis engine.
+`broadly analysis --strategy hybrid-taxonomy` is a frontier-model analysis
+backend for building a qualitative taxonomy with the local Codex CLI.
 
 Defaults:
 
@@ -515,28 +514,29 @@ The command resolves the same opinion extraction and review boundary used by
 analysis, then writes artifacts under:
 
 ```text
-gold-standards/<run-id>/
-  manifest.json
-  inputs/
-    context.json
-    opinions.jsonl
-    batches/*.json
-  schemas/
-    batch-taxonomy.schema.json
-    taxonomy.schema.json
-    assignments.schema.json
-  prompts/
-  codex-events/*.jsonl
-  codex-stderr/*.log
-  batch-taxonomies/*.json
-  taxonomy.json
-  batch-assignments/*.json
-  assignments.jsonl
-  assignment-summary.json
+taxonomies/
+  current-run.txt
+  <run-id>/
+    manifest.json
+    inputs/
+      context.json
+      opinions.jsonl
+      batches/*.json
+    schemas/
+      batch-taxonomy.schema.json
+      taxonomy.schema.json
+      assignments.schema.json
+    prompts/
+    codex-events/*.jsonl
+    codex-stderr/*.log
+    batch-taxonomies/*.json
+    taxonomy.json
+    batch-assignments/*.json
+    assignments.jsonl
+    assignment-summary.json
 ```
 
-The current Codex gold-standard schema is a benchmark version of the planned
-hybrid taxonomy contract. `taxonomy.json` contains two tiers:
+The hybrid taxonomy contract in `taxonomy.json` contains two tiers:
 
 - top-level categories for navigation and report structure
 - subgroup themes with `parent_category_id` values for assignment
@@ -563,9 +563,9 @@ batch assignment already exists, the command reuses it unless `--force` is
 passed. `--dry-run` prepares inputs, schemas, and the manifest without invoking
 Codex.
 
-This run family deliberately does not write `runs/current-run.txt` and does not
-live under `runs/`, because its artifacts are benchmark/taxonomy outputs rather
-than report-compatible vector analysis outputs.
+The command writes `taxonomies/current-run.txt`. It does not write
+`runs/current-run.txt` yet, because taxonomy assignments are not currently the
+same artifact shape as vector analysis runs.
 
 `broadly analysis --evaluate-reducers` is a no-new-model-calls diagnostic path
 over an existing analysis run. It reads existing embedding, reduction, and

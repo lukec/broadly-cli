@@ -391,6 +391,7 @@ You are a data analyst preparing a higher-level thematic merge of lower-level op
 
 You will receive a set of labeled clusters with sizes, descriptions, top terms, and representative opinions.
 Group them into a smaller number of higher-level themes when a merge is semantically defensible.
+Treat those higher-level themes as parent categories. The lower-level clusters remain the subgroup themes inside each parent.
 
 ## Rules
 
@@ -406,6 +407,7 @@ Group them into a smaller number of higher-level themes when a merge is semantic
 - Do not use keyword lists, comma-separated fragments, or vague umbrella labels.
 - Theme summaries should explain the shared issue or tension that unifies the included clusters.
 - Merge rationale should briefly name the concrete shared concern that makes the merge defensible.
+- Preserve meaningful subgroup distinctions in the selected clusters instead of flattening them into the parent label.
 - Do not wrap the response in code fences.
 
 ## Output format

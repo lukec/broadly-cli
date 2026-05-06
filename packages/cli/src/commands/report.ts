@@ -82,6 +82,13 @@ interface SemanticMergeArtifact {
     themeLabel?: string;
     themeSummary?: string;
     clusterIds?: number[];
+    subthemes?: Array<{
+      subthemeId?: string;
+      clusterId?: number;
+      label?: string;
+      summary?: string;
+      size?: number;
+    }>;
   }>;
 }
 
@@ -176,12 +183,52 @@ export async function generateReport(options: ReportCommandOptions): Promise<voi
                 artifact.sourceClusterArtifactPath === perspective.chosenClusterArtifactPath &&
                 artifact.status === "ready"
             )
-            ?.themes?.map((theme) => ({
-              themeId: String(theme.themeId ?? "unknown"),
-              label: theme.themeLabel ?? "Theme",
-              summary: theme.themeSummary ?? "",
-              clusterIds: (theme.clusterIds ?? []).map((clusterId) => String(clusterId))
-            }));
+            ?.themes?.map((theme) => {
+              const clusterIds = theme.clusterIds ?? [];
+              const subthemes =
+                theme.subthemes === undefined
+                  ? clusterIds
+                      .map((clusterId) => {
+                        const cluster = clusterMap.get(clusterId);
+
+                        if (cluster === undefined) {
+                          return null;
+                        }
+
+                        return {
+                          subthemeId: `${theme.themeId ?? "theme"}.${clusterId}`,
+                          clusterId: String(clusterId),
+                          label: cluster.label ?? `Cluster ${clusterId}`,
+                          summary: cluster.summary ?? "",
+                          size: cluster.size ?? 0
+                        };
+                      })
+                      .filter((item): item is NonNullable<typeof item> => item !== null)
+                  : theme.subthemes.map((subtheme) => ({
+                      subthemeId: subtheme.subthemeId ?? `${theme.themeId ?? "theme"}.${subtheme.clusterId ?? "unknown"}`,
+                      clusterId: String(subtheme.clusterId ?? "unknown"),
+                      label:
+                        subtheme.label ??
+                        clusterMap.get(subtheme.clusterId ?? -1)?.label ??
+                        `Cluster ${subtheme.clusterId ?? "unknown"}`,
+                      summary:
+                        subtheme.summary ??
+                        clusterMap.get(subtheme.clusterId ?? -1)?.summary ??
+                        "",
+                      size:
+                        subtheme.size ??
+                        clusterMap.get(subtheme.clusterId ?? -1)?.size ??
+                        0
+                    }));
+
+              return {
+                themeId: String(theme.themeId ?? "unknown"),
+                label: theme.themeLabel ?? "Theme",
+                summary: theme.themeSummary ?? "",
+                clusterIds: clusterIds.map((clusterId) => String(clusterId)),
+                subthemes
+              };
+            });
 
     const viewId = perspective.viewName ?? perspective.mode;
 

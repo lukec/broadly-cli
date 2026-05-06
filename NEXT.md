@@ -111,7 +111,7 @@ Implementation notes:
   boundary checks for each assignment
 - split broad inclusion buckets through subgroups rather than adding report
   role labels
-- defer official benchmark recall QA, vector-versus-gold comparison, and
+- defer official benchmark recall QA, vector-versus-taxonomy comparison, and
   special small-theme promotion rules until they are needed by a specific
   benchmark or report
 

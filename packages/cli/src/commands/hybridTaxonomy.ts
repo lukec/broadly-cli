@@ -17,7 +17,7 @@ import {
   type ReviewStatus
 } from "@broadly/core";
 
-import { readCurrentRunId } from "../projectArtifacts.js";
+import { readCurrentRunId, writeCurrentRunId } from "../projectArtifacts.js";
 import { withProjectActionLog } from "../projectLog.js";
 import {
   ensureProjectReviewState,
@@ -27,11 +27,11 @@ import {
 } from "../reviewState.js";
 import { resolveCommandProjectRoot } from "./projectDashboard.js";
 
-export const CODEX_GOLD_STANDARD_STRATEGY = "codex-gold-standard";
+export const HYBRID_TAXONOMY_STRATEGY = "hybrid-taxonomy";
 
 export type CodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
-export interface CodexGoldStandardAnalysisOptions {
+export interface HybridTaxonomyAnalysisOptions {
   project?: string;
   extraction?: string;
   opinionRun?: string;
@@ -83,7 +83,7 @@ interface LoadedOpinionRun {
   manifest: OpinionRunManifest;
 }
 
-interface GoldOpinion {
+interface TaxonomyOpinion {
   opinionId: string;
   sourceId: string;
   opinionText: string;
@@ -97,11 +97,11 @@ interface GoldOpinion {
   };
 }
 
-interface GoldOpinionBatch {
+interface TaxonomyOpinionBatch {
   batchId: string;
   batchIndex: number;
   opinionCount: number;
-  opinions: GoldOpinion[];
+  opinions: TaxonomyOpinion[];
 }
 
 interface ReviewStatusCounts {
@@ -115,12 +115,12 @@ interface ReviewStatusCounts {
 interface SelectedOpinions {
   allOpinionCount: number;
   includedOpinionCount: number;
-  selectedOpinions: GoldOpinion[];
+  selectedOpinions: TaxonomyOpinion[];
   excludedOpinionCount: number;
   excludedByStatus: ReviewStatusCounts;
 }
 
-interface GoldRunPaths {
+interface TaxonomyRunPaths {
   runDir: string;
   manifestPath: string;
   inputsDir: string;
@@ -137,7 +137,7 @@ interface GoldRunPaths {
   assignmentSummaryPath: string;
 }
 
-interface GoldRunFingerprint {
+interface TaxonomyRunFingerprint {
   version: string;
   sha256: string;
   opinionRunId: string;
@@ -153,10 +153,10 @@ interface GoldRunFingerprint {
   reasoningEffort: CodexReasoningEffort;
 }
 
-interface CodexGoldStandardManifest {
+interface HybridTaxonomyManifest {
   runId: string;
-  kind: "codex-gold-standard-analysis";
-  strategy: typeof CODEX_GOLD_STANDARD_STRATEGY;
+  kind: "hybrid-taxonomy-analysis";
+  strategy: typeof HYBRID_TAXONOMY_STRATEGY;
   createdAt: string;
   updatedAt: string;
   status: "prepared" | "running" | "ready" | "failed" | "dry-run";
@@ -192,7 +192,7 @@ interface CodexGoldStandardManifest {
       excludedByStatus: ReviewStatusCounts;
     };
   };
-  fingerprint: GoldRunFingerprint;
+  fingerprint: TaxonomyRunFingerprint;
   output: {
     runDir: string;
     opinionsJsonlPath: string;
@@ -230,14 +230,14 @@ interface CodexExecResult {
   elapsedMs: number;
 }
 
-const GOLD_STANDARD_VERSION = "codex-gold-standard-v2";
+const HYBRID_TAXONOMY_VERSION = "hybrid-taxonomy-v2";
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT: CodexReasoningEffort = "medium";
 const DEFAULT_BATCH_SIZE = 80;
 
 const batchTaxonomySchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "Broadly Codex Gold Standard Batch Taxonomy",
+  title: "Broadly Codex Hybrid Taxonomy Batch Taxonomy",
   type: "object",
   additionalProperties: false,
   required: ["batch_id", "themes", "unassigned_opinion_ids", "notes"],
@@ -279,7 +279,7 @@ const batchTaxonomySchema = {
 
 const mergedTaxonomySchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "Broadly Codex Gold Standard Taxonomy",
+  title: "Broadly Codex Hybrid Taxonomy Taxonomy",
   type: "object",
   additionalProperties: false,
   required: ["taxonomy_id", "categories", "themes", "missing_or_uncertain_areas", "notes"],
@@ -346,7 +346,7 @@ const mergedTaxonomySchema = {
 
 const assignmentSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "Broadly Codex Gold Standard Batch Assignments",
+  title: "Broadly Codex Hybrid Taxonomy Batch Assignments",
   type: "object",
   additionalProperties: false,
   required: ["batch_id", "assignments", "new_theme_suggestions", "notes"],
@@ -412,8 +412,8 @@ const assignmentSchema = {
   }
 } as const;
 
-export async function runCodexGoldStandardAnalysis(
-  options: CodexGoldStandardAnalysisOptions
+export async function runHybridTaxonomyAnalysis(
+  options: HybridTaxonomyAnalysisOptions
 ): Promise<void> {
   const projectRoot = await resolveCommandProjectRoot(options.project);
   const model = options.model ?? DEFAULT_CODEX_MODEL;
@@ -427,7 +427,7 @@ export async function runCodexGoldStandardAnalysis(
 
   await withProjectActionLog({
     projectRoot,
-    command: "analysis codex-gold-standard",
+    command: "analysis hybrid-taxonomy",
     details: {
       extraction: options.extraction ?? "(configured)",
       opinionRun: options.opinionRun ?? "(latest)",
@@ -463,7 +463,7 @@ export async function runCodexGoldStandardAnalysis(
         throw new Error("No opinions matched the selected run, review boundary, offset, and limit.");
       }
 
-      const fingerprint = buildGoldRunFingerprint({
+      const fingerprint = buildTaxonomyRunFingerprint({
         opinionRunId: opinionRun.runId,
         sourceExtraction,
         selectedOpinions: selected.selectedOpinions,
@@ -474,10 +474,10 @@ export async function runCodexGoldStandardAnalysis(
         model,
         reasoning
       });
-      const runId = options.run ?? createGoldRunId(model);
-      const paths = resolveGoldRunPaths(projectPaths, runId);
+      const runId = options.run ?? createTaxonomyRunId(model);
+      const paths = resolveTaxonomyRunPaths(projectPaths, runId);
       const createdAt = new Date().toISOString();
-      const existingManifest = await readJsonFile<CodexGoldStandardManifest>(paths.manifestPath);
+      const existingManifest = await readJsonFile<HybridTaxonomyManifest>(paths.manifestPath);
 
       if (
         existingManifest !== null &&
@@ -485,7 +485,7 @@ export async function runCodexGoldStandardAnalysis(
         options.force !== true
       ) {
         throw new Error(
-          `Gold-standard run '${runId}' already exists with a different input fingerprint. Pass --force to overwrite reusable artifacts or choose a different --run.`
+          `Hybrid taxonomy run '${runId}' already exists with a different input fingerprint. Pass --force to overwrite reusable artifacts or choose a different --run.`
         );
       }
 
@@ -499,10 +499,10 @@ export async function runCodexGoldStandardAnalysis(
         batches
       });
 
-      const manifestBase: CodexGoldStandardManifest = {
+      const manifestBase: HybridTaxonomyManifest = {
         runId,
-        kind: "codex-gold-standard-analysis",
-        strategy: CODEX_GOLD_STANDARD_STRATEGY,
+        kind: "hybrid-taxonomy-analysis",
+        strategy: HYBRID_TAXONOMY_STRATEGY,
         createdAt: existingManifest?.createdAt ?? createdAt,
         updatedAt: new Date().toISOString(),
         status: options.dryRun === true ? "dry-run" : "prepared",
@@ -568,11 +568,11 @@ export async function runCodexGoldStandardAnalysis(
       }
 
       const checkpoint = async (
-        status: CodexGoldStandardManifest["status"],
-        stages: CodexGoldStandardManifest["stages"],
+        status: HybridTaxonomyManifest["status"],
+        stages: HybridTaxonomyManifest["stages"],
         error?: string
       ): Promise<void> => {
-        const manifest: CodexGoldStandardManifest = {
+        const manifest: HybridTaxonomyManifest = {
           ...manifestBase,
           updatedAt: new Date().toISOString(),
           status,
@@ -631,13 +631,14 @@ export async function runCodexGoldStandardAnalysis(
           checkpoint: async () => checkpoint("running", stages)
         });
         await writeAssignmentSummary(paths, batches);
+        await writeCurrentRunId(projectPaths.taxonomyCurrentRunPath, runId);
         await checkpoint("ready", stages);
       } catch (error) {
         await checkpoint("failed", stages, error instanceof Error ? error.message : String(error));
         throw error;
       }
 
-      const finalManifest = await readJsonFile<CodexGoldStandardManifest>(paths.manifestPath);
+      const finalManifest = await readJsonFile<HybridTaxonomyManifest>(paths.manifestPath);
 
       if (finalManifest !== null) {
         process.stdout.write(renderFinishedSummary(projectRoot, finalManifest));
@@ -653,8 +654,8 @@ async function runBatchTaxonomyStage(options: {
   model: string;
   reasoning: CodexReasoningEffort;
   codexBin: string;
-  paths: GoldRunPaths;
-  batches: GoldOpinionBatch[];
+  paths: TaxonomyRunPaths;
+  batches: TaxonomyOpinionBatch[];
   force: boolean;
   progress: StageProgress;
   checkpoint: () => Promise<void>;
@@ -712,8 +713,8 @@ async function runTaxonomyMergeStage(options: {
   model: string;
   reasoning: CodexReasoningEffort;
   codexBin: string;
-  paths: GoldRunPaths;
-  batches: GoldOpinionBatch[];
+  paths: TaxonomyRunPaths;
+  batches: TaxonomyOpinionBatch[];
   force: boolean;
   progress: StageProgress;
 }): Promise<void> {
@@ -772,8 +773,8 @@ async function runAssignmentStage(options: {
   model: string;
   reasoning: CodexReasoningEffort;
   codexBin: string;
-  paths: GoldRunPaths;
-  batches: GoldOpinionBatch[];
+  paths: TaxonomyRunPaths;
+  batches: TaxonomyOpinionBatch[];
   force: boolean;
   progress: StageProgress;
   checkpoint: () => Promise<void>;
@@ -832,12 +833,12 @@ async function runAssignmentStage(options: {
 }
 
 async function prepareRunInputs(options: {
-  paths: GoldRunPaths;
+  paths: TaxonomyRunPaths;
   config: BroadlyProjectConfig;
   sourceExtraction: string;
   opinionRun: LoadedOpinionRun;
-  selectedOpinions: GoldOpinion[];
-  batches: GoldOpinionBatch[];
+  selectedOpinions: TaxonomyOpinion[];
+  batches: TaxonomyOpinionBatch[];
 }): Promise<void> {
   await mkdir(options.paths.runDir, { recursive: true });
   await mkdir(options.paths.inputsDir, { recursive: true });
@@ -873,8 +874,8 @@ async function prepareRunInputs(options: {
 }
 
 async function writeAssignmentSummary(
-  paths: GoldRunPaths,
-  batches: GoldOpinionBatch[]
+  paths: TaxonomyRunPaths,
+  batches: TaxonomyOpinionBatch[]
 ): Promise<void> {
   const assignmentLines: string[] = [];
   const categoryCounts = new Map<string, number>();
@@ -1032,10 +1033,10 @@ async function readStructuredCodexOutput(
 function renderBatchTaxonomyPrompt(options: {
   config: BroadlyProjectConfig;
   sourceExtraction: string;
-  batch: GoldOpinionBatch;
+  batch: TaxonomyOpinionBatch;
 }): string {
   return [
-    "You are building Broadly's gold-standard qualitative taxonomy for a civic consultation dataset.",
+    "You are building Broadly's hybrid-taxonomy qualitative taxonomy for a civic consultation dataset.",
     "Read every opinion in this batch. Group opinions by the policy concern or civic argument they express.",
     "Prefer analyst-grade distinctions over geometric similarity. Do not flatten specific policy issues into vague grievance clusters.",
     "Use only the opinion IDs provided. Every on-topic opinion should either appear in one theme's opinion_ids or in unassigned_opinion_ids.",
@@ -1064,7 +1065,7 @@ function renderTaxonomyMergePrompt(options: {
   batchTaxonomies: unknown[];
 }): string {
   return [
-    "You are merging batch-level qualitative themes into a corpus-wide gold-standard taxonomy.",
+    "You are merging batch-level qualitative themes into a corpus-wide hybrid taxonomy.",
     "Create a compact but expressive two-tier taxonomy that preserves specific policy distinctions.",
     "The top tier must be broad categories, usually 3-6 total. The lower tier must be subgroup themes, usually 2-8 per category. The tree does not need to be balanced.",
     "Use categories for navigation and report structure. Use themes as the assignable subgroups.",
@@ -1094,10 +1095,10 @@ function renderAssignmentPrompt(options: {
   config: BroadlyProjectConfig;
   sourceExtraction: string;
   taxonomy: unknown;
-  batch: GoldOpinionBatch;
+  batch: TaxonomyOpinionBatch;
 }): string {
   return [
-    "You are assigning civic consultation opinions to Broadly's gold-standard taxonomy.",
+    "You are assigning civic consultation opinions to Broadly's hybrid taxonomy.",
     "Use the taxonomy definitions strictly. Assign each on-topic opinion to one primary subgroup theme and zero or more secondary subgroup themes.",
     "Set primary_category_id to the parent category of the primary theme. Use only category IDs and theme IDs from the taxonomy.",
     "If an opinion is clearly outside the project questions, set fit to out_of_scope, set primary_category_id and primary_theme_id to null, keep secondary_theme_ids empty, and explain the relevance boundary.",
@@ -1132,7 +1133,7 @@ async function selectOpinions(options: {
   limit?: number;
 }): Promise<SelectedOpinions> {
   const opinionPaths = await listOpinionArtifactPaths(options.opinionsDir);
-  const included: GoldOpinion[] = [];
+  const included: TaxonomyOpinion[] = [];
   const excludedByStatus = createEmptyReviewStatusCounts();
 
   for (const opinionPath of opinionPaths) {
@@ -1158,7 +1159,7 @@ async function selectOpinions(options: {
         resolvedReview.status
       )
     ) {
-      included.push(toGoldOpinion(opinion));
+      included.push(toTaxonomyOpinion(opinion));
     } else {
       excludedByStatus[resolvedReview.status] += 1;
     }
@@ -1179,7 +1180,7 @@ async function selectOpinions(options: {
   };
 }
 
-function toGoldOpinion(opinion: OpinionArtifact): GoldOpinion {
+function toTaxonomyOpinion(opinion: OpinionArtifact): TaxonomyOpinion {
   return {
     opinionId: opinion.opinionId,
     sourceId: opinion.sourceId,
@@ -1288,17 +1289,17 @@ function resolveSourceExtractionName(config: BroadlyProjectConfig, explicit: str
   return primaryView.sourceExtraction;
 }
 
-function buildGoldRunFingerprint(options: {
+function buildTaxonomyRunFingerprint(options: {
   opinionRunId: string;
   sourceExtraction: string;
-  selectedOpinions: GoldOpinion[];
+  selectedOpinions: TaxonomyOpinion[];
   reviewConfigSha256: string;
   offset: number;
   limit?: number;
   batchSize: number;
   model: string;
   reasoning: CodexReasoningEffort;
-}): GoldRunFingerprint {
+}): TaxonomyRunFingerprint {
   const selectedOpinionIdsSha256 = sha256Hex(
     JSON.stringify(options.selectedOpinions.map((opinion) => opinion.opinionId).sort())
   );
@@ -1311,7 +1312,7 @@ function buildGoldRunFingerprint(options: {
     )
   );
   const value = {
-    version: GOLD_STANDARD_VERSION,
+    version: HYBRID_TAXONOMY_VERSION,
     opinionRunId: options.opinionRunId,
     sourceExtraction: options.sourceExtraction,
     opinionCount: options.selectedOpinions.length,
@@ -1331,8 +1332,8 @@ function buildGoldRunFingerprint(options: {
   };
 }
 
-function buildOpinionBatches(opinions: GoldOpinion[], batchSize: number): GoldOpinionBatch[] {
-  const batches: GoldOpinionBatch[] = [];
+function buildOpinionBatches(opinions: TaxonomyOpinion[], batchSize: number): TaxonomyOpinionBatch[] {
+  const batches: TaxonomyOpinionBatch[] = [];
 
   for (let index = 0; index < opinions.length; index += batchSize) {
     const batchOpinions = opinions.slice(index, index + batchSize);
@@ -1349,8 +1350,8 @@ function buildOpinionBatches(opinions: GoldOpinion[], batchSize: number): GoldOp
   return batches;
 }
 
-function resolveGoldRunPaths(projectPaths: ProjectPaths, runId: string): GoldRunPaths {
-  const runDir = path.join(projectPaths.rootDir, "gold-standards", runId);
+function resolveTaxonomyRunPaths(projectPaths: ProjectPaths, runId: string): TaxonomyRunPaths {
+  const runDir = path.join(projectPaths.taxonomiesDir, runId);
 
   return {
     runDir,
@@ -1370,7 +1371,7 @@ function resolveGoldRunPaths(projectPaths: ProjectPaths, runId: string): GoldRun
   };
 }
 
-function createGoldRunId(model: string): string {
+function createTaxonomyRunId(model: string): string {
   return `${formatRunTimestamp(new Date())}-codex-${slugifyRunIdPart(model)}`;
 }
 
@@ -1408,11 +1409,11 @@ function isIncludedByReviewConfig(
 
 function renderPreparedSummary(
   projectRoot: string,
-  manifest: CodexGoldStandardManifest,
-  paths: GoldRunPaths
+  manifest: HybridTaxonomyManifest,
+  paths: TaxonomyRunPaths
 ): string {
   return [
-    "Broadly Codex Gold Standard Analysis",
+    "Broadly Hybrid Taxonomy Analysis",
     rule("="),
     formatDetailLine("Project", projectRoot),
     formatDetailLine("Run", manifest.runId),
@@ -1427,10 +1428,10 @@ function renderPreparedSummary(
   ].join("\n");
 }
 
-function renderFinishedSummary(projectRoot: string, manifest: CodexGoldStandardManifest): string {
+function renderFinishedSummary(projectRoot: string, manifest: HybridTaxonomyManifest): string {
   return [
     "",
-    "Codex gold-standard analysis complete",
+    "Hybrid taxonomy analysis complete",
     rule("="),
     formatDetailLine("Run", manifest.runId),
     formatDetailLine("Taxonomy", toPortableRelativePath(projectRoot, manifest.output.taxonomyPath)),

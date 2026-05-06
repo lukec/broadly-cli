@@ -16,6 +16,13 @@ export interface ThemeSummary {
   label: string;
   summary: string;
   clusterIds: string[];
+  subthemes?: Array<{
+    subthemeId: string;
+    clusterId: string;
+    label: string;
+    summary: string;
+    size: number;
+  }>;
 }
 
 export interface ReportPlotPoint {

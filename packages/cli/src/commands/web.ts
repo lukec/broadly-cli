@@ -152,6 +152,25 @@ interface AnalysisPerspectiveArtifact {
   }>;
 }
 
+interface AnalysisHierarchyArtifact {
+  status?: string;
+  sourceClusterArtifactPath?: string;
+  themes?: Array<{
+    themeId?: number;
+    themeLabel?: string;
+    themeSummary?: string;
+    clusterIds?: number[];
+    subthemes?: Array<{
+      subthemeId?: string;
+      clusterId?: number;
+      label?: string;
+      summary?: string;
+      size?: number;
+    }>;
+    mergeRationale?: string;
+  }>;
+}
+
 interface AnalysisReducerEvaluationArtifact {
   createdAt?: string;
   runId?: string;
@@ -362,10 +381,103 @@ interface LoadedAnalysisRun {
   };
   reductions: Array<{ path: string; artifact: AnalysisReductionArtifact }>;
   clusters: Array<{ path: string; artifact: AnalysisClusterArtifact }>;
+  hierarchies: Array<{ path: string; artifact: AnalysisHierarchyArtifact }>;
   perspectives: Array<{ path: string; artifact: AnalysisPerspectiveArtifact }>;
   reducerEvaluation: AnalysisReducerEvaluationArtifact | null;
   clusteringSurfaceEvaluation: AnalysisClusteringSurfaceEvaluationArtifact | null;
   graphBuilderEvaluation: AnalysisGraphBuilderEvaluationArtifact | null;
+}
+
+interface TaxonomyRunManifest {
+  runId?: string;
+  kind?: string;
+  strategy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  status?: string;
+  model?: {
+    provider?: string;
+    modelId?: string;
+    reasoningEffort?: string;
+  };
+  input?: {
+    sourceExtraction?: string;
+    opinionRunId?: string;
+    opinionsSelected?: number;
+    review?: {
+      excludedOpinions?: number;
+      excludedByStatus?: Record<string, number>;
+    };
+  };
+}
+
+interface TaxonomyArtifact {
+  taxonomy_id?: string;
+  categories?: Array<{
+    category_id?: string;
+    label?: string;
+    summary?: string;
+    subgroup_theme_ids?: string[];
+  }>;
+  themes?: Array<{
+    theme_id?: string;
+    parent_category_id?: string;
+    label?: string;
+    summary?: string;
+    inclusion_rule?: string;
+    exclusion_rule?: string;
+    representative_opinion_ids?: string[];
+  }>;
+  missing_or_uncertain_areas?: string[];
+  notes?: string[];
+}
+
+interface TaxonomyAssignment {
+  batch_id?: string;
+  opinion_id?: string;
+  primary_category_id?: string | null;
+  primary_theme_id?: string | null;
+  secondary_theme_ids?: string[];
+  confidence?: number;
+  fit?: string;
+  uncertainty_flag?: boolean;
+  rationale?: string;
+  evidence_quote?: string;
+  false_friend_check?: {
+    nearest_false_friend_theme_ids?: string[];
+    note?: string;
+  };
+}
+
+interface LoadedTaxonomyRun {
+  runId: string;
+  runDir: string;
+  manifest: TaxonomyRunManifest;
+  taxonomy: TaxonomyArtifact;
+  assignments: TaxonomyAssignment[];
+  assignmentSummary: {
+    assignmentCount?: number;
+    outOfScopeCount?: number;
+    uncertainOrOutOfScopeCount?: number;
+    falseFriendWarningCount?: number;
+    categoryCounts?: Record<string, number>;
+    themeCounts?: Record<string, number>;
+  } | null;
+}
+
+interface TaxonomyPlot {
+  analysisRunId: string | null;
+  clusterArtifactPath: string | null;
+  points: Array<{
+    opinionId: string;
+    x: number;
+    y: number;
+    categoryId: string | null;
+    themeId: string | null;
+    fit: string;
+    confidence: number | null;
+    uncertainty: boolean;
+  }>;
 }
 
 interface LoadedOpinionArtifact {
@@ -853,6 +965,37 @@ export async function serveProjectWeb(options: WebCommandOptions): Promise<void>
         return;
       }
 
+      if (requestUrl.pathname === "/taxonomies") {
+        const runId =
+          (await readCurrentRunId(projectPaths.taxonomyCurrentRunPath)) ??
+          (await findLatestTaxonomyRun(projectPaths.taxonomiesDir));
+
+        if (runId === null) {
+          response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          response.end(renderTaxonomyEmptyPage(dashboard));
+          return;
+        }
+
+        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
+        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun);
+        const selectedCategoryId = requestUrl.searchParams.get("category");
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderTaxonomyRunPage(dashboard, taxonomyRun, plot, selectedCategoryId));
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/taxonomies/")) {
+        const runId = decodeURIComponent(requestUrl.pathname.slice("/taxonomies/".length));
+        const taxonomyRun = await loadTaxonomyRun(projectPaths.taxonomiesDir, runId);
+        const plot = await loadTaxonomyPlot(projectPaths, taxonomyRun);
+        const selectedCategoryId = requestUrl.searchParams.get("category");
+
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(renderTaxonomyRunPage(dashboard, taxonomyRun, plot, selectedCategoryId));
+        return;
+      }
+
       if (requestUrl.pathname === "/statements") {
         const statementRunId =
           (await readCurrentRunId(projectPaths.statementsCurrentRunPath)) ??
@@ -1045,6 +1188,9 @@ async function loadAnalysisRun(
   const clusters = await loadArtifactDirectory<AnalysisClusterArtifact>(
     path.join(runDir, "clusters")
   );
+  const hierarchies = await loadArtifactDirectory<AnalysisHierarchyArtifact>(
+    path.join(runDir, "hierarchies")
+  );
   const perspectives = await loadArtifactDirectory<AnalysisPerspectiveArtifact>(
     path.join(runDir, "perspectives")
   );
@@ -1063,6 +1209,7 @@ async function loadAnalysisRun(
     manifest,
     reductions,
     clusters,
+    hierarchies,
     perspectives,
     reducerEvaluation,
     clusteringSurfaceEvaluation,
@@ -1109,6 +1256,153 @@ async function findLatestReportRun(reportsDir: string): Promise<string | null> {
 
   runs.sort((a, b) => b.mtimeMs - a.mtimeMs || a.runId.localeCompare(b.runId));
   return runs[0]?.runId ?? null;
+}
+
+async function findLatestAnalysisRun(runsDir: string): Promise<string | null> {
+  const entries = await readdir(runsDir, { withFileTypes: true }).catch(() => []);
+  const runs: Array<{ runId: string; createdAt: string }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const manifest = await readJsonFile<LoadedAnalysisRun["manifest"]>(
+      path.join(runsDir, entry.name, "manifest.json")
+    );
+
+    if (manifest?.createdAt !== undefined) {
+      runs.push({ runId: entry.name, createdAt: manifest.createdAt });
+    }
+  }
+
+  runs.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return runs[0]?.runId ?? null;
+}
+
+async function findLatestTaxonomyRun(taxonomiesDir: string): Promise<string | null> {
+  const entries = await readdir(taxonomiesDir, { withFileTypes: true }).catch(() => []);
+  const runs: Array<{ runId: string; createdAt: string }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const manifest = await readJsonFile<TaxonomyRunManifest>(
+      path.join(taxonomiesDir, entry.name, "manifest.json")
+    );
+
+    if (manifest?.createdAt !== undefined) {
+      runs.push({ runId: entry.name, createdAt: manifest.createdAt });
+    }
+  }
+
+  runs.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return runs[0]?.runId ?? null;
+}
+
+async function loadTaxonomyRun(
+  taxonomiesDir: string,
+  runId: string
+): Promise<LoadedTaxonomyRun> {
+  const runDir = path.join(taxonomiesDir, runId);
+  const manifest = await readJsonFile<TaxonomyRunManifest>(path.join(runDir, "manifest.json"));
+  const taxonomy = await readJsonFile<TaxonomyArtifact>(path.join(runDir, "taxonomy.json"));
+
+  if (manifest === null || taxonomy === null) {
+    throw new Error(`Taxonomy run '${runId}' was not found.`);
+  }
+
+  return {
+    runId,
+    runDir,
+    manifest,
+    taxonomy,
+    assignments: await readJsonlFile<TaxonomyAssignment>(path.join(runDir, "assignments.jsonl")),
+    assignmentSummary: await readJsonFile<LoadedTaxonomyRun["assignmentSummary"]>(
+      path.join(runDir, "assignment-summary.json")
+    )
+  };
+}
+
+async function loadTaxonomyPlot(
+  projectPaths: ProjectPaths,
+  taxonomyRun: LoadedTaxonomyRun
+): Promise<TaxonomyPlot> {
+  const analysisRunId =
+    (await readCurrentRunId(projectPaths.analysisCurrentRunPath)) ??
+    (await findLatestAnalysisRun(projectPaths.runsDir));
+
+  if (analysisRunId === null) {
+    return { analysisRunId: null, clusterArtifactPath: null, points: [] };
+  }
+
+  const analysisRun = await loadAnalysisRun(projectPaths.runsDir, analysisRunId);
+  const assignmentByOpinionId = new Map(
+    taxonomyRun.assignments
+      .filter((assignment) => typeof assignment.opinion_id === "string")
+      .map((assignment) => [assignment.opinion_id as string, assignment] as const)
+  );
+  let best:
+    | {
+        path: string;
+        members: Array<{ opinionId: string; clusterId: number; x: number; y: number }>;
+        matchCount: number;
+      }
+    | null = null;
+
+  for (const { path: artifactPath, artifact } of analysisRun.clusters) {
+    const members = (artifact.members ?? []).flatMap((member) =>
+      typeof member.opinionId === "string" &&
+      typeof member.clusterId === "number" &&
+      typeof member.x === "number" &&
+      typeof member.y === "number"
+        ? [
+            {
+              opinionId: member.opinionId,
+              clusterId: member.clusterId,
+              x: member.x,
+              y: member.y
+            }
+          ]
+        : []
+    );
+    const matchCount = members.filter((member) => assignmentByOpinionId.has(member.opinionId)).length;
+
+    if (best === null || matchCount > best.matchCount) {
+      best = { path: artifactPath, members, matchCount };
+    }
+  }
+
+  if (best === null || best.matchCount === 0) {
+    return { analysisRunId, clusterArtifactPath: null, points: [] };
+  }
+
+  return {
+    analysisRunId,
+    clusterArtifactPath: best.path,
+    points: best.members.flatMap((member) => {
+      const assignment = assignmentByOpinionId.get(member.opinionId);
+
+      if (assignment === undefined) {
+        return [];
+      }
+
+      return [
+        {
+          opinionId: member.opinionId,
+          x: member.x,
+          y: member.y,
+          categoryId: assignment.primary_category_id ?? null,
+          themeId: assignment.primary_theme_id ?? null,
+          fit: assignment.fit ?? "unknown",
+          confidence: typeof assignment.confidence === "number" ? assignment.confidence : null,
+          uncertainty: assignment.uncertainty_flag === true
+        }
+      ];
+    })
+  };
 }
 
 async function loadOpinionArtifactLookup(
@@ -2017,6 +2311,159 @@ function renderAdminOpinionDetailPage(
   );
 }
 
+function renderTaxonomyEmptyPage(data: ProjectDashboardData): string {
+  return renderPage(
+    data,
+    "Taxonomies",
+    `<main class="shell">
+      ${renderHeader(data, "Taxonomies")}
+      <section class="panel">
+        <article class="card">
+          <p class="eyebrow">Hybrid Taxonomy</p>
+          <h2>No taxonomy runs yet</h2>
+          <p class="meta">Run <code>broadly analysis --strategy hybrid-taxonomy</code> to create a taxonomy.</p>
+        </article>
+      </section>
+    </main>`
+  );
+}
+
+function renderTaxonomyRunPage(
+  data: ProjectDashboardData,
+  taxonomyRun: LoadedTaxonomyRun,
+  plot: TaxonomyPlot,
+  selectedCategoryId: string | null
+): string {
+  const categories = (taxonomyRun.taxonomy.categories ?? []).filter(
+    (category) => typeof category.category_id === "string"
+  );
+  const themes = (taxonomyRun.taxonomy.themes ?? []).filter(
+    (theme) => typeof theme.theme_id === "string"
+  );
+  const categoryCounts = countAssignmentsByCategory(taxonomyRun.assignments);
+  const themeCounts = countAssignmentsByTheme(taxonomyRun.assignments);
+  const selectedCategory =
+    categories.find((category) => category.category_id === selectedCategoryId) ?? null;
+  const selectedThemes =
+    selectedCategory === null
+      ? themes
+      : themes.filter((theme) => theme.parent_category_id === selectedCategory.category_id);
+  const outOfScopeCount = taxonomyRun.assignments.filter(
+    (assignment) => assignment.fit === "out_of_scope"
+  ).length;
+
+  return renderPage(
+    data,
+    "Taxonomies",
+    `<main class="shell">
+      ${renderHeader(data, "Taxonomies")}
+      <section class="panel report-hero">
+        <p class="eyebrow"><a href="/pipeline/analysis">Back to Perform Analysis</a></p>
+        <h2>${escapeHtml(taxonomyRun.runId)}</h2>
+        <p class="lede">${escapeHtml(taxonomyRun.manifest.status ?? "unknown")} · ${escapeHtml(taxonomyRun.manifest.createdAt ?? "")}</p>
+        <div class="meta-chip-row">
+          ${renderMetaChip(`${escapeHtml(String(taxonomyRun.assignments.length))} assignments`)}
+          ${renderMetaChip(`${escapeHtml(String(categories.length))} categories`)}
+          ${renderMetaChip(`${escapeHtml(String(themes.length))} subgroups`)}
+          ${renderMetaChip(`${escapeHtml(String(outOfScopeCount))} out of scope`)}
+        </div>
+      </section>
+      <section class="panel">
+        <article class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Two-tier map</p>
+              <h2>${escapeHtml(selectedCategory?.label ?? "All categories")}</h2>
+            </div>
+            <p class="meta">${
+              plot.analysisRunId === null
+                ? "No vector coordinates available"
+                : `Coordinates from ${escapeHtml(plot.analysisRunId)}`
+            }</p>
+          </div>
+          <div class="taxonomy-toolbar">
+            <a class="button-link button-link-secondary button-link-small ${selectedCategory === null ? "active" : ""}" href="/taxonomies/${encodeURIComponent(taxonomyRun.runId)}">All</a>
+            ${categories
+              .map(
+                (category) =>
+                  `<a class="button-link button-link-secondary button-link-small ${
+                    category.category_id === selectedCategory?.category_id ? "active" : ""
+                  }" href="/taxonomies/${encodeURIComponent(taxonomyRun.runId)}?category=${encodeURIComponent(
+                    category.category_id ?? ""
+                  )}">${escapeHtml(category.label ?? category.category_id ?? "Category")}</a>`
+              )
+              .join("")}
+          </div>
+          ${renderTaxonomyScatterplot(taxonomyRun, plot, selectedCategory?.category_id ?? null)}
+        </article>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Top tier</p>
+            <h2>Categories</h2>
+          </div>
+        </div>
+        <section class="taxonomy-category-grid">
+          ${categories
+            .map((category, index) => {
+              const categoryId = category.category_id ?? "";
+              const color = taxonomyColor(index);
+              const subgroupCount = themes.filter(
+                (theme) => theme.parent_category_id === categoryId
+              ).length;
+
+              return `<a class="card link-card taxonomy-category-card" href="/taxonomies/${encodeURIComponent(
+                taxonomyRun.runId
+              )}?category=${encodeURIComponent(categoryId)}" style="--taxonomy-color:${escapeHtmlAttribute(color)}">
+                <p class="eyebrow">${escapeHtml(String(categoryCounts.get(categoryId) ?? 0))} assignments · ${escapeHtml(String(subgroupCount))} subgroups</p>
+                <h3>${escapeHtml(category.label ?? categoryId)}</h3>
+                <p>${escapeHtml(category.summary ?? "")}</p>
+              </a>`;
+            })
+            .join("")}
+        </section>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Subgroups</p>
+            <h2>${escapeHtml(selectedCategory?.label ?? "All subgroup themes")}</h2>
+          </div>
+        </div>
+        <section class="theme-grid">
+          ${selectedThemes
+            .map((theme) => {
+              const themeId = theme.theme_id ?? "";
+              const themeAssignments = taxonomyRun.assignments.filter(
+                (assignment) => assignment.primary_theme_id === themeId
+              );
+              const evidence = themeAssignments
+                .map((assignment) => assignment.evidence_quote ?? "")
+                .filter(Boolean)
+                .slice(0, 2);
+
+              return `<article class="theme-card">
+                <p class="eyebrow">${escapeHtml(String(themeCounts.get(themeId) ?? 0))} assignments</p>
+                <h4>${escapeHtml(theme.label ?? themeId)}</h4>
+                <p>${escapeHtml(theme.summary ?? "")}</p>
+                ${
+                  evidence.length === 0
+                    ? ""
+                    : `<div class="stack">
+                        <p class="section-label">Evidence</p>
+                        ${evidence.map((quote) => `<p class="quote">"${escapeHtml(truncateForUi(quote, 220))}"</p>`).join("")}
+                      </div>`
+                }
+              </article>`;
+            })
+            .join("")}
+        </section>
+      </section>
+    </main>`
+  );
+}
+
 function renderIngestPage(
   data: ProjectDashboardData,
   previews: NormalizedRecordPreview[],
@@ -2590,6 +3037,24 @@ function renderPublishedReportPage(
                                     <p class="eyebrow">Theme ${escapeHtml(theme.themeId)}</p>
                                     <h4>${escapeHtml(theme.label)}</h4>
                                     <p>${escapeHtml(theme.summary)}</p>
+                                    ${
+                                      theme.subthemes === undefined || theme.subthemes.length === 0
+                                        ? ""
+                                        : `<div class="stack">
+                                            <p class="section-label">Subgroups</p>
+                                            <ul class="bullets compact-bullets">
+                                              ${theme.subthemes
+                                                .map(
+                                                  (subtheme) =>
+                                                    `<li><a href="#${clusterAnchorId(
+                                                      perspective.viewId,
+                                                      subtheme.clusterId
+                                                    )}" data-cluster-focus="${escapeHtmlAttribute(subtheme.clusterId)}">#${escapeHtml(subtheme.clusterId)} ${escapeHtml(subtheme.label)}</a> <span class="meta">(${escapeHtml(String(subtheme.size))})</span></li>`
+                                                )
+                                                .join("")}
+                                            </ul>
+                                          </div>`
+                                    }
                                     <div class="stack">
                                       <p class="section-label">Supporting clusters</p>
                                       <ul class="bullets compact-bullets">
@@ -3240,6 +3705,23 @@ function renderAnalysisRunPage(
       <section class="panel">
         <div class="section-head">
           <div>
+            <p class="eyebrow">Two-tier hierarchy</p>
+            <h2>Themes and subgroups</h2>
+          </div>
+        </div>
+        ${run.hierarchies.length === 0
+          ? `<article class="card"><p>No semantic hierarchy artifacts are available yet.</p></article>`
+          : `<section class="record-list">
+              ${run.hierarchies
+                .map(({ path: artifactPath, artifact }) =>
+                  renderHierarchyCard(artifact, artifactPath, data.projectRoot)
+                )
+                .join("")}
+            </section>`}
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
             <p class="eyebrow">Reductions</p>
             <h2>Map projections</h2>
           </div>
@@ -3850,6 +4332,7 @@ function renderHeader(data: ProjectDashboardData, activePage: string): string {
     { href: "/pipeline/ingest", label: "Ingest Comments", key: "Ingest Comments" },
     { href: "/pipeline/opinions", label: "Extract Opinions", key: "Extract Opinions" },
     { href: "/pipeline/analysis", label: "Perform Analysis", key: "Perform Analysis" },
+    { href: "/taxonomies", label: "Taxonomies", key: "Taxonomies" },
     { href: "/pipeline/report", label: "Create Report", key: "Create Report" },
     { href: "/statements", label: "Statements", key: "Statements" },
     { href: "/admin", label: "Admin Review", key: "Admin Review" }
@@ -3987,6 +4470,52 @@ function renderPerspectiveCard(
         <p class="meta">${escapeHtml(perspective.synthesis?.error ?? perspective.rationale ?? "")}</p>
       </section>
     </div>
+  </article>`;
+}
+
+function renderHierarchyCard(
+  hierarchy: AnalysisHierarchyArtifact,
+  artifactPath: string,
+  projectRoot: string
+): string {
+  const themes = hierarchy.themes ?? [];
+
+  return `<article class="card record-card">
+    <div class="record-header">
+      <p class="eyebrow">${escapeHtml(hierarchy.status ?? "unknown")}</p>
+      <h3>${escapeHtml(path.basename(artifactPath, ".json"))}</h3>
+      <p class="meta">Source ${escapeHtml(toPortableRelativePath(projectRoot, hierarchy.sourceClusterArtifactPath ?? artifactPath))}</p>
+    </div>
+    ${
+      themes.length === 0
+        ? `<p class="meta">No hierarchy themes are available.</p>`
+        : `<section class="theme-grid">
+            ${themes
+              .map(
+                (theme) => `<article class="theme-card">
+                  <p class="eyebrow">Theme ${escapeHtml(String(theme.themeId ?? "?"))} · ${escapeHtml(String((theme.clusterIds ?? []).length))} subgroups</p>
+                  <h4>${escapeHtml(theme.themeLabel ?? "Theme")}</h4>
+                  <p>${escapeHtml(theme.themeSummary ?? "")}</p>
+                  ${
+                    (theme.subthemes ?? []).length === 0
+                      ? ""
+                      : `<div class="stack">
+                          <p class="section-label">Subgroups</p>
+                          <ul class="bullets compact-bullets">
+                            ${(theme.subthemes ?? [])
+                              .map(
+                                (subtheme) =>
+                                  `<li>#${escapeHtml(String(subtheme.clusterId ?? "?"))} ${escapeHtml(subtheme.label ?? "Subgroup")} <span class="meta">(${escapeHtml(String(subtheme.size ?? 0))})</span></li>`
+                              )
+                              .join("")}
+                          </ul>
+                        </div>`
+                  }
+                </article>`
+              )
+              .join("")}
+          </section>`
+    }
   </article>`;
 }
 
@@ -4157,6 +4686,135 @@ function renderScatterPlot(
       ${circles}
     </svg>
   </div>`;
+}
+
+function renderTaxonomyScatterplot(
+  taxonomyRun: LoadedTaxonomyRun,
+  plot: TaxonomyPlot,
+  selectedCategoryId: string | null
+): string {
+  const visiblePoints = plot.points.filter(
+    (point) => point.fit !== "out_of_scope" && point.categoryId !== null
+  );
+
+  if (visiblePoints.length === 0) {
+    return `<div class="plot-shell"><p class="meta">No matching plot coordinates were found.</p></div>`;
+  }
+
+  const categories = (taxonomyRun.taxonomy.categories ?? []).filter(
+    (category) => typeof category.category_id === "string"
+  );
+  const themes = (taxonomyRun.taxonomy.themes ?? []).filter(
+    (theme) => typeof theme.theme_id === "string"
+  );
+  const categoryIndex = new Map(
+    categories.map((category, index) => [category.category_id as string, index] as const)
+  );
+  const selectedThemes = themes.filter((theme) =>
+    selectedCategoryId === null ? false : theme.parent_category_id === selectedCategoryId
+  );
+  const themeIndex = new Map(
+    selectedThemes.map((theme, index) => [theme.theme_id as string, index] as const)
+  );
+  const width = 900;
+  const height = 520;
+  const padding = 34;
+  const xs = visiblePoints.map((point) => point.x);
+  const ys = visiblePoints.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const xSpan = Math.max(maxX - minX, 1);
+  const ySpan = Math.max(maxY - minY, 1);
+  const circles = visiblePoints
+    .map((point) => {
+      const isSelected =
+        selectedCategoryId === null || point.categoryId === selectedCategoryId;
+      const color =
+        selectedCategoryId === null
+          ? taxonomyColor(categoryIndex.get(point.categoryId ?? "") ?? 0)
+          : taxonomyColor(themeIndex.get(point.themeId ?? "") ?? 0);
+      const x = padding + ((point.x - minX) / xSpan) * (width - padding * 2);
+      const y = height - padding - ((point.y - minY) / ySpan) * (height - padding * 2);
+
+      return `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${
+        isSelected ? "5.5" : "3.5"
+      }" fill="${escapeHtmlAttribute(color)}" fill-opacity="${isSelected ? "0.86" : "0.12"}" stroke="${
+        point.uncertainty ? "#1F2430" : "transparent"
+      }" stroke-width="${point.uncertainty && isSelected ? "1.4" : "0"}">
+        <title>${escapeHtml(point.opinionId)} · ${escapeHtml(point.fit)}${
+          point.confidence === null ? "" : ` · ${Math.round(point.confidence * 100)}%`
+        }</title>
+      </circle>`;
+    })
+    .join("");
+  const legendItems =
+    selectedCategoryId === null
+      ? categories.map((category, index) => ({
+          id: category.category_id ?? "",
+          label: category.label ?? category.category_id ?? "Category",
+          color: taxonomyColor(index)
+        }))
+      : selectedThemes.map((theme, index) => ({
+          id: theme.theme_id ?? "",
+          label: theme.label ?? theme.theme_id ?? "Subgroup",
+          color: taxonomyColor(index)
+        }));
+
+  return `<div class="taxonomy-map-grid">
+    <div class="plot-shell taxonomy-plot-shell">
+      <svg class="plot taxonomy-plot" viewBox="0 0 ${width} ${height}" aria-label="taxonomy plot" role="img">
+        <rect x="0" y="0" width="${width}" height="${height}" rx="8" fill="#F7F8FA" stroke="#DCDFE7" />
+        ${circles}
+      </svg>
+    </div>
+    <div class="taxonomy-legend">
+      ${legendItems
+        .map(
+          (item) => `<div class="taxonomy-legend-item">
+            <span class="taxonomy-swatch" style="--taxonomy-color:${escapeHtmlAttribute(item.color)}"></span>
+            <span>${escapeHtml(item.label)}</span>
+          </div>`
+        )
+        .join("")}
+    </div>
+  </div>`;
+}
+
+function countAssignmentsByCategory(assignments: TaxonomyAssignment[]): Map<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const assignment of assignments) {
+    if (typeof assignment.primary_category_id !== "string") {
+      continue;
+    }
+
+    counts.set(
+      assignment.primary_category_id,
+      (counts.get(assignment.primary_category_id) ?? 0) + 1
+    );
+  }
+
+  return counts;
+}
+
+function countAssignmentsByTheme(assignments: TaxonomyAssignment[]): Map<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const assignment of assignments) {
+    if (typeof assignment.primary_theme_id !== "string") {
+      continue;
+    }
+
+    counts.set(assignment.primary_theme_id, (counts.get(assignment.primary_theme_id) ?? 0) + 1);
+  }
+
+  return counts;
+}
+
+function taxonomyColor(index: number): string {
+  return CLUSTER_COLORS[Math.abs(index) % CLUSTER_COLORS.length] ?? "#5D6378";
 }
 
 function renderNormalizedRecordPreview(
@@ -5556,6 +6214,55 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         width: 100%;
         height: auto;
       }
+      .taxonomy-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 12px 0 4px;
+      }
+      .taxonomy-toolbar .active {
+        background: var(--bl-primary-700);
+        color: #fff;
+        border-color: var(--bl-primary-700);
+      }
+      .taxonomy-map-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+        gap: 16px;
+        align-items: start;
+      }
+      .taxonomy-plot-shell {
+        margin-top: 0;
+        border-radius: 8px;
+      }
+      .taxonomy-legend {
+        display: grid;
+        gap: 8px;
+        max-height: 520px;
+        overflow: auto;
+      }
+      .taxonomy-legend-item {
+        display: grid;
+        grid-template-columns: 12px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        font-size: 13px;
+        color: var(--bl-gray-700);
+      }
+      .taxonomy-swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: var(--taxonomy-color);
+      }
+      .taxonomy-category-grid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+      .taxonomy-category-card {
+        border-top: 4px solid var(--taxonomy-color, var(--bl-primary-500));
+      }
       .plot-point {
         transition: fill-opacity 120ms ease, stroke-opacity 120ms ease, r 120ms ease, transform 120ms ease;
       }
@@ -5873,6 +6580,12 @@ function renderPage(data: ProjectDashboardData, title: string, body: string): st
         box-shadow: 0 12px 24px rgba(20,86,136,0.08);
         transform: translateY(-1px);
       }
+      .quote {
+        border-left: 3px solid var(--bl-primary-200);
+        margin: 0;
+        padding-left: 10px;
+        color: var(--bl-gray-700);
+      }
       .perspective-pill {
         display: inline-flex;
         align-items: center;
@@ -6032,6 +6745,18 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
     return JSON.parse(await readFile(filePath, "utf8")) as T;
   } catch {
     return null;
+  }
+}
+
+async function readJsonlFile<T>(filePath: string): Promise<T[]> {
+  try {
+    return (await readFile(filePath, "utf8"))
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as T);
+  } catch {
+    return [];
   }
 }
 

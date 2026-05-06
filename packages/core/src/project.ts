@@ -12,7 +12,7 @@ export const DEFAULT_PROJECT_DIRECTORIES = [
   "data/review/suggestions/opinions",
   "archive/opinions",
   "archive/analysis",
-  "gold-standards",
+  "taxonomies",
   "llm-cache/text",
   "prompts",
   "runs",
@@ -37,6 +37,7 @@ export interface ProjectPaths {
   llmCacheDir: string;
   promptsDir: string;
   runsDir: string;
+  taxonomiesDir: string;
   reportsDir: string;
   statementsDir: string;
   votesDir: string;
@@ -44,6 +45,7 @@ export interface ProjectPaths {
   opinionsCurrentRunPath: string;
   analysisCurrentRunPath: string;
   statementsCurrentRunPath: string;
+  taxonomyCurrentRunPath: string;
   votesCurrentRoundPath: string;
 }
 
@@ -103,6 +105,7 @@ export function resolveProjectPaths(rootDir: string): ProjectPaths {
     llmCacheDir: path.join(absoluteRootDir, "llm-cache"),
     promptsDir: path.join(absoluteRootDir, "prompts"),
     runsDir: path.join(absoluteRootDir, "runs"),
+    taxonomiesDir: path.join(absoluteRootDir, "taxonomies"),
     reportsDir: path.join(absoluteRootDir, "reports"),
     statementsDir: path.join(absoluteRootDir, "statements"),
     votesDir: path.join(absoluteRootDir, "votes"),
@@ -110,6 +113,7 @@ export function resolveProjectPaths(rootDir: string): ProjectPaths {
     opinionsCurrentRunPath: path.join(absoluteRootDir, "data", "opinions", "current-run.txt"),
     analysisCurrentRunPath: path.join(absoluteRootDir, "runs", "current-run.txt"),
     statementsCurrentRunPath: path.join(absoluteRootDir, "statements", "current-run.txt"),
+    taxonomyCurrentRunPath: path.join(absoluteRootDir, "taxonomies", "current-run.txt"),
     votesCurrentRoundPath: path.join(absoluteRootDir, "votes", "current-round.txt")
   };
 }
