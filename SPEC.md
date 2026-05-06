@@ -525,9 +525,10 @@ The current evaluator reports:
 
 `broadly analysis --evaluate-graph-builders` is a third no-new-model-calls
 diagnostic path. It builds cheap neighborhood graph variants from existing
-embeddings, clusters adjacency-vector representations of those graphs for each
-configured cluster count, then compares graph clusterings against embedding and
-projection surfaces. It writes:
+embeddings, sweeps several graph-neighbor counts around `--neighbor-k`, clusters
+adjacency-vector representations of those graphs for each configured cluster
+count, then compares graph clusterings against embedding and projection
+surfaces. It writes:
 
 ```text
 runs/<run-id>/graph-eval/summary.json
@@ -539,19 +540,23 @@ The current graph builders are:
 
 - plain kNN
 - mutual kNN
+- repaired mutual kNN, which backfills otherwise-isolated nodes from their
+  nearest embedding neighbor
 - shared-neighbor weighted
 
 The current evaluator reports:
 
 - graph edge counts, density, weighted degree, and isolated-node counts
+- graph-neighbor counts used for the sweep
+- repaired-edge counts for repaired graph variants
 - embedding-neighbor purity for each graph clustering surface
 - embedding-space silhouette for each graph clustering surface
 - adjusted Rand agreement against embedding and projection baselines
 - largest cluster membership shifts between compared surfaces
 
 The per-graph artifacts preserve graph edges and weights. The per-surface
-artifacts preserve graph-clustering assignments so later repair experiments can
-reuse the graph-builder boundary without regenerating the graph.
+artifacts preserve graph-clustering assignments so later graph-aware analysis
+views can reuse the graph-builder boundary without regenerating the graph.
 
 Configured views are the durable unit for report variants. A view combines:
 

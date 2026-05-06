@@ -248,6 +248,7 @@ interface AnalysisGraphBuilderEvaluationArtifact {
   method?: string;
   parameters?: {
     neighborK?: number;
+    graphNeighborKs?: number[];
   };
   corpus?: {
     embeddingCount?: number;
@@ -267,6 +268,9 @@ interface AnalysisGraphBuilderEvaluationArtifact {
     density?: number;
     isolatedNodeCount?: number;
     averageWeightedDegree?: number;
+    baseGraphId?: string;
+    repairedEdgeCount?: number;
+    repairStrategy?: string;
   }>;
   surfaces?: Array<{
     surfaceId?: string;
@@ -3438,6 +3442,7 @@ function renderGraphBuilderDiagnosticOverviewCard(
       ["Created", graph.createdAt ?? "unknown"],
       ["Comparable opinions", String(graph.corpus?.comparableOpinionCount ?? 0)],
       ["Graphs", `${graph.corpus?.graphCount ?? 0} builders · ${graph.corpus?.graphSurfaceCount ?? 0} surfaces`],
+      ["Graph k sweep", (graph.parameters?.graphNeighborKs ?? []).join(", ") || "unknown"],
       ["Best graph purity", formatDiagnosticMetric(bestGraphSurface?.embeddingNeighborPurityAtK ?? null)]
     ])}
     ${renderDiagnosticObservationPreview(null, null, graph)}
@@ -3525,6 +3530,15 @@ function renderGraphBuilderDiagnosticSection(
   if (graph === null) {
     return "";
   }
+  const graphSurfaces = (graph.surfaces ?? [])
+    .filter((surface) => surface.surfaceKind === "graph")
+    .sort(
+      (left, right) =>
+        (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1) ||
+        (right.embeddingSilhouette ?? -1) - (left.embeddingSilhouette ?? -1) ||
+        (left.label ?? "").localeCompare(right.label ?? "")
+    );
+  const visibleGraphSurfaces = graphSurfaces.slice(0, 24);
 
   return `<section class="panel">
     <div class="section-head">
@@ -3544,17 +3558,22 @@ function renderGraphBuilderDiagnosticSection(
               ["Edges", String(item.edgeCount ?? 0)],
               ["Density", formatDiagnosticMetric(item.density ?? null)],
               ["Isolated nodes", String(item.isolatedNodeCount ?? 0)],
-              ["Avg weighted degree", formatDiagnosticMetric(item.averageWeightedDegree ?? null)]
+              ["Avg weighted degree", formatDiagnosticMetric(item.averageWeightedDegree ?? null)],
+              ...(item.repairStrategy === undefined
+                ? []
+                : ([
+                    ["Repair", item.repairStrategy],
+                    ["Backfill edges", String(item.repairedEdgeCount ?? 0)]
+                  ] satisfies Array<[string, string]>))
             ])}
           </article>`
         )
         .join("")}
     </section>
     <div class="stack">
-      <p class="section-label">Graph clustering surfaces</p>
+      <p class="section-label">Top graph clustering surfaces (${visibleGraphSurfaces.length} of ${graphSurfaces.length})</p>
       <section class="grid">
-        ${(graph.surfaces ?? [])
-          .filter((surface) => surface.surfaceKind === "graph")
+        ${visibleGraphSurfaces
           .map(
             (surface) => `<article class="card">
               <p class="eyebrow">${escapeHtml(surface.method ?? "graph surface")}</p>

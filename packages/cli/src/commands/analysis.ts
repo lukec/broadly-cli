@@ -415,6 +415,7 @@ interface GraphBuilderEvaluationArtifact {
   method: "graph-builder-evaluation-v1";
   parameters: {
     neighborK: number;
+    graphNeighborKs: number[];
     silhouetteMaxPoints: number;
   };
   source: {
@@ -441,7 +442,7 @@ interface GraphBuilderEvaluationArtifact {
 
 interface GraphBuilderSummary {
   graphId: string;
-  method: "plain-knn" | "mutual-knn" | "shared-neighbor";
+  method: "plain-knn" | "mutual-knn" | "mutual-knn-repaired" | "shared-neighbor";
   label: string;
   neighborK: number;
   nodeCount: number;
@@ -449,6 +450,9 @@ interface GraphBuilderSummary {
   density: number;
   isolatedNodeCount: number;
   averageWeightedDegree: number;
+  baseGraphId?: string;
+  repairedEdgeCount?: number;
+  repairStrategy?: string;
 }
 
 interface GraphBuilderArtifact {
@@ -2792,10 +2796,11 @@ async function evaluateAnalysisGraphBuilders(options: AnalysisCommandOptions): P
           .map((entry) => entry.artifact.requestedClusterCount)
           .filter((value) => Number.isFinite(value) && value > 0)
       );
+      const graphNeighborKs = resolveGraphNeighborKs(neighborK, comparableOpinionIds.length);
       const graphArtifacts = buildGraphBuilderArtifacts({
         opinionIds: comparableOpinionIds,
         embeddingsById,
-        neighborK
+        graphNeighborKs
       });
       const graphSurfaces = graphArtifacts.flatMap((graph) =>
         clusterCounts.map((clusterCount) =>
@@ -2853,6 +2858,7 @@ async function evaluateAnalysisGraphBuilders(options: AnalysisCommandOptions): P
         method: "graph-builder-evaluation-v1",
         parameters: {
           neighborK,
+          graphNeighborKs,
           silhouetteMaxPoints: REDUCER_EVALUATION_SILHOUETTE_MAX_POINTS
         },
         source: {
@@ -2890,19 +2896,36 @@ async function evaluateAnalysisGraphBuilders(options: AnalysisCommandOptions): P
 function buildGraphBuilderArtifacts(options: {
   opinionIds: string[];
   embeddingsById: Map<string, EmbeddingArtifact>;
-  neighborK: number;
+  graphNeighborKs: number[];
 }): GraphBuilderArtifact[] {
-  const neighborCandidates = buildEmbeddingNeighborCandidates(
-    options.opinionIds,
-    options.embeddingsById,
-    options.neighborK
-  );
+  return options.graphNeighborKs.flatMap((graphNeighborK) => {
+    const neighborCandidates = buildEmbeddingNeighborCandidates(
+      options.opinionIds,
+      options.embeddingsById,
+      graphNeighborK
+    );
 
-  return [
-    buildPlainKnnGraph(options.opinionIds, neighborCandidates, options.neighborK),
-    buildMutualKnnGraph(options.opinionIds, neighborCandidates, options.neighborK),
-    buildSharedNeighborGraph(options.opinionIds, neighborCandidates, options.neighborK)
-  ];
+    return [
+      buildPlainKnnGraph(options.opinionIds, neighborCandidates, graphNeighborK),
+      buildMutualKnnGraph(options.opinionIds, neighborCandidates, graphNeighborK),
+      buildRepairedMutualKnnGraph(options.opinionIds, neighborCandidates, graphNeighborK),
+      buildSharedNeighborGraph(options.opinionIds, neighborCandidates, graphNeighborK)
+    ];
+  });
+}
+
+function resolveGraphNeighborKs(anchorNeighborK: number, opinionCount: number): number[] {
+  const maxNeighborK = Math.max(0, opinionCount - 1);
+
+  if (maxNeighborK === 0) {
+    return [];
+  }
+
+  return uniqueNumberList(
+    [6, 8, anchorNeighborK, 12, 15, 20]
+      .map((value) => Math.min(value, maxNeighborK))
+      .filter((value) => value > 0)
+  );
 }
 
 function buildEmbeddingNeighborCandidates(
@@ -2962,9 +2985,9 @@ function buildPlainKnnGraph(
   }
 
   return finalizeGraphBuilderArtifact({
-    graphId: "plain-knn",
+    graphId: `plain-knn-k${neighborK}`,
     method: "plain-knn",
-    label: "Plain kNN",
+    label: `Plain kNN graph k=${neighborK}`,
     neighborK,
     opinionIds,
     adjacency
@@ -2993,12 +3016,53 @@ function buildMutualKnnGraph(
   }
 
   return finalizeGraphBuilderArtifact({
-    graphId: "mutual-knn",
+    graphId: `mutual-knn-k${neighborK}`,
     method: "mutual-knn",
-    label: "Mutual kNN",
+    label: `Mutual kNN graph k=${neighborK}`,
     neighborK,
     opinionIds,
     adjacency
+  });
+}
+
+function buildRepairedMutualKnnGraph(
+  opinionIds: string[],
+  neighborCandidates: Map<string, Array<{ opinionId: string; weight: number }>>,
+  neighborK: number
+): GraphBuilderArtifact {
+  const baseGraph = buildMutualKnnGraph(opinionIds, neighborCandidates, neighborK);
+  const adjacency = cloneGraphAdjacency(baseGraph.adjacency);
+  const baseEdgeCount = countGraphEdges(adjacency);
+
+  for (const opinionId of opinionIds) {
+    const edges = adjacency.get(opinionId);
+
+    if (edges === undefined || edges.size > 0) {
+      continue;
+    }
+
+    const nearestCandidate = neighborCandidates.get(opinionId)?.[0];
+
+    if (nearestCandidate !== undefined) {
+      addUndirectedGraphEdge(
+        adjacency,
+        opinionId,
+        nearestCandidate.opinionId,
+        nearestCandidate.weight
+      );
+    }
+  }
+
+  return finalizeGraphBuilderArtifact({
+    graphId: `mutual-knn-repaired-k${neighborK}`,
+    method: "mutual-knn-repaired",
+    label: `Repaired mutual kNN graph k=${neighborK}`,
+    neighborK,
+    opinionIds,
+    adjacency,
+    baseGraphId: baseGraph.graphId,
+    repairedEdgeCount: countGraphEdges(adjacency) - baseEdgeCount,
+    repairStrategy: "nearest-neighbor backfill for isolated nodes"
   });
 }
 
@@ -3049,9 +3113,9 @@ function buildSharedNeighborGraph(
   }
 
   return finalizeGraphBuilderArtifact({
-    graphId: "shared-neighbor",
+    graphId: `shared-neighbor-k${neighborK}`,
     method: "shared-neighbor",
-    label: "Shared-neighbor weighted",
+    label: `Shared-neighbor weighted graph k=${neighborK}`,
     neighborK,
     opinionIds,
     adjacency
@@ -3083,6 +3147,18 @@ function addUndirectedGraphEdge(
   rightEdges.set(leftId, Math.max(rightEdges.get(leftId) ?? 0, weight));
 }
 
+function cloneGraphAdjacency(
+  adjacency: Map<string, Map<string, number>>
+): Map<string, Map<string, number>> {
+  return new Map(
+    [...adjacency.entries()].map(([opinionId, edges]) => [opinionId, new Map(edges)])
+  );
+}
+
+function countGraphEdges(adjacency: Map<string, Map<string, number>>): number {
+  return [...adjacency.values()].reduce((sum, edges) => sum + edges.size, 0) / 2;
+}
+
 function finalizeGraphBuilderArtifact(options: {
   graphId: string;
   method: GraphBuilderSummary["method"];
@@ -3090,9 +3166,11 @@ function finalizeGraphBuilderArtifact(options: {
   neighborK: number;
   opinionIds: string[];
   adjacency: Map<string, Map<string, number>>;
+  baseGraphId?: string;
+  repairedEdgeCount?: number;
+  repairStrategy?: string;
 }): GraphBuilderArtifact {
-  const edgeCount =
-    [...options.adjacency.values()].reduce((sum, edges) => sum + edges.size, 0) / 2;
+  const edgeCount = countGraphEdges(options.adjacency);
   const possibleEdgeCount = chooseTwo(options.opinionIds.length);
   const weightedDegreeSum = [...options.adjacency.values()].reduce(
     (sum, edges) =>
@@ -3108,7 +3186,10 @@ function finalizeGraphBuilderArtifact(options: {
     edgeCount,
     density: roundMetric(safeRatio(edgeCount, possibleEdgeCount)),
     isolatedNodeCount: [...options.adjacency.values()].filter((edges) => edges.size === 0).length,
-    averageWeightedDegree: roundMetric(safeRatio(weightedDegreeSum, Math.max(1, options.opinionIds.length)))
+    averageWeightedDegree: roundMetric(safeRatio(weightedDegreeSum, Math.max(1, options.opinionIds.length))),
+    ...(options.baseGraphId === undefined ? {} : { baseGraphId: options.baseGraphId }),
+    ...(options.repairedEdgeCount === undefined ? {} : { repairedEdgeCount: options.repairedEdgeCount }),
+    ...(options.repairStrategy === undefined ? {} : { repairStrategy: options.repairStrategy })
   };
 
   return {
@@ -3160,7 +3241,7 @@ function buildGraphClusteringSurface(options: {
     summary: summarizeClusteringSurface({
       surfaceId: `graph-${options.graph.graphId}-k${options.clusterCount}`,
       surfaceKind: "graph",
-      label: `${options.graph.label} k=${options.clusterCount}`,
+      label: `${options.graph.label}, clusters=${options.clusterCount}`,
       method: "graph-adjacency-kmeans",
       status: opinionIds.length === 0 ? "failed" : "ready",
       requestedClusterCount: options.clusterCount,
@@ -3290,8 +3371,28 @@ function buildGraphBuilderObservations(summary: GraphBuilderEvaluationArtifact):
   const disconnectedGraphs = summary.graphs.filter((graph) => graph.isolatedNodeCount > 0);
 
   if (disconnectedGraphs.length > 0) {
+    const previewLabels = disconnectedGraphs
+      .slice(0, 6)
+      .map((graph) => graph.label)
+      .join(", ");
+    const remainingCount = disconnectedGraphs.length - Math.min(6, disconnectedGraphs.length);
+
     observations.push(
-      `${disconnectedGraphs.map((graph) => graph.label).join(", ")} produced isolated nodes; this can make graph clustering brittle.`
+      `${previewLabels}${remainingCount > 0 ? `, and ${remainingCount} more` : ""} produced isolated nodes; this can make graph clustering brittle.`
+    );
+  }
+
+  const repairedGraphs = summary.graphs.filter((graph) => graph.method === "mutual-knn-repaired");
+
+  if (repairedGraphs.length > 0) {
+    const repairedWithoutIsolates = repairedGraphs.filter((graph) => graph.isolatedNodeCount === 0).length;
+    const repairedEdgeCount = repairedGraphs.reduce(
+      (sum, graph) => sum + (graph.repairedEdgeCount ?? 0),
+      0
+    );
+
+    observations.push(
+      `Repaired mutual kNN removed isolated nodes in ${repairedWithoutIsolates} of ${repairedGraphs.length} graph-k settings by adding ${repairedEdgeCount} nearest-neighbor backfill edge(s).`
     );
   }
 
@@ -3326,6 +3427,17 @@ function renderGraphBuilderConsoleSummary(
   summary: GraphBuilderEvaluationArtifact
 ): string {
   const surfaceById = new Map(summary.surfaces.map((surface) => [surface.surfaceId, surface]));
+  const graphSurfaces = summary.surfaces.filter((surface) => surface.surfaceKind === "graph");
+  const disconnectedGraphCount = summary.graphs.filter((graph) => graph.isolatedNodeCount > 0).length;
+  const repairedGraphs = summary.graphs.filter((graph) => graph.method === "mutual-knn-repaired");
+  const topGraphSurfaces = [...graphSurfaces]
+    .sort(
+      (left, right) =>
+        (right.embeddingNeighborPurityAtK ?? -1) - (left.embeddingNeighborPurityAtK ?? -1) ||
+        (right.embeddingSilhouette ?? -1) - (left.embeddingSilhouette ?? -1) ||
+        left.label.localeCompare(right.label)
+    )
+    .slice(0, 10);
   const graphComparisons = summary.comparisons.filter((comparison) => {
     const left = surfaceById.get(comparison.leftSurfaceId);
     const right = surfaceById.get(comparison.rightSurfaceId);
@@ -3351,20 +3463,25 @@ function renderGraphBuilderConsoleSummary(
       "Graphs",
       `${summary.corpus.graphCount} builders · ${summary.corpus.graphSurfaceCount} graph surfaces`
     ),
-    ...summary.graphs.map((graph) =>
+    formatDetailLine(
+      "Graph k sweep",
+      summary.parameters.graphNeighborKs.length === 0
+        ? "(none)"
+        : summary.parameters.graphNeighborKs.join(", ")
+    ),
+    formatDetailLine("Isolated variants", `${disconnectedGraphCount} of ${summary.graphs.length}`),
+    ...repairedGraphs.map((graph) =>
       formatDetailLine(
         graph.label,
-        `${graph.edgeCount} edges · density ${formatMetric(graph.density)} · isolated ${graph.isolatedNodeCount}`
+        `${graph.edgeCount} edges · density ${formatMetric(graph.density)} · isolated ${graph.isolatedNodeCount} · repaired edges ${graph.repairedEdgeCount ?? 0}`
       )
     ),
-    ...summary.surfaces
-      .filter((surface) => surface.surfaceKind === "graph")
-      .map((surface) =>
-        formatDetailLine(
-          surface.label,
-          `purity ${formatMetric(surface.embeddingNeighborPurityAtK)} · silhouette ${formatMetric(surface.embeddingSilhouette)}`
-        )
-      ),
+    ...topGraphSurfaces.map((surface) =>
+      formatDetailLine(
+        surface.label,
+        `purity ${formatMetric(surface.embeddingNeighborPurityAtK)} · silhouette ${formatMetric(surface.embeddingSilhouette)}`
+      )
+    ),
     ...graphComparisons.slice(0, 6).map((comparison) =>
       formatDetailLine(
         "Compare",
