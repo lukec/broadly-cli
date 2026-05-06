@@ -7,6 +7,11 @@ import { runAnalysis } from "./commands/analysis.js";
 import { attestReport, attestStatements, verifyArtifacts } from "./commands/attest.js";
 import { defaultBlueskyScrapeOptions, scrapeBluesky } from "./commands/bluesky.js";
 import { configureDataset } from "./commands/configureDataset.js";
+import {
+  CODEX_GOLD_STANDARD_STRATEGY,
+  runCodexGoldStandardAnalysis,
+  type CodexReasoningEffort
+} from "./commands/codexGoldStandard.js";
 import { extractOpinions } from "./commands/extractOpinions.js";
 import { initProject } from "./commands/init.js";
 import { runLlm } from "./commands/llm.js";
@@ -128,9 +133,23 @@ program
   .command("analysis")
   .description("Generate embedding, reduction, clustering, and perspective-planning artifacts.")
   .option("--project <project>", "Project directory; defaults to the nearest broadly.yaml")
+  .option("--strategy <strategy>", `Analysis strategy: vector or ${CODEX_GOLD_STANDARD_STRATEGY}`, "vector")
   .option("--embedding-model <name>", "Project model alias to use for embeddings")
+  .option("--extraction <name>", "Opinion extraction to use with --strategy codex-gold-standard")
+  .option("--opinion-run <runId>", "Opinion run id to use with --strategy codex-gold-standard")
   .option("--limit <count>", "Only process the first N opinion artifacts from the selected run", parsePositiveInteger)
   .option("--offset <count>", "Skip the first N opinion artifacts from the selected run", parsePositiveInteger)
+  .option("--batch-size <count>", "Opinions per Codex gold-standard batch", parsePositiveInteger, 80)
+  .option("--codex-model <model>", "Codex model for --strategy codex-gold-standard", "gpt-5.5")
+  .option(
+    "--codex-reasoning <effort>",
+    "Codex reasoning effort for --strategy codex-gold-standard: low, medium, high, or xhigh",
+    parseCodexReasoningEffort,
+    "medium"
+  )
+  .option("--codex-bin <path>", "Codex executable for --strategy codex-gold-standard")
+  .option("--dry-run", "Prepare gold-standard inputs without invoking Codex", false)
+  .option("--force", "Overwrite reusable Codex gold-standard artifacts for the selected run", false)
   .option("--evaluate-reducers", "Evaluate existing reducer artifacts for local-neighbor preservation and cluster agreement", false)
   .option("--evaluate-clustering-surfaces", "Compare embedding-space clustering against existing reduction-based cluster artifacts", false)
   .option("--evaluate-graph-builders", "Compare cheap neighborhood-graph clustering variants against existing cluster artifacts", false)
@@ -139,15 +158,48 @@ program
   .action(
     async (options: {
       project?: string;
+      strategy: string;
       embeddingModel?: string;
+      extraction?: string;
+      opinionRun?: string;
       limit?: number;
       offset?: number;
+      batchSize: number;
+      codexModel: string;
+      codexReasoning: CodexReasoningEffort;
+      codexBin?: string;
+      dryRun: boolean;
+      force: boolean;
       evaluateReducers: boolean;
       evaluateClusteringSurfaces: boolean;
       evaluateGraphBuilders: boolean;
       run?: string;
       neighborK?: number;
     }) => {
+      if (options.strategy === CODEX_GOLD_STANDARD_STRATEGY) {
+        await runCodexGoldStandardAnalysis({
+          ...(options.project === undefined ? {} : { project: options.project }),
+          ...(options.extraction === undefined ? {} : { extraction: options.extraction }),
+          ...(options.opinionRun === undefined ? {} : { opinionRun: options.opinionRun }),
+          ...(options.run === undefined ? {} : { run: options.run }),
+          ...(options.limit === undefined ? {} : { limit: options.limit }),
+          ...(options.offset === undefined ? {} : { offset: options.offset }),
+          batchSize: options.batchSize,
+          model: options.codexModel,
+          reasoning: options.codexReasoning,
+          ...(options.codexBin === undefined ? {} : { codexBin: options.codexBin }),
+          dryRun: options.dryRun,
+          force: options.force
+        });
+        return;
+      }
+
+      if (options.strategy !== "vector") {
+        throw new Error(
+          `Unsupported analysis strategy '${options.strategy}'. Use 'vector' or '${CODEX_GOLD_STANDARD_STRATEGY}'.`
+        );
+      }
+
       await runAnalysis({
         ...(options.project === undefined ? {} : { project: options.project }),
         ...(options.embeddingModel === undefined
@@ -862,4 +914,12 @@ function parsePositiveInteger(value: string): number {
   }
 
   return parsed;
+}
+
+function parseCodexReasoningEffort(value: string): CodexReasoningEffort {
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+    return value;
+  }
+
+  throw new Error("--codex-reasoning must be one of: low, medium, high, xhigh.");
 }

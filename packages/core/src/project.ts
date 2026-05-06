@@ -12,6 +12,7 @@ export const DEFAULT_PROJECT_DIRECTORIES = [
   "data/review/suggestions/opinions",
   "archive/opinions",
   "archive/analysis",
+  "gold-standards",
   "llm-cache/text",
   "prompts",
   "runs",

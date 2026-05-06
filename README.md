@@ -203,6 +203,19 @@ pipeline stages and their current state.
 The analysis stage is only shown as complete when the latest analysis run has
 produced all configured reductions, clustering outputs, and perspectives.
 
+Run an experimental Codex CLI gold-standard taxonomy pass over the selected
+opinion run:
+
+```bash
+broadly analysis --strategy codex-gold-standard --project opengov2017
+```
+
+This path uses `codex exec` with `gpt-5.5` and medium reasoning by default.
+It writes durable benchmark artifacts under `gold-standards/<run-id>/` instead
+of `runs/`, so normal report generation keeps using the vector analysis runs.
+Use `--dry-run` to prepare schemas, batches, and manifests without spending
+Codex quota.
+
 Or open the local web overview:
 
 ```bash

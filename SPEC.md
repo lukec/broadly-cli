@@ -90,6 +90,11 @@ project/
   archive/
     opinions/
     analysis/
+  gold-standards/
+    <gold-standard-run-id>/
+      manifest.json
+      taxonomy.json
+      assignments.jsonl
   llm-cache/
     text/
   prompts/
@@ -217,6 +222,7 @@ The current command surface is:
 | `broadly opinions` | Run configured LLM opinion extraction specs. |
 | `broadly extract-opinions` | Compatibility wrapper around the configured opinion extraction path. |
 | `broadly analysis` | Build embeddings, reductions, clusters, semantic hierarchies, and perspective artifacts. |
+| `broadly analysis --strategy codex-gold-standard` | Run the experimental Codex CLI gold-standard taxonomy workflow over opinion artifacts. |
 | `broadly analysis --evaluate-reducers` | Evaluate existing reduction/cluster artifacts without new model calls. |
 | `broadly analysis --evaluate-clustering-surfaces` | Compare embedding-space clustering against projection-space cluster artifacts. |
 | `broadly analysis --evaluate-graph-builders` | Compare cheap neighborhood-graph clustering variants against existing surfaces. |
@@ -489,6 +495,53 @@ The current analysis stages are:
 6. Perspectives
    - LLM summary artifacts per configured view
    - includes title, summary, highlighted clusters, and rationale
+
+## Codex Gold-Standard Analysis
+
+`broadly analysis --strategy codex-gold-standard` is an experimental benchmark
+path for building a higher-quality qualitative taxonomy with the local Codex
+CLI. It is intended for expensive gold-standard runs, not as the default
+open-source analysis engine.
+
+Defaults:
+
+- model: `gpt-5.5`
+- reasoning effort: `medium`
+- provider: local `codex exec` authentication
+- batch size: `80` opinions
+
+The command resolves the same opinion extraction and review boundary used by
+analysis, then writes artifacts under:
+
+```text
+gold-standards/<run-id>/
+  manifest.json
+  inputs/
+    context.json
+    opinions.jsonl
+    batches/*.json
+  schemas/
+    batch-taxonomy.schema.json
+    taxonomy.schema.json
+    assignments.schema.json
+  prompts/
+  codex-events/*.jsonl
+  codex-stderr/*.log
+  batch-taxonomies/*.json
+  taxonomy.json
+  batch-assignments/*.json
+  assignments.jsonl
+  assignment-summary.json
+```
+
+The workflow is resumable by artifact. If a batch taxonomy, merged taxonomy, or
+batch assignment already exists, the command reuses it unless `--force` is
+passed. `--dry-run` prepares inputs, schemas, and the manifest without invoking
+Codex.
+
+This run family deliberately does not write `runs/current-run.txt` and does not
+live under `runs/`, because its artifacts are benchmark/taxonomy outputs rather
+than report-compatible vector analysis outputs.
 
 `broadly analysis --evaluate-reducers` is a no-new-model-calls diagnostic path
 over an existing analysis run. It reads existing embedding, reduction, and
